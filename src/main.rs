@@ -37,12 +37,35 @@ pub extern "C" fn _start() -> ! {
             *vga_buffer.offset(i as isize * 2) = byte; // Write the character
             *vga_buffer.offset(i as isize * 2 + 1) = 0x0f; // Set color (white on black)
         }
+        blue_screen();
     }
 
     // Keep the kernel running in an infinite loop
     // Without this, the CPU would try to execute random memory after _start
     loop {}
 }
+/// Clear the whole VGA text screen with blue background
+fn blue_screen() {
+    let vga = 0xb8000 as *mut u8;
+    for i in 0..(80 * 25) {
+        unsafe {
+            *vga.add(i * 2) = b' ';      // Space character
+            *vga.add(i * 2 + 1) = 0x10;  // Black text (0x0) on Blue background (0x1 << 4)
+        }
+    }
+}
+
+/// Fill the 80×25 VGA text screen with spaces using the given color (e.g., 0x0f = white on black).
+fn clear_screen(color: u8) {
+    let vga = 0xb8000 as *mut u8;             // Base address of VGA text buffer
+    for i in 0..(80 * 25) {                    // 80 columns × 25 rows = 2000 cells
+        unsafe {
+            *vga.add(i * 2) = b' ';            // Byte 0: ASCII space
+            *vga.add(i * 2 + 1) = color;       // Byte 1: attribute (fg/bg color)
+        }
+    }
+}
+
 
 // Define a panic handler for when something goes wrong
 // In a no_std environment, we must provide this ourselves

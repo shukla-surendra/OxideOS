@@ -1,1 +1,14 @@
 /target
+# OS DEVELOPMENT
+*.iso
+*.bin
+*.img
+*.elf
+*.efi
+*.fd
+*.iso
+*.bin
+*.img
+*.elf
+# MACOS
+.DS_Store
