@@ -12,7 +12,11 @@ use kernel::scancode::{decode_scancode, DecodedKey};
 pub extern "C" fn _start() -> ! {
     let mut con = Console::new(0x1F);
     con.clear();
-    con.write_str("Welcome to OxideOS!\nType on your keyboard...\n");
+    // NEW: make the hardware cursor visible and sync to (0,0)
+    con.enable_cursor();
+    con.sync_cursor();
+    con.write_str("OxideOS!: Type on your keyboard...");
+    con.sync_cursor();
 
     loop {
         if let Some(sc) = read_scancode_nonblock() {
