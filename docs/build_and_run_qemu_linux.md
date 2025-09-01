@@ -2,34 +2,55 @@
 rustup override set nightly
 ```
 ```
-brew install qemu
+sudo apt-get update
+sudo apt-get install qemu-system
 ```
 
 ```
 qemu-system-x86_64 --version
 ```
+### Install LLVM
+use this like to find command for llvm installation
+
+https://apt.llvm.org/
+
+```
+sudo bash -c "$(wget -O - https://apt.llvm.org/llvm.sh)"
+
+```
+
+this lld install many packages with version suffix for example lld is installed like
+lld-20
+make a symlink to fix this
+
+```
+sudo ln -s /usr/bin/lld-20 /usr/bin/lld
+```
+
+
+```
+rustup component add llvm-tools-preview
+```
+
+install build essential
+
+```
+sudo apt update
+sudo apt install build-essential
+
+```
+Install Bootimage
 
 ```
 cargo install bootimage
 ```
 
 ```
-rustup component add rust-src --toolchain nightly-aarch64-apple-darwin
-```
-
-```
-brew install llvm
-```
-```
-brew install lld
-```
-
-```
-rustup component add llvm-tools-preview
-```
-
-```
 cargo bootimage --target x86_64-oxideos.json -Zbuild-std=core,alloc
+```
+
+```
+rustup component add rust-src --toolchain nightly-aarch64-unknown-linux-gnu
 ```
 
 ```
