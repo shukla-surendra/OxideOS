@@ -1,7 +1,7 @@
 [build]
-target = "x86_32-oxideos.json"
+target = "x86_64-oxideos.json"
 
-[target.x86_32-oxideos]
+[target.x86_64-oxideos]
 rustflags = [
   "-C", "link-arg=-Tlinker.ld",
 ]

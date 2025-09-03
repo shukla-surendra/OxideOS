@@ -12,3 +12,6 @@
 *.elf
 # MACOS
 .DS_Store
+os_iso_build/*
+OxideOS.iso
+mnt
