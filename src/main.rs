@@ -7,17 +7,28 @@ mod multiboot;
 mod kernel;
 
 use core::panic::PanicInfo;
-// use multiboot::parse_multiboot;
-use kernel::{console::Console, keyboard::read_scancode_nonblock};
-use kernel::scancode::{decode_scancode, DecodedKey};
+use core::arch::asm;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(magic: u32, info_ptr: u32) -> ! {
+pub extern "C" fn _start() -> ! {
+    let magic: u32;
+    let info_ptr: u32;
+
+    // Read eax and ebx directly
+    unsafe {
+        asm!(
+            "mov {0:e}, eax",
+            "mov {1:e}, ebx",
+            out(reg) magic,
+            out(reg) info_ptr,
+            options(nostack)
+        );
+    }
+
     // Verify Multiboot2 magic number
-    // if magic != 0x36d76289 {
-    //     // GRUB didn’t load us properly
-    //     loop {}
-    // }
+    if magic != 0x36d76289 {
+        loop {}
+    }
 
     unsafe {
         // Just write "OK" to VGA to confirm

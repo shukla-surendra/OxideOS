@@ -4,8 +4,8 @@ SECTIONS
 {
   . = 1M; /* load at 1MiB */
 
-  .multiboot : {
-    KEEP(*(.multiboot))
+  .multiboot : ALIGN(8) {
+    KEEP(*(.multiboot .multiboot2_header))
   }
 
   .text : ALIGN(4K) {
