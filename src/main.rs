@@ -4,10 +4,11 @@
 
 mod mem;
 mod multiboot;
-mod kernel;
+mod vga_buffer;
 
 use core::panic::PanicInfo;
 use core::arch::asm;
+
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
@@ -24,23 +25,16 @@ pub extern "C" fn _start() -> ! {
             options(nostack)
         );
     }
+    // Initialize VGA buffer
+    vga_buffer::init();
 
     // Verify Multiboot2 magic number
     if magic != 0x36d76289 {
+        println!("Magic: 0x{:08x}, Info: 0x{:08x}", magic, info_ptr);
         loop {}
     }
-
-    unsafe {
-        // Just write "OK" to VGA to confirm
-        let vga = 0xb8000 as *mut u8;
-        *vga.offset(0) = b'O';
-        *vga.offset(1) = 0x0f;
-        *vga.offset(2) = b'K';
-        *vga.offset(3) = 0x0f;
-
-        // Now parse GRUB’s Multiboot2 info structure
-        // parse_multiboot(info_ptr as usize);
-    }
+    println!("OK");
+    println!("Welcome to India !");
 
     loop {}
 }
