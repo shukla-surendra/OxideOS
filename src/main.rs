@@ -5,10 +5,11 @@
 mod mem;
 mod multiboot;
 mod vga_buffer;
+mod multiboot2_parser;
 
 use core::panic::PanicInfo;
 use core::arch::asm;
-
+use multiboot2_parser::{parse_multiboot, get_framebuffer_info, draw_rectangle};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
@@ -34,7 +35,17 @@ pub extern "C" fn _start() -> ! {
         loop {}
     }
     println!("OK");
-    println!("Welcome to India !");
+    println!("Magic: 0x{:08x}, Info: 0x{:08x}", magic, info_ptr);
+    println!("Welcome to OxideOS!");
+    unsafe {
+        parse_multiboot(info_ptr as usize);
+        if let Some(fb_tag) = get_framebuffer_info() {
+            println!("Using framebuffer in main: width {}, height {}", fb_tag.width, fb_tag.height);
+            draw_rectangle(&fb_tag, 100, 100, 50, 50, 0xFF, 0xFF, 0x00); // Draw a blue pixel at (40, 40)
+        } else {
+            println!("No framebuffer info available");
+        }
+    }
 
     loop {}
 }
