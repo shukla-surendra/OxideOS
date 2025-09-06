@@ -23,16 +23,15 @@ mkdir -p $BUILD_DIR/boot/grub
 cp target/x86_32-oxideos/debug/$KERNEL_NAME $BUILD_DIR/boot/kernel.elf
 
 # 4. Write grub.cfg
-cat > $BUILD_DIR/boot/grub/grub.cfg <<EOF
-set timeout=0
+cat > $BUILD_DIR/boot/grub/grub.cfg <<'EOF'
+set timeout=5 # pause screen for selection of OS
 set default=0
 
 menuentry "OxideOS Auto" {
     insmod all_video
     insmod gfxterm
     insmod vbe
-    insmod vga
-    set gfxmode=1024x768x32,800x600x32,640x480x32
+    set gfxmode=1024x768x32
     set gfxpayload=keep
     terminal_output gfxterm
     multiboot2 /boot/kernel.elf
@@ -44,16 +43,20 @@ menuentry "OxideOS 1024x768x32" {
     insmod gfxterm
     insmod vbe
     insmod vga
+    # (optional) insmod multiboot2
     set gfxmode=1024x768x32
     set gfxpayload=keep
     terminal_output gfxterm
-    echo "You are seeing this becuase it support 1024x768x32"
-    echo "Press Any Key to Boot"
+
+    echo "You are seeing this because it supports 1024x768x32"
+    echo "Press any key to boot"
+    pause
 
     multiboot2 /boot/kernel.elf
     boot
 }
 EOF
+
 
 # 5. Build ISO
 echo "[*] Creating ISO..."
