@@ -3,16 +3,16 @@
 
 TARGET="x86_32-oxideos.json"
 KERNEL_NAME="OxideOs"
-BUILD_DIR="os_iso_build"
-ISO_NAME="OxideOS.iso"
+BUILD_DIR="os_iso_configuration"
+ISO_NAME="iso_builds/oxide_os_32.iso"
 
 cargo clean
-rm -rf os_iso_build
-rm OxideOS.iso
+rm -rf $BUILD_DIR
+rm $ISO_NAME
 
 # 1. Build kernel ELF
 echo "[*] Building kernel..."
-cargo build --target $TARGET -Zbuild-std=core,alloc
+cargo build --target targets/$TARGET -Zbuild-std=core,alloc
 
 # 2. Prepare ISO directory
 echo "[*] Setting up ISO directory structure..."
@@ -27,7 +27,7 @@ cat > $BUILD_DIR/boot/grub/grub.cfg <<EOF
 set timeout=0
 set default=0
 
-menuentry "OxideOS" {
+menuentry "OxideOS Auto" {
     insmod all_video
     insmod gfxterm
     insmod vbe
@@ -35,6 +35,20 @@ menuentry "OxideOS" {
     set gfxmode=1024x768x32,800x600x32,640x480x32
     set gfxpayload=keep
     terminal_output gfxterm
+    multiboot2 /boot/kernel.elf
+    boot
+}
+
+menuentry "OxideOS 1024x768x32" {
+    insmod all_video
+    insmod gfxterm
+    insmod vbe
+    insmod vga
+    set gfxmode=1024x768x32
+    set gfxpayload=keep
+    terminal_output gfxterm
+    echo "You are seeing this becuase it support 1024x768x32"
+    echo "Press Any Key to Boot"
 
     multiboot2 /boot/kernel.elf
     boot
@@ -48,4 +62,4 @@ grub-mkrescue -o $ISO_NAME $BUILD_DIR
 echo "[*] Done. ISO available as $ISO_NAME"
 echo "Run with: qemu-system-i386 -cdrom $ISO_NAME"
 # qemu-system-i386 -cdrom OxideOS.iso -serial stdio
-qemu-system-i386 -cdrom OxideOS.iso
+qemu-system-i386 -cdrom $ISO_NAME
