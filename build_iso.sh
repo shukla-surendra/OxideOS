@@ -32,7 +32,7 @@ menuentry "OxideOS" {
     insmod gfxterm
     insmod vbe
     insmod vga
-    set gfxmode=1024x768x32
+    set gfxmode=1024x768x32,800x600x32,640x480x32
     set gfxpayload=keep
     terminal_output gfxterm
 

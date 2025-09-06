@@ -1,4 +1,5 @@
 #[repr(C, align(8))]
+#[derive(Debug)]
 struct Multiboot2Header {
     magic: u32,
     architecture: u32,
