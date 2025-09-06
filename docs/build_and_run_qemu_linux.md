@@ -67,7 +67,7 @@ cargo build --target x86_64-oxideos.json -Zbuild-std=core,alloc
 
 ### Run Kernel (Or See below for Running as ISO using Grub)
 ```
-qemu-system-i386: -drive format=raw,file=target/x86_32-oxideos/debug/bootimage-OxideOs.bin: Could not open 'target/x86_32-oxideos/debug/bootimage-OxideOs.bin
+qemu-system-i386: -drive format=raw,file=target/x86_32-oxideos/debug/bootimage-OxideOs.bin
 ```
 
 ## Loading AS ISO with Grub
