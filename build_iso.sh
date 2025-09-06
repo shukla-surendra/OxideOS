@@ -15,7 +15,7 @@ echo "[*] Building kernel..."
 cargo build --target targets/$TARGET -Zbuild-std=core,alloc
 
 # 2. Prepare ISO directory
-echo "[*] Setting up ISO directory structure..."
+echo "[***********] Setting up ISO directory structure..."
 rm -rf $BUILD_DIR
 mkdir -p $BUILD_DIR/boot/grub
 
