@@ -18,7 +18,6 @@ use multiboot_parser::find_framebuffer;
 pub extern "C" fn _start() -> ! {
     let magic: u32;
     let info_ptr: u32;
-
     // Read eax and ebx directly
     unsafe {
         asm!(
@@ -28,19 +27,22 @@ pub extern "C" fn _start() -> ! {
             out(reg) info_ptr,
             options(nostack)
         );
-        //initialize frame buffer
-        // multiboot_parser::parse_multiboot(info_ptr).unwrap();
+    }
+    unsafe {
+        LOGGER.info("_start started read register EAX and EBX\n");
     }
 
     // Verify Multiboot2 magic number
     if magic != 0x36d76289 {
         unsafe{
-            SERIAL_PORT.write_str("magic not found ! panicking !");
-            panic!("This is panic from multiboot 2 Magic checker!");
+            SERIAL_PORT.write_str("magic not found ! panicking !\n");
+            panic!("This is panic from multiboot 2 Magic checker!\n");
         }
         loop {}
     }
-    
+    unsafe {
+        LOGGER.info("Initializing framebuffer");
+    }
 // call find_framebuffer (mbi pointer as u32)
 let fb_opt = unsafe { multiboot_parser::find_framebuffer(info_ptr) };
 
