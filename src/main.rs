@@ -11,7 +11,9 @@ use core::arch::asm;
 use kernel::loggers;
 use kernel::loggers::LOGGER;
 use kernel::serial::SERIAL_PORT;
+use kernel:: fb_console;
 use multiboot_parser::find_framebuffer;
+
 
 
 #[unsafe(no_mangle)]
@@ -43,21 +45,30 @@ pub extern "C" fn _start() -> ! {
     unsafe {
         LOGGER.info("Initializing framebuffer");
     }
-// call find_framebuffer (mbi pointer as u32)
-let fb_opt = unsafe { multiboot_parser::find_framebuffer(info_ptr) };
+    // call find_framebuffer (mbi pointer as u32)
+    let fb_opt = unsafe { multiboot_parser::find_framebuffer(info_ptr) };
 
-if let Some(fb) = fb_opt {
-    unsafe {
-        if fb.bpp == 32 {
-            fb.draw_gradient();
-            fb.fill_rect(20, 20, fb.width - 40, fb.height - 40, 0xFF_00_80_00);
-            fb.draw_line(0, 0, (fb.width-1) as isize, (fb.height-1) as isize, 0xFF_FF_00_00);
-            fb.draw_line((fb.width-1) as isize, 0, 0, (fb.height-1) as isize, 0xFF_00_FF_00);
-        } else {
-            fb.clear_32(0xFF_20_20_40);
+    if let Some(fb) = fb_opt {
+        unsafe {
+            if fb.bpp == 32 {
+                fb.draw_gradient();
+                fb.fill_rect(20, 20, fb.width - 40, fb.height - 40, 0xFF_00_80_00);
+                fb.draw_line(0, 0, (fb.width-1) as isize, (fb.height-1) as isize, 0xFF_FF_00_00);
+                fb.draw_line((fb.width-1) as isize, 0, 0, (fb.height-1) as isize, 0xFF_00_FF_00);
+            } else {
+                fb.clear_32(0xFF_20_20_40);
+            }
+                // after finding fb (value type)
+        let mut console = unsafe { fb_console::Console::new(fb, 0xFFFFFFFF, 0xFF000000) }; // white on black
+        unsafe {
+            console.clear();
+            console.put_str("Hello, kernel framebuffer console!\n");
+            console.put_str("This is an 8x8 font test.\n");
+            console.put_str("Numbers: 0123456789\n");
+        }
         }
     }
-}
+
 
 
 
