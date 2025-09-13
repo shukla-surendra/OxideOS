@@ -57,12 +57,12 @@ menuentry "OxideOS 1024x768x32" {
 }
 EOF
 
-
 # 5. Build ISO
 echo "[*] Creating ISO..."
 grub-mkrescue -o $ISO_NAME $BUILD_DIR
 
 echo "[*] Done. ISO available as $ISO_NAME"
-echo "Run with: qemu-system-i386 -cdrom $ISO_NAME"
-# qemu-system-i386 -cdrom OxideOS.iso -serial stdio
-qemu-system-i386 -cdrom $ISO_NAME
+echo "Run with: qemu-system-i386 -cdrom $ISO_NAME -serial stdio"
+
+# Run QEMU with serial output to terminal
+qemu-system-i386 -cdrom $ISO_NAME -serial stdio

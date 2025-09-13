@@ -1,15 +1,14 @@
 #![no_std]
 #![no_main]
-
-
-mod mem;
 mod multiboot;
-mod vga_buffer;
-mod multiboot2_parser;
+mod mem;
+mod kernel;
 
 use core::panic::PanicInfo;
 use core::arch::asm;
-use multiboot2_parser::{parse_multiboot, get_framebuffer_info, draw_rectangle};
+use kernel::loggers;
+use kernel::loggers::LOGGER;
+use kernel::serial::SERIAL_PORT;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
@@ -26,25 +25,18 @@ pub extern "C" fn _start() -> ! {
             options(nostack)
         );
     }
-    // Initialize VGA buffer
-    vga_buffer::init();
+    unsafe{
+        SERIAL_PORT.write_str("OS Loaded");
+        panic!("This is a test panic!");
+    }
+    
+
 
     // Verify Multiboot2 magic number
     if magic != 0x36d76289 {
-        println!("Magic: 0x{:08x}, Info: 0x{:08x}", magic, info_ptr);
         loop {}
     }
-    println!("OK");
-    println!("Magic: 0x{:08x}, Info: 0x{:08x}", magic, info_ptr);
-    println!("Welcome to OxideOS!");
     unsafe {
-        parse_multiboot(info_ptr as usize);
-        if let Some(fb_tag) = get_framebuffer_info() {
-            println!("Using framebuffer in main: width {}, height {}", fb_tag.width, fb_tag.height);
-            draw_rectangle(&fb_tag, 100, 100, 50, 50, 0xFF, 0xFF, 0x00); // Draw a blue pixel at (40, 40)
-        } else {
-            println!("No framebuffer info available");
-        }
     }
 
     loop {}
@@ -52,4 +44,33 @@ pub extern "C" fn _start() -> ! {
 
 
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! { loop {} }
+fn panic(info: &PanicInfo) -> ! {
+    unsafe {
+        LOGGER.error("KERNEL PANIC OCCURRED!");
+        
+        if let Some(location) = info.location() {
+            SERIAL_PORT.write_str("Location: ");
+            SERIAL_PORT.write_str(location.file());
+            SERIAL_PORT.write_str(":");
+            SERIAL_PORT.write_decimal(location.line());
+            SERIAL_PORT.write_str(":");
+            SERIAL_PORT.write_decimal(location.column());
+            SERIAL_PORT.write_str("\n");
+        }
+        
+        // info.message() returns PanicMessage directly, not Option<PanicMessage>
+        let msg = info.message();
+        SERIAL_PORT.write_str("Message: ");
+        SERIAL_PORT.write_str("(message formatting not implemented)\n");
+        
+        LOGGER.error("System halted due to panic");
+    }
+    
+    // Disable interrupts and halt
+    unsafe {
+        asm!("cli");
+        loop {
+            asm!("hlt");
+        }
+    }
+}
