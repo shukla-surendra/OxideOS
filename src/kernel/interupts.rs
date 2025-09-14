@@ -76,6 +76,36 @@ isr32:
     
     iret
 
+/* ISR 33 (IRQ1 - Keyboard) */
+.global isr33
+.type isr33, @function
+isr33:
+    /* Same pattern as isr32 */
+    pushad
+    push ds
+    push es
+    push fs
+    push gs
+
+    /* Set kernel segments */
+    mov ax, 0x18     /* Use same segment as isr32 */
+    mov ds, ax
+    mov es, ax
+
+    /* Call dispatcher */
+    mov eax, 33
+    push eax
+    call isr_dispatch
+    add esp, 4
+
+    /* Restore and return */
+    pop gs
+    pop fs
+    pop es
+    pop ds
+    popad
+    iret
+    
     /* Enhanced ISR 13 (GPF) with state capture */
     .global isr13
     .type isr13, @function
