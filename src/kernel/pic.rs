@@ -1,41 +1,46 @@
-// src/pic.rs
-#![no_std]
-
-use super::ports::{inb, outb};
-
-const PIC1_CMD: u16 = 0x20;
+use core :: arch :: asm;
+const PIC1_COMMAND: u16 = 0x20;
 const PIC1_DATA: u16 = 0x21;
-const PIC2_CMD: u16 = 0xA0;
+const PIC2_COMMAND: u16 = 0xA0;
 const PIC2_DATA: u16 = 0xA1;
 
-const ICW1_INIT: u8 = 0x11;
-const ICW4_8086: u8 = 0x01;
+const PIC_EOI: u8 = 0x20;
 
-/// Remap the PIC so hardware IRQs start at `offset_master` (commonly 0x20)
-/// Why: By default PIC IRQs overlap CPU exceptions (vectors 0..15). 
-/// Remap them to 32..47 (0x20..0x2F) so they don’t collide. 
-/// Always send EOI after handling to allow future interrupts.
-pub unsafe fn remap(offset_master: u8, offset_slave: u8) {
-    let a1 = inb(PIC1_DATA);
-    let a2 = inb(PIC2_DATA);
-
-    outb(PIC1_CMD, ICW1_INIT);
-    outb(PIC2_CMD, ICW1_INIT);
-    outb(PIC1_DATA, offset_master);
-    outb(PIC2_DATA, offset_slave);
-    outb(PIC1_DATA, 4); // tell master there is a slave on IRQ2
-    outb(PIC2_DATA, 2); // tell slave its identity
-    outb(PIC1_DATA, ICW4_8086);
-    outb(PIC2_DATA, ICW4_8086);
-
-    outb(PIC1_DATA, a1); // restore saved masks
-    outb(PIC2_DATA, a2);
-}
-
-/// Send End Of Interrupt for IRQ `irq` (0..15)
+/// Send End-of-Interrupt to PIC
 pub unsafe fn send_eoi(irq: u8) {
     if irq >= 8 {
-        outb(PIC2_CMD, 0x20);
+        // Send to slave PIC
+        asm!("out dx, al", in("dx") PIC2_COMMAND, in("al") PIC_EOI);
     }
-    outb(PIC1_CMD, 0x20);
+    // Always send to master PIC
+    asm!("out dx, al", in("dx") PIC1_COMMAND, in("al") PIC_EOI);
+}
+
+/// Initialize the PIC
+pub unsafe fn init() {
+    // Save masks
+    let mask1: u8;
+    let mask2: u8;
+    asm!("in al, dx", out("al") mask1, in("dx") PIC1_DATA);
+    asm!("in al, dx", out("al") mask2, in("dx") PIC2_DATA);
+    
+    // Start initialization sequence
+    asm!("out dx, al", in("dx") PIC1_COMMAND, in("al") 0x11u8);
+    asm!("out dx, al", in("dx") PIC2_COMMAND, in("al") 0x11u8);
+    
+    // Set vector offsets
+    asm!("out dx, al", in("dx") PIC1_DATA, in("al") 0x20u8); // IRQ0-7 -> ISR32-39
+    asm!("out dx, al", in("dx") PIC2_DATA, in("al") 0x28u8); // IRQ8-15 -> ISR40-47
+    
+    // Set cascading
+    asm!("out dx, al", in("dx") PIC1_DATA, in("al") 0x04u8);
+    asm!("out dx, al", in("dx") PIC2_DATA, in("al") 0x02u8);
+    
+    // Set 8086 mode
+    asm!("out dx, al", in("dx") PIC1_DATA, in("al") 0x01u8);
+    asm!("out dx, al", in("dx") PIC2_DATA, in("al") 0x01u8);
+    
+    // Restore masks
+    asm!("out dx, al", in("dx") PIC1_DATA, in("al") mask1);
+    asm!("out dx, al", in("dx") PIC2_DATA, in("al") mask2);
 }

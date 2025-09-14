@@ -22,11 +22,7 @@ mod kernel;             // Core kernel subsystems
 use core::arch::asm;
 use kernel::loggers::LOGGER;
 use kernel::serial::SERIAL_PORT;
-use kernel::fb_console;
-use kernel::idt;
-use kernel::pic;
-use kernel::ports;
-use kernel::interupts;  // Note: should be 'interrupts' (typo to fix)
+use kernel::{fb_console, idt, interrupts, timer, pic};
 use multiboot_parser::find_framebuffer;
 
 // ============================================================================
@@ -209,105 +205,12 @@ pub extern "C" fn _start() -> ! {
     // ========================================================================
     // STAGE 5: INTERRUPT SYSTEM - Critical for multitasking and I/O
     // ========================================================================
-    
-    // Declare interrupt service routine symbols (defined in assembly)
-    unsafe extern "C" {
-        fn isr32();       // Timer interrupt (IRQ0)
-        fn isr33();       // Keyboard interrupt (IRQ1) 
-        fn isr13();       // General Protection Fault
-        fn isr8();        // Double Fault
-        fn default_isr(); // Default handler for unhandled interrupts
-    }
 
+    // In your _start function, before init_interrupts():
     unsafe {
-        SERIAL_PORT.write_str("=== INTERRUPT SYSTEM INITIALIZATION ===\n");
-        
-        // Log stack pointer before interrupt setup
-        let pre_interrupt_esp: u32;
-        core::arch::asm!("mov {}, esp", out(reg) pre_interrupt_esp, options(nomem, nostack, preserves_flags));
-        SERIAL_PORT.write_str("Pre-interrupt ESP: 0x");
-        SERIAL_PORT.write_hex(pre_interrupt_esp);
-        SERIAL_PORT.write_str("\n");
-        
-        // Get current code segment for IDT entries
-        let cs = current_cs();
-        SERIAL_PORT.write_str("Current CS: 0x");
-        SERIAL_PORT.write_hex(cs as u32);
-        SERIAL_PORT.write_str("\n");
-        
-        // Step 1: Set up Interrupt Descriptor Table (IDT)
-        SERIAL_PORT.write_str("Setting up IDT entries...\n");
-        const INT_GATE_ATTR: u8 = 0x8E; // Present, Ring 0, 32-bit interrupt gate
-        
-        // Install CPU exception handlers (vectors 0-31)
-        idt::set_idt_entry(8, isr8, cs, INT_GATE_ATTR);      // Double Fault
-        idt::set_idt_entry(13, isr13, cs, INT_GATE_ATTR);    // General Protection Fault
-        
-        // Install default handler for other exceptions
-        for i in 0..32 {
-            if i != 8 && i != 13 {
-                idt::set_idt_entry(i, default_isr, cs, INT_GATE_ATTR);
-            }
-        }
-        
-        // Install hardware interrupt handlers (IRQs remapped to vectors 32+)
-        idt::set_idt_entry(32, isr32, cs, INT_GATE_ATTR);    // Timer (IRQ0)
-        idt::set_idt_entry(33, isr33, cs, INT_GATE_ATTR);    // Keyboard (IRQ1)
-        
-        // Load IDT into CPU
-        idt::load_idt();
-        SERIAL_PORT.write_str("✓ IDT loaded\n");
-        
-        // Step 2: Configure Programmable Interrupt Controller (PIC)
-        SERIAL_PORT.write_str("Configuring PIC...\n");
-        pic::remap(0x20, 0x28); // Remap IRQs to vectors 32-47
-        
-        // Mask all hardware interrupts initially
-        ports::outb(0x21, 0xFF); // Master PIC mask
-        ports::outb(0xA1, 0xFF); // Slave PIC mask
-        SERIAL_PORT.write_str("✓ PIC configured, all IRQs masked\n");
-        
-        // Step 3: Test interrupt system without hardware IRQs
-        SERIAL_PORT.write_str("Testing interrupt system...\n");
-        core::arch::asm!("sti"); // Enable interrupts
-        
-        // Brief test period
-        for _ in 0..1000000 {
-            core::arch::asm!("nop");
-        }
-        SERIAL_PORT.write_str("✓ No spurious interrupts detected\n");
-        
-        // Log stack pointer after interrupt enable test
-        let post_test_esp: u32;
-        core::arch::asm!("mov {}, esp", out(reg) post_test_esp, options(nomem, nostack, preserves_flags));
-        SERIAL_PORT.write_str("Post-test ESP: 0x");
-        SERIAL_PORT.write_hex(post_test_esp);
-        if pre_interrupt_esp != post_test_esp {
-            SERIAL_PORT.write_str(" **CHANGED**");
-        }
-        SERIAL_PORT.write_str("\n");
-        
-        // Step 4: Enable BOTH timer and keyboard interrupts
-        SERIAL_PORT.write_str("Enabling TIMER and KEYBOARD interrupts...\n");
-
-        // Unmask both IRQ0 (timer) and IRQ1 (keyboard)
-        let master_mask = ports::inb(0x21) & !(1 << 0) & !(1 << 1); // Unmask both IRQ0 and IRQ1
-        ports::outb(0x21, master_mask);
-
-        SERIAL_PORT.write_str("✓ Timer interrupt enabled (IRQ0)\n");
-        SERIAL_PORT.write_str("✓ Keyboard interrupt enabled (IRQ1)\n");
-        SERIAL_PORT.write_str("=== INTERRUPT SYSTEM ACTIVE ===\n");
-        SERIAL_PORT.write_str("Press keys to test keyboard interrupts...\n");
-
+        check_system_tables();
+        init_interrupts();
     }
-    
-    // Update console if available
-    if let Some(ref mut console) = console_opt {
-        unsafe {
-            console.put_str("✓ Interrupt system initialized\n");
-        }
-    }
-    
     // ========================================================================
     // STAGE 6: DEVICE DRIVERS (Future - commented out for now)
     // ========================================================================
@@ -344,11 +247,11 @@ pub extern "C" fn _start() -> ! {
     }
     
     // ========================================================================
-    // STAGE 11: KERNEL MAIN LOOP - The kernel is now fully initialized
+    // STAGE 11: KERNEL MAIN LOOP
     // ========================================================================
     unsafe {
         SERIAL_PORT.write_str("=== KERNEL INITIALIZATION COMPLETE ===\n");
-        LOGGER.info("Entering main kernel loop");
+        SERIAL_PORT.write_str("Entering main kernel loop\n");
         
         // Log final stack pointer before entering main loop
         let final_esp: u32;
@@ -359,33 +262,154 @@ pub extern "C" fn _start() -> ! {
     }
     
     if let Some(ref mut console) = console_opt {
-        unsafe {
+        unsafe{
             console.put_str("✓ Kernel boot complete - System ready\n");
             console.put_str("Keyboard interrupts active...\n");
+
         }
+
     }
     
-    // Main kernel idle loop - in a real OS, this would be the scheduler
-    let mut loop_count = 0;
+    // Main kernel idle loop
+    let mut last_second = 0;
+    let mut loop_counter = 0u32;
+    
+    unsafe {
+        SERIAL_PORT.write_str("Starting main loop...\n");
+    }
+    
     loop {
-        unsafe {
-            // Check stack pointer periodically and after any potential corruption
-            check_stack_in_main_loop(loop_count);
-            
-            // Periodic status updates
-            if loop_count % 10000000 == 0 {
-                SERIAL_PORT.write_str("Kernel idle loop: ");
-                SERIAL_PORT.write_decimal(loop_count / 10000000);
-                SERIAL_PORT.write_str("\n");
+        loop_counter = loop_counter.wrapping_add(1);
+        
+        // Check timer periodically
+        let ticks = timer::get_ticks();
+        let seconds = ticks / 100;  // Assuming 100Hz timer
+        
+        if seconds != last_second {
+            last_second = seconds;
+            unsafe {
+                SERIAL_PORT.write_str("Uptime: ");
+                SERIAL_PORT.write_decimal(seconds as u32);
+                SERIAL_PORT.write_str(" seconds (ticks: ");
+                SERIAL_PORT.write_decimal(ticks as u32);
+                SERIAL_PORT.write_str(")\n");
             }
-            loop_count += 1;
-            
-            // TODO: In a real kernel, this would be:
-            // scheduler::yield(); // Switch to next process
-            // Or handle pending kernel tasks
-            
-            // For now, just halt until next interrupt
-            core::arch::asm!("hlt"); 
         }
+        
+        // Periodic health check (every ~10M iterations)
+        if loop_counter % 10_000_000 == 0 {
+            unsafe {
+                check_stack_in_main_loop(loop_counter);
+            }
+        }
+        
+        // Halt until next interrupt
+        unsafe { 
+            asm!("hlt", options(nomem, nostack, preserves_flags));
+        }
+    }
+}
+
+
+fn init_interrupts() {
+    unsafe {
+        // 1. Disable interrupts during setup
+        SERIAL_PORT.write_str("Step 1: Disabling interrupts (CLI)...\n");
+        asm!("cli");
+        
+        // 2. Initialize the IDT
+        SERIAL_PORT.write_str("Step 2: Initializing IDT...\n");
+        idt::init();
+        SERIAL_PORT.write_str("  ✓ IDT loaded\n");
+        
+        // 3. Initialize the PIC (remaps IRQs to ISR 32-47)
+        SERIAL_PORT.write_str("Step 3: Initializing PIC...\n");
+        pic::init();
+        SERIAL_PORT.write_str("  ✓ PIC remapped (IRQ0-7 -> ISR32-39)\n");
+        
+        // 4. MASK ALL INTERRUPTS FIRST
+        SERIAL_PORT.write_str("Step 4: Masking all interrupts initially...\n");
+        asm!("out dx, al", in("dx") 0x21u16, in("al") 0xFFu8);  // Mask all on master PIC
+        asm!("out dx, al", in("dx") 0xA1u16, in("al") 0xFFu8);  // Mask all on slave PIC
+        
+        // 5. Configure the timer (but keep it masked)
+        SERIAL_PORT.write_str("Step 5: Configuring timer (100Hz) but keeping it masked...\n");
+        timer::init(100);
+        SERIAL_PORT.write_str("  ✓ Timer configured\n");
+        
+        // 6. Enable interrupts globally
+        SERIAL_PORT.write_str("Step 6: Enabling interrupts (STI) with all IRQs masked...\n");
+        asm!("sti");
+        SERIAL_PORT.write_str("  ✓ Interrupts enabled but all masked\n");
+        
+        // 7. Test if we get here
+        SERIAL_PORT.write_str("Step 7: Testing basic operation...\n");
+        for i in 0..5 {
+            SERIAL_PORT.write_str("  Test loop ");
+            SERIAL_PORT.write_decimal(i);
+            SERIAL_PORT.write_str("\n");
+        }
+        
+        // 8. Now enable ONLY keyboard first
+        SERIAL_PORT.write_str("Step 8: Enabling ONLY keyboard interrupt (IRQ1)...\n");
+        asm!("out dx, al", in("dx") 0x21u16, in("al") 0xFDu8);  // 11111101 - only IRQ1 enabled
+        SERIAL_PORT.write_str("  ✓ Keyboard enabled, press a key to test\n");
+        
+        // 9. Wait a bit for keyboard test
+        for _ in 0..1000000 {
+            asm!("nop");
+        }
+        
+        // 10. Finally enable timer
+        SERIAL_PORT.write_str("Step 9: Now enabling timer (IRQ0)...\n");
+        asm!("out dx, al", in("dx") 0x21u16, in("al") 0xFCu8);  // 11111100 - IRQ0 and IRQ1 enabled
+        SERIAL_PORT.write_str("  ✓ Timer enabled\n");
+    }
+}
+
+// Also add this diagnostic function to check GDT/IDT state:
+unsafe fn check_system_tables() {
+    unsafe{
+    SERIAL_PORT.write_str("\n=== SYSTEM TABLE CHECK ===\n");
+    
+    // Check GDT
+    let mut gdt_ptr: [u8; 6] = [0; 6];
+    asm!("sgdt [{}]", in(reg) &mut gdt_ptr);
+    let gdt_limit = u16::from_le_bytes([gdt_ptr[0], gdt_ptr[1]]);
+    let gdt_base = u32::from_le_bytes([gdt_ptr[2], gdt_ptr[3], gdt_ptr[4], gdt_ptr[5]]);
+    
+    SERIAL_PORT.write_str("GDT Base: 0x");
+    SERIAL_PORT.write_hex(gdt_base);
+    SERIAL_PORT.write_str(", Limit: 0x");
+    SERIAL_PORT.write_hex(gdt_limit as u32);
+    SERIAL_PORT.write_str("\n");
+    
+    // Check IDT
+    let mut idt_ptr: [u8; 6] = [0; 6];
+    asm!("sidt [{}]", in(reg) &mut idt_ptr);
+    let idt_limit = u16::from_le_bytes([idt_ptr[0], idt_ptr[1]]);
+    let idt_base = u32::from_le_bytes([idt_ptr[2], idt_ptr[3], idt_ptr[4], idt_ptr[5]]);
+    
+    SERIAL_PORT.write_str("IDT Base: 0x");
+    SERIAL_PORT.write_hex(idt_base);
+    SERIAL_PORT.write_str(", Limit: 0x");
+    SERIAL_PORT.write_hex(idt_limit as u32);
+    SERIAL_PORT.write_str("\n");
+    
+    // Check CS register
+    let cs: u16;
+    asm!("mov {0:x}, cs", out(reg) cs, options(nomem, nostack, preserves_flags));
+    SERIAL_PORT.write_str("CS: 0x");
+    SERIAL_PORT.write_hex(cs as u32);
+    SERIAL_PORT.write_str("\n");
+    
+    // Check DS register
+    let ds: u16;
+    asm!("mov {0:x}, ds", out(reg) ds, options(nomem, nostack, preserves_flags));
+    SERIAL_PORT.write_str("DS: 0x");
+    SERIAL_PORT.write_hex(ds as u32);
+    SERIAL_PORT.write_str("\n");
+    
+    SERIAL_PORT.write_str("===================\n");
     }
 }

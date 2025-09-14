@@ -7,7 +7,7 @@ BUILD_DIR="os_iso_configuration"
 ISO_BUILD="iso_builds"
 ISO_NAME="iso_builds/oxide_os_32.iso"
 
-cargo clean
+# cargo clean
 rm -rf $BUILD_DIR
 rm $ISO_NAME
 mkdir $ISO_BUILD
@@ -67,4 +67,9 @@ echo "[*] Done. ISO available as $ISO_NAME"
 echo "Run with: qemu-system-i386 -cdrom $ISO_NAME -serial stdio"
 
 # Run QEMU with serial output to terminal
-qemu-system-i386 -cdrom $ISO_NAME -serial stdio -no-reboot -d int -D qemu.log
+qemu-system-i386 -cdrom $ISO_NAME \
+  -m 1024M \
+  -d int,cpu_reset \
+  -serial stdio \
+  -no-reboot \
+  -D qemu.log
