@@ -43,51 +43,6 @@ fn current_cs() -> u16 {
     cs
 }
 
-/// Check stack pointer before and after main loop iterations
-/// Fixed stack validation based on your actual stack location (around 0x7FD54)
-unsafe fn check_stack_in_main_loop(iteration: u32) {
-    let esp: u32;
-    core::arch::asm!("mov {}, esp", out(reg) esp, options(nomem, nostack, preserves_flags));
-    
-    // Only check stack periodically to avoid spam
-    if iteration % 10000000 == 0 {
-        SERIAL_PORT.write_str("Main loop ESP: 0x");
-        SERIAL_PORT.write_hex(esp);
-        
-        // Adjusted validation for your actual stack location (around 0x7FD54)
-        // Your stack is around 524KB, so let's be more realistic about bounds
-        let valid = if esp == 0 {
-            SERIAL_PORT.write_str(" **NULL**");
-            false
-        } else if esp < 0x70000 {  // Below 448KB - too low for your setup
-            SERIAL_PORT.write_str(" **TOO_LOW**");
-            false
-        } else if esp > 0x100000 {  // Above 1MB - too high for early boot
-            SERIAL_PORT.write_str(" **TOO_HIGH**");
-            false
-        } else if esp % 4 != 0 {  // Not 4-byte aligned
-            SERIAL_PORT.write_str(" **UNALIGNED**");
-            false
-        } else {
-            SERIAL_PORT.write_str(" OK");
-            true
-        };
-        
-        SERIAL_PORT.write_str("\n");
-        
-        if !valid {
-            SERIAL_PORT.write_str("STACK CORRUPTION DETECTED in main loop!\n");
-            SERIAL_PORT.write_str("ESP: 0x");
-            SERIAL_PORT.write_hex(esp);
-            SERIAL_PORT.write_str("\n");
-            SERIAL_PORT.write_str("Expected range: 0x70000 - 0x100000\n");
-            
-            core::arch::asm!("cli");
-            loop { core::arch::asm!("hlt"); }
-        }
-    }
-}
-
 // ============================================================================
 // KERNEL ENTRY POINT
 // ============================================================================
@@ -129,13 +84,6 @@ pub extern "C" fn _start() -> ! {
         SERIAL_PORT.write_hex(magic);
         SERIAL_PORT.write_str("\n");
         LOGGER.info("Kernel entry point reached");
-        
-        // Log initial stack pointer
-        let initial_esp: u32;
-        core::arch::asm!("mov {}, esp", out(reg) initial_esp, options(nomem, nostack, preserves_flags));
-        SERIAL_PORT.write_str("Initial ESP: 0x");
-        SERIAL_PORT.write_hex(initial_esp);
-        SERIAL_PORT.write_str("\n");
     }
 
     // Verify we were loaded by a multiboot2-compliant bootloader
@@ -222,13 +170,6 @@ pub extern "C" fn _start() -> ! {
     unsafe {
         SERIAL_PORT.write_str("=== INTERRUPT SYSTEM INITIALIZATION ===\n");
         
-        // Log stack pointer before interrupt setup
-        let pre_interrupt_esp: u32;
-        core::arch::asm!("mov {}, esp", out(reg) pre_interrupt_esp, options(nomem, nostack, preserves_flags));
-        SERIAL_PORT.write_str("Pre-interrupt ESP: 0x");
-        SERIAL_PORT.write_hex(pre_interrupt_esp);
-        SERIAL_PORT.write_str("\n");
-        
         // Get current code segment for IDT entries
         let cs = current_cs();
         SERIAL_PORT.write_str("Current CS: 0x");
@@ -277,25 +218,20 @@ pub extern "C" fn _start() -> ! {
         }
         SERIAL_PORT.write_str("✓ No spurious interrupts detected\n");
         
-        // Log stack pointer after interrupt enable test
-        let post_test_esp: u32;
-        core::arch::asm!("mov {}, esp", out(reg) post_test_esp, options(nomem, nostack, preserves_flags));
-        SERIAL_PORT.write_str("Post-test ESP: 0x");
-        SERIAL_PORT.write_hex(post_test_esp);
-        if pre_interrupt_esp != post_test_esp {
-            SERIAL_PORT.write_str(" **CHANGED**");
-        }
-        SERIAL_PORT.write_str("\n");
-        
-        // Step 4: Enable BOTH timer and keyboard interrupts
-        SERIAL_PORT.write_str("Enabling TIMER and KEYBOARD interrupts...\n");
+        // Step 4: Enable timer interrupt for multitasking
+        // SERIAL_PORT.write_str("Enabling timer interrupt...\n");
+        // let master_mask = ports::inb(0x21) & !(1 << 0); // Unmask IRQ0 (timer)
+        // ports::outb(0x21, master_mask); 
+        // SERIAL_PORT.write_str("✓ Timer interrupt enabled\n");
+        // SERIAL_PORT.write_str("=== INTERRUPT SYSTEM ACTIVE ===\n");
 
-        // Unmask both IRQ0 (timer) and IRQ1 (keyboard)
-        let master_mask = ports::inb(0x21) & !(1 << 0) & !(1 << 1); // Unmask both IRQ0 and IRQ1
+        // Step 4: Enable KEYBOARD interrupt instead of timer
+        SERIAL_PORT.write_str("Enabling KEYBOARD interrupt (IRQ1)...\n");
+        let master_mask = ports::inb(0x21) & !(1 << 1); // Unmask IRQ1 (keyboard) instead of IRQ0 (timer)
         ports::outb(0x21, master_mask);
-
-        SERIAL_PORT.write_str("✓ Timer interrupt enabled (IRQ0)\n");
-        SERIAL_PORT.write_str("✓ Keyboard interrupt enabled (IRQ1)\n");
+        
+        SERIAL_PORT.write_str("✓ Keyboard interrupt enabled\n");
+        SERIAL_PORT.write_str("✓ Timer interrupt DISABLED (for debugging)\n");
         SERIAL_PORT.write_str("=== INTERRUPT SYSTEM ACTIVE ===\n");
         SERIAL_PORT.write_str("Press keys to test keyboard interrupts...\n");
 
@@ -311,36 +247,64 @@ pub extern "C" fn _start() -> ! {
     // ========================================================================
     // STAGE 6: DEVICE DRIVERS (Future - commented out for now)
     // ========================================================================
+    // TODO: Initialize keyboard driver
+    // TODO: Initialize storage drivers (ATA/AHCI)
+    // TODO: Initialize network drivers
+    // TODO: Initialize USB subsystem
     unsafe {
         LOGGER.info("Device driver initialization (TODO - placeholder)");
+        // keyboard::init();
+        // storage::init(); 
+        // network::init();
     }
     
     // ========================================================================
     // STAGE 7: MEMORY MANAGEMENT (Future - commented out for now) 
     // ========================================================================
+    // TODO: Set up full virtual memory system
+    // TODO: Initialize kernel heap
+    // TODO: Set up memory allocators
     unsafe {
         LOGGER.info("Full memory management setup (TODO - placeholder)");
+        // mem::init_virtual_memory();
+        // mem::init_kernel_heap();
     }
     
     // ========================================================================
     // STAGE 8: PROCESS MANAGEMENT (Future - commented out for now)
     // ========================================================================
+    // TODO: Initialize task scheduler
+    // TODO: Set up initial kernel tasks
+    // TODO: Prepare for user mode
     unsafe {
         LOGGER.info("Process management initialization (TODO - placeholder)");
+        // scheduler::init();
+        // task::create_init_task();
     }
     
     // ========================================================================
     // STAGE 9: FILE SYSTEM (Future - commented out for now)
     // ========================================================================
+    // TODO: Initialize VFS (Virtual File System)
+    // TODO: Mount root filesystem
+    // TODO: Set up device files (/dev)
     unsafe {
         LOGGER.info("File system initialization (TODO - placeholder)");
+        // vfs::init();
+        // fs::mount_root();
     }
     
     // ========================================================================
     // STAGE 10: SYSTEM CALLS & USER MODE (Future - commented out for now)
     // ========================================================================
+    // TODO: Set up system call interface
+    // TODO: Initialize user space
+    // TODO: Start init process
     unsafe {
         LOGGER.info("User mode preparation (TODO - placeholder)");
+        // syscalls::init();
+        // usermode::init();
+        // process::start_init();
     }
     
     // ========================================================================
@@ -349,19 +313,12 @@ pub extern "C" fn _start() -> ! {
     unsafe {
         SERIAL_PORT.write_str("=== KERNEL INITIALIZATION COMPLETE ===\n");
         LOGGER.info("Entering main kernel loop");
-        
-        // Log final stack pointer before entering main loop
-        let final_esp: u32;
-        core::arch::asm!("mov {}, esp", out(reg) final_esp, options(nomem, nostack, preserves_flags));
-        SERIAL_PORT.write_str("Final ESP before main loop: 0x");
-        SERIAL_PORT.write_hex(final_esp);
-        SERIAL_PORT.write_str("\n");
     }
     
     if let Some(ref mut console) = console_opt {
         unsafe {
             console.put_str("✓ Kernel boot complete - System ready\n");
-            console.put_str("Keyboard interrupts active...\n");
+            console.put_str("Timer interrupts active...\n");
         }
     }
     
@@ -369,9 +326,6 @@ pub extern "C" fn _start() -> ! {
     let mut loop_count = 0;
     loop {
         unsafe {
-            // Check stack pointer periodically and after any potential corruption
-            check_stack_in_main_loop(loop_count);
-            
             // Periodic status updates
             if loop_count % 10000000 == 0 {
                 SERIAL_PORT.write_str("Kernel idle loop: ");
