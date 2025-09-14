@@ -65,4 +65,4 @@ echo "[*] Done. ISO available as $ISO_NAME"
 echo "Run with: qemu-system-i386 -cdrom $ISO_NAME -serial stdio"
 
 # Run QEMU with serial output to terminal
-qemu-system-i386 -cdrom $ISO_NAME -serial stdio
+qemu-system-i386 -cdrom $ISO_NAME -serial stdio -no-reboot -d int -D qemu.log

@@ -17,3 +17,5 @@ OxideOS.iso
 mnt
 os_iso_configuration/*
 iso_builds/*
+build.log
+qemu.log
