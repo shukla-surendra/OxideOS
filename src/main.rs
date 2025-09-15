@@ -310,60 +310,128 @@ pub extern "C" fn _start() -> ! {
     }
 }
 
-
 fn init_interrupts() {
     unsafe {
         // 1. Disable interrupts during setup
         SERIAL_PORT.write_str("Step 1: Disabling interrupts (CLI)...\n");
         asm!("cli");
         
-        // 2. Initialize the IDT
-        SERIAL_PORT.write_str("Step 2: Initializing IDT...\n");
+        // 2. Verify handler addresses before IDT setup
+        SERIAL_PORT.write_str("Step 2: Verifying ISR addresses...\n");
+        interrupts::verify_handlers();
+        
+        // 3. Initialize the IDT
+        SERIAL_PORT.write_str("Step 3: Initializing IDT...\n");
         idt::init();
         SERIAL_PORT.write_str("  ✓ IDT loaded\n");
         
-        // 3. Initialize the PIC (remaps IRQs to ISR 32-47)
-        SERIAL_PORT.write_str("Step 3: Initializing PIC...\n");
+        // 4. Verify IDT entries
+        SERIAL_PORT.write_str("Step 4: Checking IDT entries...\n");
+        verify_idt_entries();
+        
+        // 5. Initialize the PIC
+        SERIAL_PORT.write_str("Step 5: Initializing PIC...\n");
         pic::init();
         SERIAL_PORT.write_str("  ✓ PIC remapped (IRQ0-7 -> ISR32-39)\n");
         
-        // 4. MASK ALL INTERRUPTS FIRST
-        SERIAL_PORT.write_str("Step 4: Masking all interrupts initially...\n");
+        // 6. MASK ALL INTERRUPTS FIRST
+        SERIAL_PORT.write_str("Step 6: Masking all interrupts initially...\n");
         asm!("out dx, al", in("dx") 0x21u16, in("al") 0xFFu8);  // Mask all on master PIC
         asm!("out dx, al", in("dx") 0xA1u16, in("al") 0xFFu8);  // Mask all on slave PIC
         
-        // 5. Configure the timer (but keep it masked)
-        SERIAL_PORT.write_str("Step 5: Configuring timer (100Hz) but keeping it masked...\n");
+        // 7. Configure the timer
+        SERIAL_PORT.write_str("Step 7: Configuring timer (100Hz)...\n");
         timer::init(100);
         SERIAL_PORT.write_str("  ✓ Timer configured\n");
         
-        // 6. Enable interrupts globally
-        SERIAL_PORT.write_str("Step 6: Enabling interrupts (STI) with all IRQs masked...\n");
-        asm!("sti");
-        SERIAL_PORT.write_str("  ✓ Interrupts enabled but all masked\n");
+        // 8. Test divide by zero BEFORE enabling interrupts
+        SERIAL_PORT.write_str("Step 8: Testing exception handling with divide by zero...\n");
+        asm!("sti");  // Enable interrupts
         
-        // 7. Test if we get here
-        SERIAL_PORT.write_str("Step 7: Testing basic operation...\n");
-        for i in 0..5 {
-            SERIAL_PORT.write_str("  Test loop ");
-            SERIAL_PORT.write_decimal(i);
-            SERIAL_PORT.write_str("\n");
-        }
+        // Trigger a divide by zero to test exception handling
+        test_divide_by_zero();
         
-        // 8. Now enable ONLY keyboard first
-        SERIAL_PORT.write_str("Step 8: Enabling ONLY keyboard interrupt (IRQ1)...\n");
-        asm!("out dx, al", in("dx") 0x21u16, in("al") 0xFDu8);  // 11111101 - only IRQ1 enabled
+        SERIAL_PORT.write_str("  If you see this, exception didn't trigger or returned\n");
+        
+        // 9. Enable keyboard interrupt only
+        SERIAL_PORT.write_str("Step 9: Enabling ONLY keyboard interrupt (IRQ1)...\n");
+        asm!("out dx, al", in("dx") 0x21u16, in("al") 0xFDu8);  // Only IRQ1 enabled
         SERIAL_PORT.write_str("  ✓ Keyboard enabled, press a key to test\n");
         
-        // 9. Wait a bit for keyboard test
-        for _ in 0..1000000 {
+        // Wait for keyboard test
+        for _ in 0..10000000 {
             asm!("nop");
         }
         
-        // 10. Finally enable timer
-        SERIAL_PORT.write_str("Step 9: Now enabling timer (IRQ0)...\n");
-        asm!("out dx, al", in("dx") 0x21u16, in("al") 0xFCu8);  // 11111100 - IRQ0 and IRQ1 enabled
-        SERIAL_PORT.write_str("  ✓ Timer enabled\n");
+        // 10. Finally try timer
+        SERIAL_PORT.write_str("Step 10: Now enabling timer (IRQ0)...\n");
+        SERIAL_PORT.write_str("  About to unmask timer...\n");
+        asm!("out dx, al", in("dx") 0x21u16, in("al") 0xFCu8);  // IRQ0 and IRQ1 enabled
+        SERIAL_PORT.write_str("  Timer unmasked, waiting for tick...\n");
+        
+        // Wait a moment to see if we get a timer interrupt
+        for i in 0..100 {
+            if i % 10 == 0 {
+                SERIAL_PORT.write_str(".");
+            }
+            for _ in 0..100000 {
+                asm!("nop");
+            }
+        }
+        
+        SERIAL_PORT.write_str("\n  If you see this, timer handler returned successfully!\n");
+    }
+}
+
+// Test divide by zero exception
+fn test_divide_by_zero() {
+    unsafe {
+        SERIAL_PORT.write_str("  Triggering divide by zero...\n");
+        
+        // Use inline assembly to ensure the divide actually happens
+        let result: u32;
+        asm!(
+            "xor edx, edx",     // Clear EDX
+            "mov eax, 1",       // Dividend = 1
+            "xor ecx, ecx",     // Divisor = 0
+            "div ecx",          // Divide by zero - should trigger exception
+            out("eax") result,
+            options(nomem)
+        );
+        
+        SERIAL_PORT.write_str("  WARNING: Divide by zero didn't trigger exception!\n");
+    }
+}
+
+// Verify IDT entries are set correctly
+fn verify_idt_entries() {
+    unsafe {
+        // Read IDT base from IDTR
+        let mut idtr: [u8; 6] = [0; 6];
+        asm!("sidt [{}]", in(reg) &mut idtr);
+        let idt_base = u32::from_le_bytes([idtr[2], idtr[3], idtr[4], idtr[5]]);
+        
+        // Check a few key entries
+        let idt_ptr = idt_base as *const u64;
+        
+        // Check entry 0 (divide by zero)
+        let entry0 = *idt_ptr.offset(0);
+        let offset0 = ((entry0 & 0xFFFF) | ((entry0 >> 32) & 0xFFFF0000)) as u32;
+        SERIAL_PORT.write_str("  IDT[0] offset: 0x");
+        SERIAL_PORT.write_hex(offset0);
+        
+        // Check entry 32 (timer)
+        let entry32 = *idt_ptr.offset(32);
+        let offset32 = ((entry32 & 0xFFFF) | ((entry32 >> 32) & 0xFFFF0000)) as u32;
+        SERIAL_PORT.write_str("\n  IDT[32] offset: 0x");
+        SERIAL_PORT.write_hex(offset32);
+        
+        // Check entry 33 (keyboard)
+        let entry33 = *idt_ptr.offset(33);
+        let offset33 = ((entry33 & 0xFFFF) | ((entry33 >> 32) & 0xFFFF0000)) as u32;
+        SERIAL_PORT.write_str("\n  IDT[33] offset: 0x");
+        SERIAL_PORT.write_hex(offset33);
+        SERIAL_PORT.write_str("\n");
     }
 }
 

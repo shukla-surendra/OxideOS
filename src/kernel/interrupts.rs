@@ -1,145 +1,302 @@
-// src/kernel/interrupts.rs - Modified with extensive debugging
+// src/kernel/interrupts.rs - Combined interrupt and exception handling
+#![no_std]
+
 use core::arch::global_asm;
 use core::arch::asm;
 use crate::kernel::serial::SERIAL_PORT;
+use crate::kernel::pic;
 
-// interrupt_stubs.rs - Intel syntax for Rust inline assembly
-// Produces isr0..isr31 (exceptions) and isr32..isr47 (IRQs)
+// ============================================================================
+// GLOBAL STATE
+// ============================================================================
 
-// External Rust handler - needs unsafe block
-unsafe extern "C" {
-    unsafe fn isr_common_handler(regs_ptr: *const u32, int_no: u32, err_code: u32);
+pub static mut TIMER_TICKS: u64 = 0;
+
+// ============================================================================
+// INTERRUPT FRAME STRUCTURE
+// ============================================================================
+
+#[repr(C)]
+pub struct InterruptFrame {
+    // Pushed by our assembly stub (pushad)
+    pub edi: u32,
+    pub esi: u32,
+    pub ebp: u32,
+    pub esp_dummy: u32,
+    pub ebx: u32,
+    pub edx: u32,
+    pub ecx: u32,
+    pub eax: u32,
+    // Pushed by our stub
+    pub int_no: u32,
+    pub err_code: u32,
+    // Pushed by CPU
+    pub eip: u32,
+    pub cs: u32,
+    pub eflags: u32,
+    // Only present if privilege level changed
+    pub esp: u32,
+    pub ss: u32,
 }
 
-// Intel syntax assembly for interrupt handlers
+// ============================================================================
+// MAIN INTERRUPT HANDLER
+// ============================================================================
+
+#[unsafe(no_mangle)]
+pub extern "C" fn isr_common_handler(regs_ptr: *const InterruptFrame, int_no: u32, err_code: u32) {
+    unsafe {
+        // Quick acknowledgment we reached handler
+        SERIAL_PORT.write_str("[");
+        SERIAL_PORT.write_decimal(int_no);
+        SERIAL_PORT.write_str("]");
+        
+        match int_no {
+            // CPU Exceptions (0-31)
+            0..=31 => handle_cpu_exception(regs_ptr, int_no, err_code),
+            
+            // Timer IRQ (32 = IRQ0)
+            32 => {
+                TIMER_TICKS += 1;
+                if TIMER_TICKS <= 5 || TIMER_TICKS % 100 == 0 {
+                    SERIAL_PORT.write_str("T");
+                }
+                pic::send_eoi(0);
+            },
+            
+            // Keyboard IRQ (33 = IRQ1)
+            33 => {
+                let scancode: u8;
+                asm!("in al, 0x60", out("al") scancode);
+                SERIAL_PORT.write_str("K:");
+                SERIAL_PORT.write_hex(scancode as u32);
+                SERIAL_PORT.write_str(" ");
+                handle_keyboard_scancode(scancode);
+                pic::send_eoi(1);
+            },
+            
+            // Other hardware IRQs (34-47 = IRQ2-15)
+            34..=47 => {
+                SERIAL_PORT.write_str("IRQ");
+                SERIAL_PORT.write_decimal(int_no - 32);
+                pic::send_eoi((int_no - 32) as u8);
+            },
+            
+            // Unknown interrupt
+            _ => {
+                SERIAL_PORT.write_str("?INT");
+                SERIAL_PORT.write_decimal(int_no);
+            }
+        }
+    }
+}
+
+// ============================================================================
+// CPU EXCEPTION HANDLER
+// ============================================================================
+
+fn handle_cpu_exception(regs_ptr: *const InterruptFrame, int_no: u32, err_code: u32) -> ! {
+    unsafe {
+        let regs = &*regs_ptr;
+        
+        SERIAL_PORT.write_str("\n\n=== CPU EXCEPTION ===\n");
+        SERIAL_PORT.write_str("Exception #");
+        SERIAL_PORT.write_decimal(int_no);
+        
+        let name = match int_no {
+            0 => " (Divide by Zero)",
+            1 => " (Debug)",
+            2 => " (NMI)",
+            3 => " (Breakpoint)",
+            4 => " (Overflow)",
+            5 => " (Bound Range Exceeded)",
+            6 => " (Invalid Opcode)",
+            7 => " (Device Not Available)",
+            8 => " (Double Fault)",
+            9 => " (Coprocessor Segment Overrun)",
+            10 => " (Invalid TSS)",
+            11 => " (Segment Not Present)",
+            12 => " (Stack Segment Fault)",
+            13 => " (General Protection Fault)",
+            14 => " (Page Fault)",
+            15 => " (Reserved)",
+            16 => " (x87 FPU Error)",
+            17 => " (Alignment Check)",
+            18 => " (Machine Check)",
+            19 => " (SIMD Floating-Point)",
+            _ => " (Reserved/Unknown)",
+        };
+        
+        SERIAL_PORT.write_str(name);
+        SERIAL_PORT.write_str("\nError Code: 0x");
+        SERIAL_PORT.write_hex(err_code);
+        
+        // Register dump
+        SERIAL_PORT.write_str("\n\nRegisters:\n");
+        SERIAL_PORT.write_str("EAX=0x"); SERIAL_PORT.write_hex(regs.eax);
+        SERIAL_PORT.write_str(" EBX=0x"); SERIAL_PORT.write_hex(regs.ebx);
+        SERIAL_PORT.write_str(" ECX=0x"); SERIAL_PORT.write_hex(regs.ecx);
+        SERIAL_PORT.write_str(" EDX=0x"); SERIAL_PORT.write_hex(regs.edx);
+        SERIAL_PORT.write_str("\nESI=0x"); SERIAL_PORT.write_hex(regs.esi);
+        SERIAL_PORT.write_str(" EDI=0x"); SERIAL_PORT.write_hex(regs.edi);
+        SERIAL_PORT.write_str(" EBP=0x"); SERIAL_PORT.write_hex(regs.ebp);
+        SERIAL_PORT.write_str(" ESP=0x"); SERIAL_PORT.write_hex(regs.esp_dummy);
+        SERIAL_PORT.write_str("\nEIP=0x"); SERIAL_PORT.write_hex(regs.eip);
+        SERIAL_PORT.write_str(" CS=0x"); SERIAL_PORT.write_hex(regs.cs);
+        SERIAL_PORT.write_str(" EFLAGS=0x"); SERIAL_PORT.write_hex(regs.eflags);
+        
+        // Special handling for specific exceptions
+        match int_no {
+            13 => {
+                // GPF - decode selector error code
+                if err_code != 0 {
+                    SERIAL_PORT.write_str("\n\nGPF Details:");
+                    SERIAL_PORT.write_str("\n  External: ");
+                    SERIAL_PORT.write_str(if err_code & 1 != 0 { "yes" } else { "no" });
+                    SERIAL_PORT.write_str("\n  Table: ");
+                    match (err_code >> 1) & 0b11 {
+                        0b00 => SERIAL_PORT.write_str("GDT"),
+                        0b01 | 0b11 => SERIAL_PORT.write_str("IDT"),
+                        0b10 => SERIAL_PORT.write_str("LDT"),
+                        _ => SERIAL_PORT.write_str("?"),
+                    }
+                    SERIAL_PORT.write_str("\n  Index: ");
+                    SERIAL_PORT.write_decimal(((err_code >> 3) & 0x1FFF) as u32);
+                }
+            },
+            14 => {
+                // Page Fault - get faulting address from CR2
+                let cr2: u32;
+                asm!("mov {}, cr2", out(reg) cr2);
+                SERIAL_PORT.write_str("\n\nPage Fault Details:");
+                SERIAL_PORT.write_str("\n  Faulting Address (CR2): 0x");
+                SERIAL_PORT.write_hex(cr2);
+                SERIAL_PORT.write_str("\n  Cause: ");
+                SERIAL_PORT.write_str(if err_code & 1 != 0 { "Protection violation" } else { "Page not present" });
+                SERIAL_PORT.write_str(", ");
+                SERIAL_PORT.write_str(if err_code & 2 != 0 { "Write" } else { "Read" });
+                SERIAL_PORT.write_str(", ");
+                SERIAL_PORT.write_str(if err_code & 4 != 0 { "User mode" } else { "Kernel mode" });
+            },
+            _ => {}
+        }
+        
+        SERIAL_PORT.write_str("\n\n=== SYSTEM HALTED ===\n");
+    }
+    
+    // Halt forever
+    unsafe {
+        asm!("cli");
+        loop {
+            asm!("hlt");
+        }
+    }
+}
+
+// ============================================================================
+// KEYBOARD HANDLER
+// ============================================================================
+
+fn handle_keyboard_scancode(scancode: u8) {
+    unsafe {
+        // Basic scancode to ASCII mapping for common keys
+        let key = match scancode {
+            0x01 => Some("[ESC]"),
+            0x0E => Some("[BACKSPACE]"),
+            0x0F => Some("[TAB]"),
+            0x1C => Some("[ENTER]"),
+            0x1D => Some("[CTRL]"),
+            0x2A => Some("[LSHIFT]"),
+            0x36 => Some("[RSHIFT]"),
+            0x38 => Some("[ALT]"),
+            0x39 => Some("[SPACE]"),
+            0x3A => Some("[CAPS]"),
+            0x3B..=0x44 => Some("[F1-F10]"),
+            0x45 => Some("[NUMLOCK]"),
+            0x46 => Some("[SCROLL]"),
+            _ => None,
+        };
+        
+        if let Some(key_name) = key {
+            SERIAL_PORT.write_str(key_name);
+        }
+    }
+}
+
+// ============================================================================
+// ASSEMBLY INTERRUPT STUBS
+// ============================================================================
+
 global_asm!(r#"
 .section .text
 .intel_syntax noprefix
 
-// Macro: no-error (CPU did NOT push an error code)
+// Macro for interrupts without error code
 .macro ISR_NOERR name num
     .global \name
 \name:
-    cli
-    push ds
-    push es
-
-    // Save general registers
-    push eax
-    push ecx
-    push edx
-    push ebx
-    push esp    // saved esp (dummy)
-    push ebp
-    push esi
-    push edi
-
-    // regs_ptr -> pointer to the saved regs block
+    push 0          // Dummy error code for uniform stack layout
+    push \num       // Interrupt number
+    pushad          // Save all general registers (EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI)
+    
+    // Call handler with (regs_ptr, int_no, err_code)
     mov eax, esp
-
-    // push args for isr_common_handler: (regs_ptr, int_no, err_code) right-to-left
-    push 0           // dummy error code
-    push \num        // interrupt number
-    push eax         // regs_ptr
-
+    push dword ptr [esp + 36]  // error code (at esp+36 after pushad)
+    push dword ptr [esp + 36]  // interrupt number (was at esp+32, now esp+36 after push)
+    push eax                    // regs pointer
+    
     call isr_common_handler
-
-    // if handler returns, clean up args
-    add esp, 12
-
-    // restore registers in reverse order
-    pop edi
-    pop esi
-    pop ebp
-    pop esp    // discard saved ESP value
-    pop ebx
-    pop edx
-    pop ecx
-    pop eax
-
-    pop es
-    pop ds
-    sti
-    iret
+    
+    add esp, 12     // Clean up 3 pushed arguments
+    popad           // Restore all general registers
+    add esp, 8      // Remove int_no and error code
+    iret            // Return from interrupt
 .endm
 
-// Macro: with-error (CPU pushed an error code automatically)
+// Macro for interrupts with error code (pushed by CPU)
 .macro ISR_WITHERR name num
     .global \name
 \name:
-    cli
-    push ds
-    push es
-
-    // Save general registers
-    push eax
-    push ecx
-    push edx
-    push ebx
-    push esp    // saved esp (dummy)
-    push ebp
-    push esi
-    push edi
-
-    // regs_ptr -> pointer to the saved regs block
+    push \num       // Interrupt number (error code already on stack from CPU)
+    pushad          // Save all general registers
+    
+    // Call handler with (regs_ptr, int_no, err_code)
     mov eax, esp
-
-    // CPU error code is at esp+44 (8 regs * 4 + 12 for eip/cs/eflags)
-    mov edx, [eax + 44]    // edx = error_code
-
-    // push args: err_code, int_no, regs_ptr (right-to-left)
-    push edx
-    push \num
-    push eax
-
+    push dword ptr [esp + 36]  // error code (at esp+36 after pushad)
+    push dword ptr [esp + 32]  // interrupt number (at esp+32 after pushad)
+    push eax                    // regs pointer
+    
     call isr_common_handler
-
-    // if returns
-    add esp, 12
-
-    // restore registers
-    pop edi
-    pop esi
-    pop ebp
-    pop esp
-    pop ebx
-    pop edx
-    pop ecx
-    pop eax
-
-    pop es
-    pop ds
-    sti
-    iret
+    
+    add esp, 12     // Clean up 3 pushed arguments
+    popad           // Restore all general registers
+    add esp, 8      // Remove int_no and error code
+    iret            // Return from interrupt
 .endm
 
-// Expand macros for exceptions & IRQs
-
-// Exceptions with error codes per Intel: 8, 10, 11, 12, 13, 14, 17
-ISR_WITHERR isr8 8
-ISR_WITHERR isr10 10
-ISR_WITHERR isr11 11
-ISR_WITHERR isr12 12
-ISR_WITHERR isr13 13
-ISR_WITHERR isr14 14
-ISR_WITHERR isr17 17
-
-// Exceptions without error codes
-ISR_NOERR isr0 0
-ISR_NOERR isr1 1
-ISR_NOERR isr2 2
-ISR_NOERR isr3 3
-ISR_NOERR isr4 4
-ISR_NOERR isr5 5
-ISR_NOERR isr6 6
-ISR_NOERR isr7 7
-ISR_NOERR isr9 9
-ISR_NOERR isr15 15
-ISR_NOERR isr16 16
-ISR_NOERR isr18 18
-ISR_NOERR isr19 19
-ISR_NOERR isr20 20
-ISR_NOERR isr21 21
+// CPU Exceptions (0-31)
+ISR_NOERR isr0 0      // Divide by zero
+ISR_NOERR isr1 1      // Debug
+ISR_NOERR isr2 2      // NMI
+ISR_NOERR isr3 3      // Breakpoint
+ISR_NOERR isr4 4      // Overflow
+ISR_NOERR isr5 5      // Bound range exceeded
+ISR_NOERR isr6 6      // Invalid opcode
+ISR_NOERR isr7 7      // Device not available
+ISR_WITHERR isr8 8    // Double fault (has error code)
+ISR_NOERR isr9 9      // Coprocessor segment overrun
+ISR_WITHERR isr10 10  // Invalid TSS (has error code)
+ISR_WITHERR isr11 11  // Segment not present (has error code)
+ISR_WITHERR isr12 12  // Stack segment fault (has error code)
+ISR_WITHERR isr13 13  // General protection fault (has error code)
+ISR_WITHERR isr14 14  // Page fault (has error code)
+ISR_NOERR isr15 15    // Reserved
+ISR_NOERR isr16 16    // x87 FPU error
+ISR_WITHERR isr17 17  // Alignment check (has error code)
+ISR_NOERR isr18 18    // Machine check
+ISR_NOERR isr19 19    // SIMD floating-point
+ISR_NOERR isr20 20    // Virtualization
+ISR_NOERR isr21 21    // Reserved
 ISR_NOERR isr22 22
 ISR_NOERR isr23 23
 ISR_NOERR isr24 24
@@ -151,28 +308,71 @@ ISR_NOERR isr29 29
 ISR_NOERR isr30 30
 ISR_NOERR isr31 31
 
-// IRQs (IRQ0..IRQ15 -> ISR32..ISR47)
-ISR_NOERR isr32 32
-ISR_NOERR isr33 33
-ISR_NOERR isr34 34
-ISR_NOERR isr35 35
-ISR_NOERR isr36 36
-ISR_NOERR isr37 37
-ISR_NOERR isr38 38
-ISR_NOERR isr39 39
-ISR_NOERR isr40 40
-ISR_NOERR isr41 41
-ISR_NOERR isr42 42
-ISR_NOERR isr43 43
-ISR_NOERR isr44 44
-ISR_NOERR isr45 45
-ISR_NOERR isr46 46
-ISR_NOERR isr47 47
+// Hardware IRQs (32-47)
+ISR_NOERR isr32 32    // Timer (IRQ0)
+ISR_NOERR isr33 33    // Keyboard (IRQ1)
+ISR_NOERR isr34 34    // Cascade (IRQ2)
+ISR_NOERR isr35 35    // COM2 (IRQ3)
+ISR_NOERR isr36 36    // COM1 (IRQ4)
+ISR_NOERR isr37 37    // LPT2 (IRQ5)
+ISR_NOERR isr38 38    // Floppy (IRQ6)
+ISR_NOERR isr39 39    // LPT1/Spurious (IRQ7)
+ISR_NOERR isr40 40    // RTC (IRQ8)
+ISR_NOERR isr41 41    // Free (IRQ9)
+ISR_NOERR isr42 42    // Free (IRQ10)
+ISR_NOERR isr43 43    // Free (IRQ11)
+ISR_NOERR isr44 44    // Mouse (IRQ12)
+ISR_NOERR isr45 45    // FPU/Coprocessor (IRQ13)
+ISR_NOERR isr46 46    // Primary ATA (IRQ14)
+ISR_NOERR isr47 47    // Secondary ATA (IRQ15)
 
 .att_syntax prefix
 "#);
 
-// Declare the ISR functions as extern so Rust knows about them
+// ============================================================================
+// DEBUG AND VERIFICATION FUNCTIONS
+// ============================================================================
+
+/// Verify that ISR handlers are at valid addresses
+pub fn verify_handlers() {
+    unsafe {
+        SERIAL_PORT.write_str("Verifying ISR addresses:\n");
+        
+        // Check a few key handlers
+        SERIAL_PORT.write_str("  isr0 (Divide by Zero) at: 0x");
+        SERIAL_PORT.write_hex(isr0 as usize as u32);
+        SERIAL_PORT.write_str("\n");
+        
+        SERIAL_PORT.write_str("  isr13 (GPF) at: 0x");
+        SERIAL_PORT.write_hex(isr13 as usize as u32);
+        SERIAL_PORT.write_str("\n");
+        
+        SERIAL_PORT.write_str("  isr14 (Page Fault) at: 0x");
+        SERIAL_PORT.write_hex(isr14 as usize as u32);
+        SERIAL_PORT.write_str("\n");
+        
+        SERIAL_PORT.write_str("  isr32 (Timer/IRQ0) at: 0x");
+        SERIAL_PORT.write_hex(isr32 as usize as u32);
+        SERIAL_PORT.write_str("\n");
+        
+        SERIAL_PORT.write_str("  isr33 (Keyboard/IRQ1) at: 0x");
+        SERIAL_PORT.write_hex(isr33 as usize as u32);
+        SERIAL_PORT.write_str("\n");
+        
+        // Verify addresses are in reasonable range (above 1MB, below 16MB for typical kernel)
+        let timer_addr = isr32 as usize as u32;
+        if timer_addr < 0x100000 || timer_addr > 0x1000000 {
+            SERIAL_PORT.write_str("  WARNING: ISR addresses may be invalid!\n");
+        } else {
+            SERIAL_PORT.write_str("  ISR addresses look valid\n");
+        }
+    }
+}
+
+// ============================================================================
+// ISR FUNCTION DECLARATIONS
+// ============================================================================
+
 unsafe extern "C" {
     pub unsafe fn isr0();
     pub unsafe fn isr1();
@@ -222,202 +422,4 @@ unsafe extern "C" {
     pub unsafe fn isr45();
     pub unsafe fn isr46();
     pub unsafe fn isr47();
-}
-
-// Helper function to get ISR handler addresses for IDT setup
-pub fn get_isr_handler(n: u8) -> unsafe extern "C" fn() {
-    unsafe {
-        match n {
-            0 => isr0,
-            1 => isr1,
-            2 => isr2,
-            3 => isr3,
-            4 => isr4,
-            5 => isr5,
-            6 => isr6,
-            7 => isr7,
-            8 => isr8,
-            9 => isr9,
-            10 => isr10,
-            11 => isr11,
-            12 => isr12,
-            13 => isr13,
-            14 => isr14,
-            15 => isr15,
-            16 => isr16,
-            17 => isr17,
-            18 => isr18,
-            19 => isr19,
-            20 => isr20,
-            21 => isr21,
-            22 => isr22,
-            23 => isr23,
-            24 => isr24,
-            25 => isr25,
-            26 => isr26,
-            27 => isr27,
-            28 => isr28,
-            29 => isr29,
-            30 => isr30,
-            31 => isr31,
-            32 => isr32,
-            33 => isr33,
-            34 => isr34,
-            35 => isr35,
-            36 => isr36,
-            37 => isr37,
-            38 => isr38,
-            39 => isr39,
-            40 => isr40,
-            41 => isr41,
-            42 => isr42,
-            43 => isr43,
-            44 => isr44,
-            45 => isr45,
-            46 => isr46,
-            47 => isr47,
-            _ => panic!("Invalid ISR number"),
-        }
-    }
-}
-
-// Define the interrupt frame structure
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct InterruptFrame {
-    // Pushed by our ISR stubs
-    pub edi: u32,
-    pub esi: u32,
-    pub ebp: u32,
-    pub esp_dummy: u32,
-    pub ebx: u32,
-    pub edx: u32,
-    pub ecx: u32,
-    pub eax: u32,
-    pub es: u32,
-    pub ds: u32,
-    
-    // Pushed by CPU on interrupt
-    pub int_no: u32,      // Added by our stub
-    pub err_code: u32,    // Error code (0 if not applicable)
-    pub eip: u32,
-    pub cs: u32,
-    pub eflags: u32,
-    pub esp: u32,  // Only if privilege level changed
-    pub ss: u32,   // Only if privilege level changed
-}
-
-// Rust interrupt handlers
-pub static mut TIMER_TICKS: u64 = 0;
-
-/// Timer interrupt handler (IRQ0)
-#[unsafe(no_mangle)]
-pub extern "C" fn timer_interrupt_handler() {
-    unsafe {
-        // Immediately write to serial to confirm we reached Rust code
-        SERIAL_PORT.write_str("[TMR]");
-        
-        TIMER_TICKS += 1;
-        
-        // Only print first few ticks
-        if TIMER_TICKS <= 3 {
-            SERIAL_PORT.write_decimal(TIMER_TICKS as u32);
-            SERIAL_PORT.write_str(" ");
-        }
-        
-        // Dot every second
-        if TIMER_TICKS % 100 == 0 {
-            SERIAL_PORT.write_str(".");
-        }
-    }
-}
-
-/// Keyboard interrupt handler (IRQ1)
-#[unsafe(no_mangle)]
-pub extern "C" fn keyboard_interrupt_handler() {
-    unsafe {
-        SERIAL_PORT.write_str("[KBD]");
-        
-        // Read scan code from keyboard controller
-        let scancode: u8;
-        asm!("in al, 0x60", out("al") scancode);
-        
-        SERIAL_PORT.write_hex(scancode as u32);
-        SERIAL_PORT.write_str(" ");
-        
-        handle_keyboard_input(scancode);
-    }
-}
-
-/// General Protection Fault handler
-#[unsafe(no_mangle)]
-pub extern "C" fn gpf_handler(error_code: u32) {
-    unsafe {
-        SERIAL_PORT.write_str("\n!!! GENERAL PROTECTION FAULT !!!\n");
-        SERIAL_PORT.write_str("Error code: 0x");
-        SERIAL_PORT.write_hex(error_code);
-        SERIAL_PORT.write_str("\n");
-        
-        // Extract error code fields
-        let external = (error_code & 1) != 0;
-        let table = (error_code >> 1) & 0b11;
-        let index = (error_code >> 3) & 0x1FFF;
-        
-        SERIAL_PORT.write_str("External: ");
-        if external { SERIAL_PORT.write_str("yes"); } else { SERIAL_PORT.write_str("no"); }
-        SERIAL_PORT.write_str("\nTable: ");
-        match table {
-            0b00 => SERIAL_PORT.write_str("GDT"),
-            0b01 | 0b11 => SERIAL_PORT.write_str("IDT"),
-            0b10 => SERIAL_PORT.write_str("LDT"),
-            _ => SERIAL_PORT.write_str("?"),
-        }
-        SERIAL_PORT.write_str("\nIndex: ");
-        SERIAL_PORT.write_decimal(index as u32);
-        SERIAL_PORT.write_str("\n");
-    }
-    
-    // Halt after GPF
-    unsafe {
-        asm!("cli");
-        loop {
-            asm!("hlt");
-        }
-    }
-}
-
-/// Double Fault handler
-#[unsafe(no_mangle)]
-pub extern "C" fn double_fault_handler() {
-    unsafe {
-        SERIAL_PORT.write_str("\n!!! DOUBLE FAULT !!!\n");
-        SERIAL_PORT.write_str("System halted.\n");
-    }
-    
-    // Double fault is always fatal
-    unsafe {
-        asm!("cli");
-        loop {
-            asm!("hlt");
-        }
-    }
-}
-
-/// Default handler for unhandled interrupts
-#[unsafe(no_mangle)]
-pub extern "C" fn default_interrupt_handler() {
-    unsafe {
-        SERIAL_PORT.write_str("[UNK_INT]");
-    }
-}
-
-// Helper function for keyboard handling
-fn handle_keyboard_input(scancode: u8) {
-    // Map scancode to ASCII or handle special keys
-    match scancode {
-        0x01 => unsafe { SERIAL_PORT.write_str("[ESC]"); },
-        0x1C => unsafe { SERIAL_PORT.write_str("[ENTER]"); },
-        0x0E => unsafe { SERIAL_PORT.write_str("[BACKSPACE]"); },
-        _ => {}
-    }
 }

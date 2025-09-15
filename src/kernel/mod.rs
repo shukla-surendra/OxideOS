@@ -10,4 +10,3 @@ pub mod idt;
 pub mod pic;
 pub mod ports;
 pub mod timer;
-pub mod exception;
