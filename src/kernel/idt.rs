@@ -106,57 +106,97 @@ unsafe extern "C" {
 
 pub fn init() {
     unsafe {
+        // NEW: Get current code segment selector dynamically
+        let kernel_selector: u16;
+        asm!("mov {0:x}, cs", out(reg) kernel_selector, options(nomem, nostack, preserves_flags));
+
+        SERIAL_PORT.write_str("  (dbg) Using kernel selector: 0x");
+        SERIAL_PORT.write_hex(kernel_selector as u32);
+        SERIAL_PORT.write_str("\n");
         // Exceptions: set handlers for 0..31
-        IDT[0].set_handler(isr0, 0x08, 0x8E);
-        IDT[1].set_handler(isr1, 0x08, 0x8E);
-        IDT[2].set_handler(isr2, 0x08, 0x8E);
-        IDT[3].set_handler(isr3, 0x08, 0x8E);
-        IDT[4].set_handler(isr4, 0x08, 0x8E);
-        IDT[5].set_handler(isr5, 0x08, 0x8E);
-        IDT[6].set_handler(isr6, 0x08, 0x8E);
-        IDT[7].set_handler(isr7, 0x08, 0x8E);
-        IDT[8].set_handler(isr8, 0x08, 0x8E);   // double fault etc
-        IDT[9].set_handler(isr9, 0x08, 0x8E);
-        IDT[10].set_handler(isr10, 0x08, 0x8E);
-        IDT[11].set_handler(isr11, 0x08, 0x8E);
-        IDT[12].set_handler(isr12, 0x08, 0x8E);
-        IDT[13].set_handler(isr13, 0x08, 0x8E);
-        IDT[14].set_handler(isr14, 0x08, 0x8E);
-        IDT[15].set_handler(isr15, 0x08, 0x8E);
-        IDT[16].set_handler(isr16, 0x08, 0x8E);
-        IDT[17].set_handler(isr17, 0x08, 0x8E);
-        IDT[18].set_handler(isr18, 0x08, 0x8E);
-        IDT[19].set_handler(isr19, 0x08, 0x8E);
-        IDT[20].set_handler(isr20, 0x08, 0x8E);
-        IDT[21].set_handler(isr21, 0x08, 0x8E);
-        IDT[22].set_handler(isr22, 0x08, 0x8E);
-        IDT[23].set_handler(isr23, 0x08, 0x8E);
-        IDT[24].set_handler(isr24, 0x08, 0x8E);
-        IDT[25].set_handler(isr25, 0x08, 0x8E);
-        IDT[26].set_handler(isr26, 0x08, 0x8E);
-        IDT[27].set_handler(isr27, 0x08, 0x8E);
-        IDT[28].set_handler(isr28, 0x08, 0x8E);
-        IDT[29].set_handler(isr29, 0x08, 0x8E);
-        IDT[30].set_handler(isr30, 0x08, 0x8E);
-        IDT[31].set_handler(isr31, 0x08, 0x8E);
+        IDT[0].set_handler(isr0, kernel_selector, 0x8E);
+        IDT[1].set_handler(isr1, kernel_selector, 0x8E);
+        IDT[2].set_handler(isr2, kernel_selector, 0x8E);
+        IDT[3].set_handler(isr3, kernel_selector, 0x8E);
+        IDT[4].set_handler(isr4, kernel_selector, 0x8E);
+        IDT[5].set_handler(isr5, kernel_selector, 0x8E);
+        IDT[6].set_handler(isr6, kernel_selector, 0x8E);
+        IDT[7].set_handler(isr7, kernel_selector, 0x8E);
+        IDT[8].set_handler(isr8, kernel_selector, 0x8E);   // double fault etc
+        IDT[9].set_handler(isr9, kernel_selector, 0x8E);
+        IDT[10].set_handler(isr10, kernel_selector, 0x8E);
+        IDT[11].set_handler(isr11, kernel_selector, 0x8E);
+        IDT[12].set_handler(isr12, kernel_selector, 0x8E);
+        IDT[13].set_handler(isr13, kernel_selector, 0x8E);
+        IDT[14].set_handler(isr14, kernel_selector, 0x8E);
+        IDT[15].set_handler(isr15, kernel_selector, 0x8E);
+        IDT[16].set_handler(isr16, kernel_selector, 0x8E);
+        IDT[17].set_handler(isr17, kernel_selector, 0x8E);
+        IDT[18].set_handler(isr18, kernel_selector, 0x8E);
+        IDT[19].set_handler(isr19, kernel_selector, 0x8E);
+        IDT[20].set_handler(isr20, kernel_selector, 0x8E);
+        IDT[21].set_handler(isr21, kernel_selector, 0x8E);
+        IDT[22].set_handler(isr22, kernel_selector, 0x8E);
+        IDT[23].set_handler(isr23, kernel_selector, 0x8E);
+        IDT[24].set_handler(isr24, kernel_selector, 0x8E);
+        IDT[25].set_handler(isr25, kernel_selector, 0x8E);
+        IDT[26].set_handler(isr26, kernel_selector, 0x8E);
+        IDT[27].set_handler(isr27, kernel_selector, 0x8E);
+        IDT[28].set_handler(isr28, kernel_selector, 0x8E);
+        IDT[29].set_handler(isr29, kernel_selector, 0x8E);
+        IDT[30].set_handler(isr30, kernel_selector, 0x8E);
+        IDT[31].set_handler(isr31, kernel_selector, 0x8E);
 
         // IRQs (32..47)
-        IDT[32].set_handler(isr32, 0x08, 0x8E);
-        IDT[33].set_handler(isr33, 0x08, 0x8E);
-        IDT[34].set_handler(isr34, 0x08, 0x8E);
-        IDT[35].set_handler(isr35, 0x08, 0x8E);
-        IDT[36].set_handler(isr36, 0x08, 0x8E);
-        IDT[37].set_handler(isr37, 0x08, 0x8E);
-        IDT[38].set_handler(isr38, 0x08, 0x8E);
-        IDT[39].set_handler(isr39, 0x08, 0x8E);
-        IDT[40].set_handler(isr40, 0x08, 0x8E);
-        IDT[41].set_handler(isr41, 0x08, 0x8E);
-        IDT[42].set_handler(isr42, 0x08, 0x8E);
-        IDT[43].set_handler(isr43, 0x08, 0x8E);
-        IDT[44].set_handler(isr44, 0x08, 0x8E);
-        IDT[45].set_handler(isr45, 0x08, 0x8E);
-        IDT[46].set_handler(isr46, 0x08, 0x8E);
-        IDT[47].set_handler(isr47, 0x08, 0x8E);
+        IDT[32].set_handler(isr32, kernel_selector, 0x8E);
+        IDT[33].set_handler(isr33, kernel_selector, 0x8E);
+        IDT[34].set_handler(isr34, kernel_selector, 0x8E);
+        IDT[35].set_handler(isr35, kernel_selector, 0x8E);
+        IDT[36].set_handler(isr36, kernel_selector, 0x8E);
+        IDT[37].set_handler(isr37, kernel_selector, 0x8E);
+        IDT[38].set_handler(isr38, kernel_selector, 0x8E);
+        IDT[39].set_handler(isr39, kernel_selector, 0x8E);
+        IDT[40].set_handler(isr40, kernel_selector, 0x8E);
+        IDT[41].set_handler(isr41, kernel_selector, 0x8E);
+        IDT[42].set_handler(isr42, kernel_selector, 0x8E);
+        IDT[43].set_handler(isr43, kernel_selector, 0x8E);
+        IDT[44].set_handler(isr44, kernel_selector, 0x8E);
+        IDT[45].set_handler(isr45, kernel_selector, 0x8E);
+        IDT[46].set_handler(isr46, kernel_selector, 0x8E);
+        IDT[47].set_handler(isr47, kernel_selector, 0x8E);
+
+
+        unsafe extern "C" fn default_isr() {
+            let esp: u32;
+            let eip: u32;
+            let cs: u32;
+            unsafe {
+                asm!("mov {}, esp", out(reg) esp, options(nomem, nostack));
+                asm!("mov {}, [esp + 40]", out(reg) eip); // EIP at esp+40 (after pushad, int_no, err_code)
+                asm!("mov {}, [esp + 44]", out(reg) cs);  // CS at esp+44
+                crate::kernel::serial::SERIAL_PORT.write_str("[DEFAULT ISR] ESP: 0x");
+                crate::kernel::serial::SERIAL_PORT.write_hex(esp);
+                crate::kernel::serial::SERIAL_PORT.write_str(" EIP: 0x");
+                crate::kernel::serial::SERIAL_PORT.write_hex(eip);
+                crate::kernel::serial::SERIAL_PORT.write_str(" CS: 0x");
+                crate::kernel::serial::SERIAL_PORT.write_hex(cs);
+                crate::kernel::serial::SERIAL_PORT.write_str("\n");
+            }
+        }
+        for i in 48..256 {
+            IDT[i].set_handler(default_isr, kernel_selector, 0x8E);
+        }
+
+        // Debug IDT[252]
+        SERIAL_PORT.write_str("  IDT[252] offset_low: 0x");
+        SERIAL_PORT.write_hex(IDT[252].offset_low as u32);
+        SERIAL_PORT.write_str(" offset_high: 0x");
+        SERIAL_PORT.write_hex(IDT[252].offset_high as u32);
+        SERIAL_PORT.write_str(" selector: 0x");
+        SERIAL_PORT.write_hex(IDT[252].selector as u32);
+        SERIAL_PORT.write_str(" flags: 0x");
+        SERIAL_PORT.write_hex(IDT[252].flags as u32);
+        SERIAL_PORT.write_str("\n");
 
         // Fill the rest with a default handler if desired
         // for i in 48..256 { IDT[i].set_handler(default_isr, 0x08, 0x8E); }

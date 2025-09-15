@@ -74,13 +74,15 @@ impl SerialPort {
         }
     }
 
+
+
     /// Write a formatted hex number (useful for debugging)
     pub unsafe fn write_hex(&self, mut value: u32) {
-        self.write_str("0x");
+        unsafe { self.write_str("0x") };
         
         // Handle zero case
         if value == 0 {
-            self.write_byte(b'0');
+            unsafe { self.write_byte(b'0') };
             return;
         }
 

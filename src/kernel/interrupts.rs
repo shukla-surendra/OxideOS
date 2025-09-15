@@ -42,29 +42,32 @@ pub struct InterruptFrame {
 // ============================================================================
 // MAIN INTERRUPT HANDLER
 // ============================================================================
-
 #[unsafe(no_mangle)]
 pub extern "C" fn isr_common_handler(regs_ptr: *const InterruptFrame, int_no: u32, err_code: u32) {
     unsafe {
-        // Quick acknowledgment we reached handler
+        // Debug stack pointer
+        let esp: u32;
+        asm!("mov {}, esp", out(reg) esp, options(nomem, nostack));
+        SERIAL_PORT.write_str("[ESP: 0x");
+        SERIAL_PORT.write_hex(esp);
+        SERIAL_PORT.write_str("]");
+
         SERIAL_PORT.write_str("[");
         SERIAL_PORT.write_decimal(int_no);
-        SERIAL_PORT.write_str("]");
+        SERIAL_PORT.write_str("] ISR NO: ");
+        SERIAL_PORT.write_decimal(int_no);
+        SERIAL_PORT.write_str(" ");
         
         match int_no {
-            // CPU Exceptions (0-31)
             0..=31 => handle_cpu_exception(regs_ptr, int_no, err_code),
-            
-            // Timer IRQ (32 = IRQ0)
             32 => {
                 TIMER_TICKS += 1;
                 if TIMER_TICKS <= 5 || TIMER_TICKS % 100 == 0 {
                     SERIAL_PORT.write_str("T");
                 }
                 pic::send_eoi(0);
+                SERIAL_PORT.write_str("T_RET "); // Debug: confirm timer handler exit
             },
-            
-            // Keyboard IRQ (33 = IRQ1)
             33 => {
                 let scancode: u8;
                 asm!("in al, 0x60", out("al") scancode);
@@ -74,18 +77,24 @@ pub extern "C" fn isr_common_handler(regs_ptr: *const InterruptFrame, int_no: u3
                 handle_keyboard_scancode(scancode);
                 pic::send_eoi(1);
             },
-            
-            // Other hardware IRQs (34-47 = IRQ2-15)
             34..=47 => {
                 SERIAL_PORT.write_str("IRQ");
                 SERIAL_PORT.write_decimal(int_no - 32);
                 pic::send_eoi((int_no - 32) as u8);
             },
-            
-            // Unknown interrupt
             _ => {
                 SERIAL_PORT.write_str("?INT");
                 SERIAL_PORT.write_decimal(int_no);
+                SERIAL_PORT.write_str(" - Unexpected interrupt, halting\n");
+                pic::send_eoi(0);
+                if int_no >= 40 && int_no <= 47 {
+                    pic::send_eoi((int_no - 32) as u8);
+                }
+                // Disable interrupts and halt
+                asm!("cli");
+                loop {
+                    asm!("hlt");
+                }
             }
         }
     }
@@ -235,22 +244,30 @@ global_asm!(r#"
 .macro ISR_NOERR name num
     .global \name
 \name:
-    push 0          // Dummy error code for uniform stack layout
-    push \num       // Interrupt number
-    pushad          // Save all general registers (EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI)
+    cli                     // Disable interrupts
+    push 0                  // Dummy error code
+    push \num               // Interrupt number
+    pushad                  // Save registers
     
-    // Call handler with (regs_ptr, int_no, err_code)
+    // Debug: Log interrupt number to serial
+    mov eax, \num
+    push eax
+    call serial_write_hex    // Assume a serial_write_hex function
+    add esp, 4
+    mov eax, 0x20           // ASCII space
+    push eax
+    call serial_write_char   // Assume a serial_write_char function
+    add esp, 4
+    
     mov eax, esp
-    push dword ptr [esp + 36]  // error code (at esp+36 after pushad)
-    push dword ptr [esp + 36]  // interrupt number (was at esp+32, now esp+36 after push)
-    push eax                    // regs pointer
-    
+    push dword ptr [esp + 36]  // Error code
+    push dword ptr [esp + 32]  // Interrupt number
+    push eax                   // regs_ptr
     call isr_common_handler
-    
-    add esp, 12     // Clean up 3 pushed arguments
-    popad           // Restore all general registers
-    add esp, 8      // Remove int_no and error code
-    iret            // Return from interrupt
+    add esp, 12
+    popad
+    add esp, 8
+    iret
 .endm
 
 // Macro for interrupts with error code (pushed by CPU)
@@ -328,6 +345,22 @@ ISR_NOERR isr47 47    // Secondary ATA (IRQ15)
 
 .att_syntax prefix
 "#);
+
+
+#[unsafe(no_mangle)]
+pub extern "C" fn serial_write_hex(val: u32) {
+    unsafe {
+        SERIAL_PORT.write_hex(val);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn serial_write_char(c: u32) {
+    let byte = (c & 0xFF) as u8;      // take low 8 bits
+    unsafe {
+        SERIAL_PORT.write_byte(byte);
+    }
+}
 
 // ============================================================================
 // DEBUG AND VERIFICATION FUNCTIONS
