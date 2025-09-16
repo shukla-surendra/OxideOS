@@ -22,7 +22,10 @@ pub unsafe fn send_eoi(irq: u8) {
 /// Small delay for PIC initialization
 #[inline]
 pub unsafe fn io_wait() {
-    asm!("out 0x80, al", in("al") 0u8); // Write to unused port for delay
+    asm!("out 0x80, al", in("al") 0u8); // Write to unused port for delay    
+    for _ in 0..10 {
+        asm!("nop");
+    }
 }
 
 /// Initialize the PIC

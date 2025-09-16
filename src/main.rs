@@ -312,6 +312,12 @@ pub extern "C" fn _start() -> ! {
 
 fn init_interrupts() {
     unsafe {
+        // Disable APIC
+        SERIAL_PORT.write_str("Disabling APIC...\n");
+        let apic_base: u32;
+        asm!("rdmsr", in("ecx") 0x1B, out("eax") apic_base, out("edx") _); // Read APIC base MSR
+        asm!("wrmsr", in("ecx") 0x1B, in("eax") (apic_base & !(1 << 11)), in("edx") 0); // Clear APIC enable bit
+        SERIAL_PORT.write_str("  APIC disabled\n");
         // 1. Disable interrupts during setup
         SERIAL_PORT.write_str("Step 1: Disabling interrupts (CLI)...\n");
         asm!("cli");
@@ -374,41 +380,52 @@ fn init_interrupts() {
             asm!("nop");
         }
         
-        // Step 11: Enable timer (IRQ0)
+        // Step 11: Enable timer (IRQ0) - with better debugging
         SERIAL_PORT.write_str("Step 11: Now enabling timer (IRQ0)...\n");
-        SERIAL_PORT.write_str("  About to unmask timer...\n");
         
-        // Log PIC state
-        let mut irr: u8;
-        let mut isr: u8;
-        asm!("out dx, al", in("dx") 0x20u16, in("al") 0x0Au8); // Read IRR
-        pic::io_wait();
-        asm!("in al, dx", out("al") irr, in("dx") 0x20u16);
-        pic::io_wait();
-        asm!("out dx, al", in("dx") 0x20u16, in("al") 0x0Bu8); // Read ISR
-        pic::io_wait();
-        asm!("in al, dx", out("al") isr, in("dx") 0x20u16);
-        pic::io_wait();
-        SERIAL_PORT.write_str("  Master PIC IRR: 0x");
-        SERIAL_PORT.write_hex(irr as u32);
-        SERIAL_PORT.write_str(", ISR: 0x");
-        SERIAL_PORT.write_hex(isr as u32);
+        // First, let's see current timer ticks (should be 0)
+        let initial_ticks = timer::get_ticks();
+        SERIAL_PORT.write_str("  Initial timer ticks: ");
+        SERIAL_PORT.write_decimal(initial_ticks as u32);
         SERIAL_PORT.write_str("\n");
-
-        asm!("out dx, al", in("dx") 0x21u16, in("al") 0xFCu8); // Unmask IRQ0 and IRQ1
-        SERIAL_PORT.write_str("  Timer unmasked, waiting for tick...\n");
         
-        // Wait a moment to see if we get a timer interrupt
-        for i in 0..100 {
-            if i % 10 == 0 {
-                SERIAL_PORT.write_str(".");
+        // Enable only timer for now (mask = 0xFE = 11111110 binary = all masked except IRQ0)
+        SERIAL_PORT.write_str("  Unmasking only IRQ0 (timer)...\n");
+        asm!("out dx, al", in("dx") 0x21u16, in("al") 0xFEu8); // Only IRQ0 enabled
+        
+        // Wait for exactly 10 timer interrupts
+        SERIAL_PORT.write_str("  Waiting for timer interrupts...\n");
+        let target_ticks = initial_ticks + 10;
+        let mut iterations = 0u32;
+        
+        loop {
+            let current_ticks = timer::get_ticks();
+            if current_ticks >= target_ticks {
+                SERIAL_PORT.write_str("  SUCCESS: Timer interrupts working! Ticks: ");
+                SERIAL_PORT.write_decimal(current_ticks as u32);
+                SERIAL_PORT.write_str("\n");
+                break;
             }
-            for _ in 0..100000 {
+            
+            iterations += 1;
+            if iterations > 10_000_000 {
+                SERIAL_PORT.write_str("  TIMEOUT: No timer interrupts received after 10M iterations\n");
+                SERIAL_PORT.write_str("  Current ticks: ");
+                SERIAL_PORT.write_decimal(current_ticks as u32);
+                SERIAL_PORT.write_str("\n");
+                break;
+            }
+            
+            // Small delay
+            for _ in 0..100 {
                 asm!("nop");
             }
         }
         
-        SERIAL_PORT.write_str("\n  If you see this, timer handler returned successfully!\n");
+        // Now enable keyboard too
+        SERIAL_PORT.write_str("  Now enabling keyboard (IRQ1) as well...\n");
+        asm!("out dx, al", in("dx") 0x21u16, in("al") 0xFCu8); // IRQ0 and IRQ1 enabled
+        SERIAL_PORT.write_str("  Both timer and keyboard enabled\n");
     }
 }
 

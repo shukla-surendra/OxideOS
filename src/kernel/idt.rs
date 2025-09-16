@@ -49,6 +49,12 @@ static mut IDT: [IdtEntry; 256] = [IdtEntry {
     offset_high: 0,
 }; 256];
 
+
+unsafe extern "C" {
+    unsafe fn test_timer_isr();
+    // ... your other ISR declarations
+}
+
 // External assembly interrupt handlers - must be marked unsafe
 unsafe extern "C" {
     // CPU exceptions

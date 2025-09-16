@@ -1,4 +1,4 @@
-// src/kernel/interrupts.rs - Combined interrupt and exception handling
+// src/kernel/interrupts.rs - Fixed interrupt and exception handling
 #![no_std]
 
 use core::arch::global_asm;
@@ -18,11 +18,11 @@ pub static mut TIMER_TICKS: u64 = 0;
 
 #[repr(C)]
 pub struct InterruptFrame {
-    // Pushed by our assembly stub (pushad)
+    // Pushed by our assembly stub (pushad) - in reverse order
     pub edi: u32,
     pub esi: u32,
     pub ebp: u32,
-    pub esp_dummy: u32,
+    pub esp_dummy: u32,  // ESP value, but not useful
     pub ebx: u32,
     pub edx: u32,
     pub ecx: u32,
@@ -30,85 +30,136 @@ pub struct InterruptFrame {
     // Pushed by our stub
     pub int_no: u32,
     pub err_code: u32,
-    // Pushed by CPU
+    // Pushed by CPU during interrupt
     pub eip: u32,
     pub cs: u32,
     pub eflags: u32,
-    // Only present if privilege level changed
-    pub esp: u32,
-    pub ss: u32,
+    // Only present if privilege level changed (we're in kernel mode, so these won't be present)
+    // pub esp: u32,
+    // pub ss: u32,
 }
 
 // ============================================================================
-// MAIN INTERRUPT HANDLER
+// MINIMAL TEST HANDLER
 // ============================================================================
-#[unsafe(no_mangle)]
-pub extern "C" fn isr_common_handler(regs_ptr: *const InterruptFrame, int_no: u32, err_code: u32) {
-    unsafe {
-        // Debug stack pointer
-        let esp: u32;
-        asm!("mov {}, esp", out(reg) esp, options(nomem, nostack));
-        SERIAL_PORT.write_str("[ESP: 0x");
-        SERIAL_PORT.write_hex(esp);
-        SERIAL_PORT.write_str("]");
 
-        SERIAL_PORT.write_str("[");
-        SERIAL_PORT.write_decimal(int_no);
-        SERIAL_PORT.write_str("] ISR NO: ");
-        SERIAL_PORT.write_decimal(int_no);
-        SERIAL_PORT.write_str(" ");
-        
-        match int_no {
-            0..=31 => handle_cpu_exception(regs_ptr, int_no, err_code),
-            32 => {
-                TIMER_TICKS += 1;
-                if TIMER_TICKS <= 5 || TIMER_TICKS % 100 == 0 {
-                    SERIAL_PORT.write_str("T");
-                }
-                pic::send_eoi(0);
-                SERIAL_PORT.write_str("T_RET "); // Debug: confirm timer handler exit
-            },
-            33 => {
-                let scancode: u8;
-                asm!("in al, 0x60", out("al") scancode);
-                SERIAL_PORT.write_str("K:");
-                SERIAL_PORT.write_hex(scancode as u32);
-                SERIAL_PORT.write_str(" ");
-                handle_keyboard_scancode(scancode);
-                pic::send_eoi(1);
-            },
-            34..=47 => {
-                SERIAL_PORT.write_str("IRQ");
-                SERIAL_PORT.write_decimal(int_no - 32);
-                pic::send_eoi((int_no - 32) as u8);
-            },
-            _ => {
-                SERIAL_PORT.write_str("?INT");
-                SERIAL_PORT.write_decimal(int_no);
-                SERIAL_PORT.write_str(" - Unexpected interrupt, halting\n");
-                pic::send_eoi(0);
-                if int_no >= 40 && int_no <= 47 {
-                    pic::send_eoi((int_no - 32) as u8);
-                }
-                // Disable interrupts and halt
-                asm!("cli");
-                loop {
-                    asm!("hlt");
-                }
-            }
-        }
+#[unsafe(no_mangle)]
+pub extern "C" fn minimal_test_handler() {
+    unsafe {
+        SERIAL_PORT.write_str("MIN_HANDLER ");
+        // Don't touch anything else, just return
     }
 }
 
 // ============================================================================
+// MAIN INTERRUPT HANDLER - Simplified signature
+// ============================================================================
+#[unsafe(no_mangle)]
+pub extern "C" fn isr_common_handler(frame: &InterruptFrame) {
+    unsafe {
+        // Validate stack alignment
+        let esp: u32;
+        asm!("mov {}, esp", out(reg) esp, options(nomem, nostack, preserves_flags));
+        if esp % 4 != 0 {
+            SERIAL_PORT.write_str("WARNING: Stack misaligned in ISR! ESP: 0x");
+            SERIAL_PORT.write_hex(esp);
+            SERIAL_PORT.write_str("\n");
+            // Align stack
+            asm!("and esp, 0xFFFFFFFC", options(nostack, preserves_flags));
+            SERIAL_PORT.write_str("  Stack aligned to 0x");
+            let new_esp: u32;
+            asm!("mov {}, esp", out(reg) new_esp, options(nomem, nostack, preserves_flags));
+            SERIAL_PORT.write_hex(new_esp);
+            SERIAL_PORT.write_str("\n");
+        }
+
+        // Validate frame pointer
+        let frame_addr = frame as *const _ as usize;
+        if frame_addr < 0x1000 || frame_addr > 0x100000 {
+            SERIAL_PORT.write_str("BAD_FRAME_PTR:0x");
+            SERIAL_PORT.write_hex(frame_addr as u32);
+            SERIAL_PORT.write_str(" HALT");
+            asm!("cli");
+            loop { asm!("hlt"); }
+        }
+        
+        let int_no = frame.int_no;
+        let err_code = frame.err_code;
+        
+        // Rest of the existing handler code...
+        if int_no > 255 {
+            SERIAL_PORT.write_str("INVALID_INT:");
+            SERIAL_PORT.write_decimal(int_no);
+            SERIAL_PORT.write_str(" HALT");
+            asm!("cli");
+            loop { asm!("hlt"); }
+        }
+        
+        match int_no {
+            0..=31 => {
+                // CPU exception
+                SERIAL_PORT.write_str("EXC");
+                SERIAL_PORT.write_decimal(int_no);
+                SERIAL_PORT.write_str(" ");
+                handle_cpu_exception(frame, int_no, err_code);
+                return;
+            },
+            32 => {
+                // Timer interrupt
+                TIMER_TICKS += 1;
+                if TIMER_TICKS <= 5 || TIMER_TICKS % 100 == 0 {
+                    SERIAL_PORT.write_str("T");
+                    SERIAL_PORT.write_decimal(TIMER_TICKS as u32);
+                    SERIAL_PORT.write_str(" ");
+                }
+                pic::send_eoi(0);
+            },
+            33 => {
+                // Keyboard interrupt
+                let scancode: u8;
+                asm!("in al, 0x60", out("al") scancode);
+                SERIAL_PORT.write_str("K");
+                SERIAL_PORT.write_hex(scancode as u32);
+                SERIAL_PORT.write_str(" ");
+                pic::send_eoi(1);
+            },
+            34..=47 => {
+                // Other hardware IRQs
+                SERIAL_PORT.write_str("I");
+                SERIAL_PORT.write_decimal(int_no);
+                SERIAL_PORT.write_str(" ");
+                if int_no >= 40 {
+                    pic::send_eoi((int_no - 32) as u8);
+                }
+                pic::send_eoi(0);
+            },
+            _ => {
+                // Software interrupts or spurious
+                SERIAL_PORT.write_str("S");
+                SERIAL_PORT.write_decimal(int_no);
+                SERIAL_PORT.write_str(" ");
+            }
+        }
+        
+        // Validate stack pointer before returning
+        let esp: u32;
+        asm!("mov {}, esp", out(reg) esp, options(nomem, nostack, preserves_flags));
+        if esp < 0x1000 || esp > 0x100000 {
+            SERIAL_PORT.write_str("BAD_ESP:0x");
+            SERIAL_PORT.write_hex(esp);
+            SERIAL_PORT.write_str(" HALT");
+            asm!("cli");
+            loop { asm!("hlt"); }
+        }
+    }
+}
+// ============================================================================
 // CPU EXCEPTION HANDLER
 // ============================================================================
 
-fn handle_cpu_exception(regs_ptr: *const InterruptFrame, int_no: u32, err_code: u32) -> ! {
+fn handle_cpu_exception(frame: &InterruptFrame, int_no: u32, err_code: u32) -> ! {
     unsafe {
-        let regs = &*regs_ptr;
-        
-        SERIAL_PORT.write_str("\n\n=== CPU EXCEPTION ===\n");
+        SERIAL_PORT.write_str("=== CPU EXCEPTION ===\n");
         SERIAL_PORT.write_str("Exception #");
         SERIAL_PORT.write_decimal(int_no);
         
@@ -137,39 +188,38 @@ fn handle_cpu_exception(regs_ptr: *const InterruptFrame, int_no: u32, err_code: 
         };
         
         SERIAL_PORT.write_str(name);
-        SERIAL_PORT.write_str("\nError Code: 0x");
+        SERIAL_PORT.write_str("\n Error Code: 0x");
         SERIAL_PORT.write_hex(err_code);
         
         // Register dump
-        SERIAL_PORT.write_str("\n\nRegisters:\n");
-        SERIAL_PORT.write_str("EAX=0x"); SERIAL_PORT.write_hex(regs.eax);
-        SERIAL_PORT.write_str(" EBX=0x"); SERIAL_PORT.write_hex(regs.ebx);
-        SERIAL_PORT.write_str(" ECX=0x"); SERIAL_PORT.write_hex(regs.ecx);
-        SERIAL_PORT.write_str(" EDX=0x"); SERIAL_PORT.write_hex(regs.edx);
-        SERIAL_PORT.write_str("\nESI=0x"); SERIAL_PORT.write_hex(regs.esi);
-        SERIAL_PORT.write_str(" EDI=0x"); SERIAL_PORT.write_hex(regs.edi);
-        SERIAL_PORT.write_str(" EBP=0x"); SERIAL_PORT.write_hex(regs.ebp);
-        SERIAL_PORT.write_str(" ESP=0x"); SERIAL_PORT.write_hex(regs.esp_dummy);
-        SERIAL_PORT.write_str("\nEIP=0x"); SERIAL_PORT.write_hex(regs.eip);
-        SERIAL_PORT.write_str(" CS=0x"); SERIAL_PORT.write_hex(regs.cs);
-        SERIAL_PORT.write_str(" EFLAGS=0x"); SERIAL_PORT.write_hex(regs.eflags);
+        SERIAL_PORT.write_str("\n Registers: ");
+        SERIAL_PORT.write_str("\n EAX=0x"); SERIAL_PORT.write_hex(frame.eax);
+        SERIAL_PORT.write_str("\n EBX=0x"); SERIAL_PORT.write_hex(frame.ebx);
+        SERIAL_PORT.write_str("\n ECX=0x"); SERIAL_PORT.write_hex(frame.ecx);
+        SERIAL_PORT.write_str("\n EDX=0x"); SERIAL_PORT.write_hex(frame.edx);
+        SERIAL_PORT.write_str("\n ESI=0x"); SERIAL_PORT.write_hex(frame.esi);
+        SERIAL_PORT.write_str("\n EDI=0x"); SERIAL_PORT.write_hex(frame.edi);
+        SERIAL_PORT.write_str("\n EBP=0x"); SERIAL_PORT.write_hex(frame.ebp);
+        SERIAL_PORT.write_str("\n EIP=0x"); SERIAL_PORT.write_hex(frame.eip);
+        SERIAL_PORT.write_str("\n CS=0x"); SERIAL_PORT.write_hex(frame.cs);
+        SERIAL_PORT.write_str("\n EFLAGS=0x"); SERIAL_PORT.write_hex(frame.eflags);
         
         // Special handling for specific exceptions
         match int_no {
             13 => {
                 // GPF - decode selector error code
                 if err_code != 0 {
-                    SERIAL_PORT.write_str("\n\nGPF Details:");
-                    SERIAL_PORT.write_str("\n  External: ");
+                    SERIAL_PORT.write_str(" GPF Details: ");
+                    SERIAL_PORT.write_str("External: ");
                     SERIAL_PORT.write_str(if err_code & 1 != 0 { "yes" } else { "no" });
-                    SERIAL_PORT.write_str("\n  Table: ");
+                    SERIAL_PORT.write_str(" Table: ");
                     match (err_code >> 1) & 0b11 {
                         0b00 => SERIAL_PORT.write_str("GDT"),
                         0b01 | 0b11 => SERIAL_PORT.write_str("IDT"),
                         0b10 => SERIAL_PORT.write_str("LDT"),
                         _ => SERIAL_PORT.write_str("?"),
                     }
-                    SERIAL_PORT.write_str("\n  Index: ");
+                    SERIAL_PORT.write_str(" Index: ");
                     SERIAL_PORT.write_decimal(((err_code >> 3) & 0x1FFF) as u32);
                 }
             },
@@ -177,10 +227,10 @@ fn handle_cpu_exception(regs_ptr: *const InterruptFrame, int_no: u32, err_code: 
                 // Page Fault - get faulting address from CR2
                 let cr2: u32;
                 asm!("mov {}, cr2", out(reg) cr2);
-                SERIAL_PORT.write_str("\n\nPage Fault Details:");
-                SERIAL_PORT.write_str("\n  Faulting Address (CR2): 0x");
+                SERIAL_PORT.write_str(" Page Fault Details: ");
+                SERIAL_PORT.write_str("Faulting Address (CR2): 0x");
                 SERIAL_PORT.write_hex(cr2);
-                SERIAL_PORT.write_str("\n  Cause: ");
+                SERIAL_PORT.write_str(" Cause: ");
                 SERIAL_PORT.write_str(if err_code & 1 != 0 { "Protection violation" } else { "Page not present" });
                 SERIAL_PORT.write_str(", ");
                 SERIAL_PORT.write_str(if err_code & 2 != 0 { "Write" } else { "Read" });
@@ -190,7 +240,7 @@ fn handle_cpu_exception(regs_ptr: *const InterruptFrame, int_no: u32, err_code: 
             _ => {}
         }
         
-        SERIAL_PORT.write_str("\n\n=== SYSTEM HALTED ===\n");
+        SERIAL_PORT.write_str(" === SYSTEM HALTED ===\n");
     }
     
     // Halt forever
@@ -210,24 +260,22 @@ fn handle_keyboard_scancode(scancode: u8) {
     unsafe {
         // Basic scancode to ASCII mapping for common keys
         let key = match scancode {
-            0x01 => Some("[ESC]"),
-            0x0E => Some("[BACKSPACE]"),
-            0x0F => Some("[TAB]"),
-            0x1C => Some("[ENTER]"),
-            0x1D => Some("[CTRL]"),
-            0x2A => Some("[LSHIFT]"),
-            0x36 => Some("[RSHIFT]"),
-            0x38 => Some("[ALT]"),
-            0x39 => Some("[SPACE]"),
-            0x3A => Some("[CAPS]"),
-            0x3B..=0x44 => Some("[F1-F10]"),
-            0x45 => Some("[NUMLOCK]"),
-            0x46 => Some("[SCROLL]"),
+            0x01 => Some("ESC"),
+            0x0E => Some("BKSP"),
+            0x0F => Some("TAB"),
+            0x1C => Some("ENTER"),
+            0x1D => Some("CTRL"),
+            0x2A => Some("LSHIFT"),
+            0x36 => Some("RSHIFT"),
+            0x38 => Some("ALT"),
+            0x39 => Some("SPACE"),
+            0x3A => Some("CAPS"),
             _ => None,
         };
         
         if let Some(key_name) = key {
             SERIAL_PORT.write_str(key_name);
+            SERIAL_PORT.write_str(" ");
         }
     }
 }
@@ -240,55 +288,52 @@ global_asm!(r#"
 .section .text
 .intel_syntax noprefix
 
+// Minimal test timer handler - no parameters, no frame
+.global test_timer_isr
+test_timer_isr:
+    pushad                    // Save all registers
+    call minimal_test_handler // Call simple Rust function (no parameters)
+    popad                     // Restore all registers
+    // Send EOI manually in assembly to avoid Rust calls
+    mov al, 0x20             // EOI command
+    out 0x20, al             // Send to master PIC
+    iret                     // Return from interrupt
+
 // Macro for interrupts without error code
 .macro ISR_NOERR name num
     .global \name
 \name:
-    cli                     // Disable interrupts
     push 0                  // Dummy error code
     push \num               // Interrupt number
-    pushad                  // Save registers
+    pushad                  // Save all general purpose registers
     
-    // Debug: Log interrupt number to serial
-    mov eax, \num
-    push eax
-    call serial_write_hex    // Assume a serial_write_hex function
-    add esp, 4
-    mov eax, 0x20           // ASCII space
-    push eax
-    call serial_write_char   // Assume a serial_write_char function
-    add esp, 4
-    
-    mov eax, esp
-    push dword ptr [esp + 36]  // Error code
-    push dword ptr [esp + 32]  // Interrupt number
-    push eax                   // regs_ptr
+    // Set up proper kernel stack frame for C call
+    mov eax, esp            // ESP points to our InterruptFrame
+    push eax                // Pass frame pointer as argument
     call isr_common_handler
-    add esp, 12
-    popad
-    add esp, 8
-    iret
+    add esp, 4              // Clean up argument
+    
+    popad                   // Restore registers
+    add esp, 8              // Remove int_no and err_code
+    iret                    // Return from interrupt (automatically re-enables interrupts)
 .endm
 
 // Macro for interrupts with error code (pushed by CPU)
 .macro ISR_WITHERR name num
     .global \name
 \name:
-    push \num       // Interrupt number (error code already on stack from CPU)
-    pushad          // Save all general registers
+    push \num               // Interrupt number (error code already on stack)
+    pushad                  // Save all general purpose registers
     
-    // Call handler with (regs_ptr, int_no, err_code)
-    mov eax, esp
-    push dword ptr [esp + 36]  // error code (at esp+36 after pushad)
-    push dword ptr [esp + 32]  // interrupt number (at esp+32 after pushad)
-    push eax                    // regs pointer
-    
+    // Set up proper kernel stack frame for C call
+    mov eax, esp            // ESP points to our InterruptFrame
+    push eax                // Pass frame pointer as argument
     call isr_common_handler
+    add esp, 4              // Clean up argument
     
-    add esp, 12     // Clean up 3 pushed arguments
-    popad           // Restore all general registers
-    add esp, 8      // Remove int_no and error code
-    iret            // Return from interrupt
+    popad                   // Restore registers
+    add esp, 8              // Remove int_no and err_code
+    iret                    // Return from interrupt (automatically re-enables interrupts)
 .endm
 
 // CPU Exceptions (0-31)
@@ -346,22 +391,6 @@ ISR_NOERR isr47 47    // Secondary ATA (IRQ15)
 .att_syntax prefix
 "#);
 
-
-#[unsafe(no_mangle)]
-pub extern "C" fn serial_write_hex(val: u32) {
-    unsafe {
-        SERIAL_PORT.write_hex(val);
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn serial_write_char(c: u32) {
-    let byte = (c & 0xFF) as u8;      // take low 8 bits
-    unsafe {
-        SERIAL_PORT.write_byte(byte);
-    }
-}
-
 // ============================================================================
 // DEBUG AND VERIFICATION FUNCTIONS
 // ============================================================================
@@ -369,35 +398,30 @@ pub extern "C" fn serial_write_char(c: u32) {
 /// Verify that ISR handlers are at valid addresses
 pub fn verify_handlers() {
     unsafe {
-        SERIAL_PORT.write_str("Verifying ISR addresses:\n");
+        SERIAL_PORT.write_str("Verifying ISR addresses:");
         
         // Check a few key handlers
-        SERIAL_PORT.write_str("  isr0 (Divide by Zero) at: 0x");
+        SERIAL_PORT.write_str("  isr0 (Divide by Zero) at: ");
         SERIAL_PORT.write_hex(isr0 as usize as u32);
-        SERIAL_PORT.write_str("\n");
         
-        SERIAL_PORT.write_str("  isr13 (GPF) at: 0x");
+        SERIAL_PORT.write_str("  isr13 (GPF) at: ");
         SERIAL_PORT.write_hex(isr13 as usize as u32);
-        SERIAL_PORT.write_str("\n");
         
-        SERIAL_PORT.write_str("  isr14 (Page Fault) at: 0x");
+        SERIAL_PORT.write_str("  isr14 (Page Fault) at: ");
         SERIAL_PORT.write_hex(isr14 as usize as u32);
-        SERIAL_PORT.write_str("\n");
         
-        SERIAL_PORT.write_str("  isr32 (Timer/IRQ0) at: 0x");
+        SERIAL_PORT.write_str("  isr32 (Timer/IRQ0) at: ");
         SERIAL_PORT.write_hex(isr32 as usize as u32);
-        SERIAL_PORT.write_str("\n");
         
-        SERIAL_PORT.write_str("  isr33 (Keyboard/IRQ1) at: 0x");
+        SERIAL_PORT.write_str("  isr33 (Keyboard/IRQ1) at: ");
         SERIAL_PORT.write_hex(isr33 as usize as u32);
-        SERIAL_PORT.write_str("\n");
         
-        // Verify addresses are in reasonable range (above 1MB, below 16MB for typical kernel)
+        // Verify addresses are in reasonable range
         let timer_addr = isr32 as usize as u32;
         if timer_addr < 0x100000 || timer_addr > 0x1000000 {
-            SERIAL_PORT.write_str("  WARNING: ISR addresses may be invalid!\n");
+            SERIAL_PORT.write_str("  WARNING: ISR addresses may be invalid!");
         } else {
-            SERIAL_PORT.write_str("  ISR addresses look valid\n");
+            SERIAL_PORT.write_str("  ISR addresses look valid");
         }
     }
 }
@@ -407,6 +431,7 @@ pub fn verify_handlers() {
 // ============================================================================
 
 unsafe extern "C" {
+    pub unsafe fn test_timer_isr();
     pub unsafe fn isr0();
     pub unsafe fn isr1();
     pub unsafe fn isr2();
