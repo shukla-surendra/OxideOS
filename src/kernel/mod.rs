@@ -2,6 +2,7 @@
 // #![feature(global_asm)]
 // core::arch::global_asm!(include_str!("interrupt_stubs.s"));
 
+pub mod interrupts_asm;
 pub mod interrupts;
 pub mod serial;
 pub mod loggers;
