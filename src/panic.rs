@@ -1,21 +1,15 @@
-//! Kernel Panic Handler
+//! Enhanced Kernel Panic Handler
 //! 
-//! This module handles kernel panics - critical errors that require
-//! the system to halt. It provides detailed error reporting and
-//! ensures the system fails safely.
+//! This module handles kernel panics with proper message formatting
+//! and detailed error reporting.
 
 use core::panic::PanicInfo;
 use core::arch::asm;
+use core::fmt::Write;
 use crate::kernel::loggers::LOGGER;
 use crate::kernel::serial::SERIAL_PORT;
 
 /// Kernel panic handler - called when the kernel encounters a fatal error
-/// 
-/// This function:
-/// 1. Disables interrupts to prevent further corruption
-/// 2. Logs detailed panic information 
-/// 3. Halts the system in a safe state
-/// 4. Never returns (marked with `!`)
 #[panic_handler]
 pub fn panic_handler(info: &PanicInfo) -> ! {
     // Immediately disable interrupts to prevent further damage
@@ -47,18 +41,26 @@ pub fn panic_handler(info: &PanicInfo) -> ! {
             SERIAL_PORT.write_str("Panic Location: Unknown\n");
         }
         
-        // Print panic message - info.message() returns PanicMessage directly, not Option
+        // Print panic message using write_fmt
         SERIAL_PORT.write_str("Panic Message: ");
-        let _message = info.message();
-        // TODO: Implement Display trait for better message formatting
-        // For now, just indicate that a message exists
-        SERIAL_PORT.write_str("(message available but formatting not implemented)\n");
+        let message = info.message();
+        // Use the write_fmt method you already have in SerialPort
+        SERIAL_PORT.write_fmt(format_args!("{}", message));
+        SERIAL_PORT.write_str("\n");
+        
+        // Additional panic payload information (if any)
+        if let Some(payload) = info.payload().downcast_ref::<&str>() {
+            SERIAL_PORT.write_str("Payload: ");
+            SERIAL_PORT.write_str(payload);
+            SERIAL_PORT.write_str("\n");
+        }
         
         // TODO: Add more debugging info
         // - Register dump
-        // - Stack trace
+        // - Stack trace  
         // - Memory state
         // - Recent kernel activity log
+        print_register_dump();
         
         SERIAL_PORT.write_str("\nSystem State:\n");
         SERIAL_PORT.write_str("  Interrupts: DISABLED\n");
@@ -76,8 +78,147 @@ pub fn panic_handler(info: &PanicInfo) -> ! {
     }
     
     // Halt the CPU indefinitely
-    // The HLT instruction stops CPU execution until an interrupt occurs,
-    // but since we disabled interrupts, this effectively freezes the system
+    halt_system();
+}
+
+/// Print basic CPU register dump for debugging
+unsafe fn print_register_dump() {
+    SERIAL_PORT.write_str("\nRegister Dump:\n");
+    
+    // For x86_64, capture registers in smaller batches to avoid running out of registers
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Batch 1: General purpose registers
+        let rax: u64;
+        let rbx: u64;
+        let rcx: u64;
+        let rdx: u64;
+        
+        asm!(
+            "mov {rax}, rax",
+            "mov {rbx}, rbx", 
+            "mov {rcx}, rcx",
+            "mov {rdx}, rdx",
+            rax = out(reg) rax,
+            rbx = out(reg) rbx,
+            rcx = out(reg) rcx,
+            rdx = out(reg) rdx,
+            options(nostack, nomem)
+        );
+        
+        SERIAL_PORT.write_str("  RAX: 0x");
+        print_hex64(rax);
+        SERIAL_PORT.write_str("  RBX: 0x");
+        print_hex64(rbx);
+        SERIAL_PORT.write_str("\n");
+        
+        SERIAL_PORT.write_str("  RCX: 0x");
+        print_hex64(rcx);
+        SERIAL_PORT.write_str("  RDX: 0x");
+        print_hex64(rdx);
+        SERIAL_PORT.write_str("\n");
+        
+        // Batch 2: Stack and base pointers
+        let rsp: u64;
+        let rbp: u64;
+        
+        asm!(
+            "mov {rsp}, rsp",
+            "mov {rbp}, rbp",
+            rsp = out(reg) rsp,
+            rbp = out(reg) rbp,
+            options(nostack, nomem)
+        );
+        
+        SERIAL_PORT.write_str("  RSP: 0x");
+        print_hex64(rsp);
+        SERIAL_PORT.write_str("  RBP: 0x");
+        print_hex64(rbp);
+        SERIAL_PORT.write_str("\n");
+        
+        // Batch 3: Index registers
+        let rsi: u64;
+        let rdi: u64;
+        
+        asm!(
+            "mov {rsi}, rsi",
+            "mov {rdi}, rdi",
+            rsi = out(reg) rsi,
+            rdi = out(reg) rdi,
+            options(nostack, nomem)
+        );
+        
+        SERIAL_PORT.write_str("  RSI: 0x");
+        print_hex64(rsi);
+        SERIAL_PORT.write_str("  RDI: 0x");
+        print_hex64(rdi);
+        SERIAL_PORT.write_str("\n");
+    }
+    
+    #[cfg(target_arch = "x86")]
+    {
+        // For 32-bit, also use smaller batches
+        let eax: u32;
+        let ebx: u32;
+        let ecx: u32;
+        let edx: u32;
+        
+        asm!(
+            "mov {eax}, eax",
+            "mov {ebx}, ebx", 
+            "mov {ecx}, ecx",
+            "mov {edx}, edx",
+            eax = out(reg) eax,
+            ebx = out(reg) ebx,
+            ecx = out(reg) ecx,
+            edx = out(reg) edx,
+            options(nostack, nomem)
+        );
+        
+        SERIAL_PORT.write_str("  EAX: 0x");
+        SERIAL_PORT.write_hex(eax);
+        SERIAL_PORT.write_str("  EBX: 0x");
+        SERIAL_PORT.write_hex(ebx);
+        SERIAL_PORT.write_str("\n");
+        
+        SERIAL_PORT.write_str("  ECX: 0x");
+        SERIAL_PORT.write_hex(ecx);
+        SERIAL_PORT.write_str("  EDX: 0x");
+        SERIAL_PORT.write_hex(edx);
+        SERIAL_PORT.write_str("\n");
+    }
+}
+
+/// Helper to print 64-bit hex values
+unsafe fn print_hex64(mut value: u64) {
+    if value == 0 {
+        SERIAL_PORT.write_str("0000000000000000");
+        return;
+    }
+    
+    let mut digits = [0u8; 16];
+    let mut i = 0;
+    
+    // Convert to hex, pad to 16 digits
+    for _ in 0..16 {
+        let digit = (value & 0xF) as u8;
+        digits[i] = if digit < 10 {
+            b'0' + digit
+        } else {
+            b'A' + (digit - 10)
+        };
+        value >>= 4;
+        i += 1;
+    }
+    
+    // Write in reverse order (most significant first)
+    for j in (0..16).rev() {
+        SERIAL_PORT.write_byte(digits[j]);
+    }
+}
+
+/// Halt the system safely
+fn halt_system() -> ! {
     unsafe {
         loop {
             asm!("hlt", options(nostack, nomem));
@@ -86,8 +227,6 @@ pub fn panic_handler(info: &PanicInfo) -> ! {
 }
 
 /// Enhanced panic function with custom message (for internal kernel use)
-/// 
-/// This allows kernel subsystems to trigger panics with specific context
 pub fn kernel_panic(subsystem: &str, reason: &str) -> ! {
     unsafe {
         SERIAL_PORT.write_str("KERNEL PANIC in ");
@@ -100,7 +239,20 @@ pub fn kernel_panic(subsystem: &str, reason: &str) -> ! {
     panic!("Kernel subsystem failure: {}: {}", subsystem, reason);
 }
 
-/// Assert macro for kernel debugging (only in debug builds)
+/// Panic with formatted message (using your write_fmt capability)
+pub fn kernel_panic_fmt(subsystem: &str, args: core::fmt::Arguments) -> ! {
+    unsafe {
+        SERIAL_PORT.write_str("KERNEL PANIC in ");
+        SERIAL_PORT.write_str(subsystem);
+        SERIAL_PORT.write_str(": ");
+        SERIAL_PORT.write_fmt(args);
+        SERIAL_PORT.write_str("\n");
+    }
+    
+    panic!("Kernel subsystem failure in {}", subsystem);
+}
+
+/// Enhanced assert macro for kernel debugging
 #[macro_export]
 macro_rules! kernel_assert {
     ($condition:expr) => {
@@ -112,5 +264,18 @@ macro_rules! kernel_assert {
         if !($condition) {
             $crate::panic::kernel_panic("assertion", $message);
         }
+    };
+    ($condition:expr, $($args:tt)*) => {
+        if !($condition) {
+            $crate::panic::kernel_panic_fmt("assertion", format_args!($($args)*));
+        }
+    };
+}
+
+/// Convenience macro for formatted kernel panics
+#[macro_export]
+macro_rules! kernel_panic {
+    ($subsystem:expr, $($args:tt)*) => {
+        $crate::panic::kernel_panic_fmt($subsystem, format_args!($($args)*))
     };
 }
