@@ -7,7 +7,7 @@ BUILD_DIR="os_iso_configuration"
 ISO_BUILD="iso_builds"
 ISO_NAME="iso_builds/oxide_os_32.iso"
 
-# cargo clean
+cargo clean
 rm -rf $BUILD_DIR
 rm $ISO_NAME
 mkdir $ISO_BUILD

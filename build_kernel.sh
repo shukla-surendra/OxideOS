@@ -6,7 +6,7 @@ KERNEL_NAME="OxideOs"
 BUILD_DIR="os_iso_configuration"
 ISO_NAME="iso_builds/oxide_os_32.iso"
 
-# cargo clean
+cargo clean
 
 
 # 1. Build kernel ELF
