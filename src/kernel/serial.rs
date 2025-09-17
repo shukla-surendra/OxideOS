@@ -1,5 +1,5 @@
 use core::arch::asm;
-
+use core::fmt;
 // COM1 serial port base address
 const SERIAL_PORT_BASE: u16 = 0x3F8;
 
@@ -153,6 +153,27 @@ impl SerialPort {
         let value: u8;
         asm!("in al, dx", in("dx") port, out("al") value, options(nostack, nomem));
         value
+    }
+
+    /// Write formatted data (supports `format_args!`)
+    /// Usage: SERIAL_PORT.write_fmt(format_args!("x = {:#x}\n", x));
+    pub unsafe fn write_fmt(&self, args: fmt::Arguments) {
+        // small wrapper that implements core::fmt::Write by forwarding to write_str
+        struct W<'a> {
+            port: &'a SerialPort,
+        }
+
+        impl<'a> fmt::Write for W<'a> {
+            fn write_str(&mut self, s: &str) -> fmt::Result {
+                // SAFETY: forwarding to your existing write_str which uses port I/O
+                unsafe { self.port.write_str(s) };
+                Ok(())
+            }
+        }
+
+        let mut w = W { port: self };
+        // fmt::write will call W::write_str repeatedly with parts of the formatted output
+        let _ = fmt::write(&mut w, args);
     }
 }
 
