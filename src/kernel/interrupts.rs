@@ -49,21 +49,13 @@ pub extern "C" fn minimal_test_handler() {
     }
 }
 
-// ============================================================================
-// MAIN INTERRUPT HANDLER - CORRECTED
-// ============================================================================
+// src/kernel/interrupts.rs
+// ... (imports and global state unchanged)
+
+// MAIN INTERRUPT HANDLER
 #[unsafe(no_mangle)]
 pub extern "C" fn isr_common_handler(frame: *mut InterruptFrame) {
     unsafe {
-        // Check frame pointer alignment
-        if (frame as usize) % 4 != 0 {
-            SERIAL_PORT.write_str("ERROR: Misaligned frame pointer: 0x");
-            SERIAL_PORT.write_hex(frame as u32);
-            SERIAL_PORT.write_str(" HALT\n");
-            asm!("cli");
-            loop { asm!("hlt"); }
-        }
-
         let int_no = (*frame).int_no;
         let err_code = (*frame).err_code;
 
@@ -102,6 +94,18 @@ pub extern "C" fn isr_common_handler(frame: *mut InterruptFrame) {
                     SERIAL_PORT.write_decimal(TIMER_TICKS as u32);
                     SERIAL_PORT.write_str(" ");
                 }
+                if TIMER_TICKS < 5 {
+                    SERIAL_PORT.write_str("InterruptFrame: ");
+                    SERIAL_PORT.write_str("EDI: 0x"); SERIAL_PORT.write_hex((*frame).edi);
+                    SERIAL_PORT.write_str(" ESI: 0x"); SERIAL_PORT.write_hex((*frame).esi);
+                    SERIAL_PORT.write_str(" EBP: 0x"); SERIAL_PORT.write_hex((*frame).ebp);
+                    SERIAL_PORT.write_str(" ESP: 0x"); SERIAL_PORT.write_hex((*frame).esp_dummy);
+                    SERIAL_PORT.write_str(" EBX: 0x"); SERIAL_PORT.write_hex((*frame).ebx);
+                    SERIAL_PORT.write_str(" EDX: 0x"); SERIAL_PORT.write_hex((*frame).edx);
+                    SERIAL_PORT.write_str(" ECX: 0x"); SERIAL_PORT.write_hex((*frame).ecx);
+                    SERIAL_PORT.write_str(" EAX: 0x"); SERIAL_PORT.write_hex((*frame).eax);
+                    SERIAL_PORT.write_str("\n");
+                }
                 pic::send_eoi(0);
             },
             33 => {
@@ -133,10 +137,8 @@ pub extern "C" fn isr_common_handler(frame: *mut InterruptFrame) {
         }
     }
 }
-// ============================================================================
-// SIMPLIFIED CPU EXCEPTION HANDLER
-// ============================================================================
 
+// SIMPLIFIED CPU EXCEPTION HANDLER
 fn handle_cpu_exception_simple(int_no: u32, err_code: u32, esp: u32) -> ! {
     unsafe {
         SERIAL_PORT.write_str("=== CPU EXCEPTION ===\n");
@@ -173,9 +175,9 @@ fn handle_cpu_exception_simple(int_no: u32, err_code: u32, esp: u32) -> ! {
         SERIAL_PORT.write_str("\n ESP: 0x");
         SERIAL_PORT.write_hex(esp);
         
-        // Read EIP from stack
+        // Corrected EIP read
         let stack = esp as *const u32;
-        let eip = *stack.add(10); // EIP is 10 u32s up from ESP
+        let eip = *stack.add(2); // EIP is 2 u32s up from esp_dummy (int_no -> err_code -> eip)
         SERIAL_PORT.write_str("\n EIP: 0x");
         SERIAL_PORT.write_hex(eip);
         
@@ -190,7 +192,6 @@ fn handle_cpu_exception_simple(int_no: u32, err_code: u32, esp: u32) -> ! {
         }
     }
 }
-
 
 // ============================================================================
 // DEBUG AND VERIFICATION FUNCTIONS

@@ -1,26 +1,45 @@
 // src/kernel/timer.rs
-use core::arch::asm;
 use crate::kernel::serial::SERIAL_PORT;
+use core::arch::asm;
 
-pub fn init(frequency_hz: u32) {
-    let divisor = 1193182 / frequency_hz; // PIT base frequency = 1.193182 MHz
+static mut TIMER_TICKS: u64 = 0;
+
+pub unsafe fn init(freq_hz: u32) {
+    // PIT base frequency is ~1.193182 MHz
+    let pit_freq = 1_193_182;
+    let divisor = pit_freq / freq_hz;
+    
+    // Validate divisor
+    if divisor > 0xFFFF {
+        SERIAL_PORT.write_str("Timer init - ERROR: Divisor too large: 0x");
+        SERIAL_PORT.write_hex(divisor);
+        SERIAL_PORT.write_str("\n");
+        return;
+    }
+    
+    // Program PIT (Channel 0, Mode 2, Rate Generator)
     let divisor_low = (divisor & 0xFF) as u8;
     let divisor_high = ((divisor >> 8) & 0xFF) as u8;
-    unsafe{
-    SERIAL_PORT.write_str("  Timer init - Frequency: ");
-    SERIAL_PORT.write_decimal(frequency_hz);
+    
+    SERIAL_PORT.write_str("Timer init - Frequency: ");
+    SERIAL_PORT.write_decimal(freq_hz);
     SERIAL_PORT.write_str("Hz, Divisor: 0x");
-    SERIAL_PORT.write_hex(divisor as u32);
+    SERIAL_PORT.write_hex(divisor);
     SERIAL_PORT.write_str("\n");
-    }
-
-    unsafe {
-        asm!("out dx, al", in("dx") 0x43u16, in("al") 0x34u8); // Channel 0, mode 2, binary
-        asm!("out dx, al", in("dx") 0x40u16, in("al") divisor_low);
-        asm!("out dx, al", in("dx") 0x40u16, in("al") divisor_high);
-    }
+    
+    // Send command: Channel 0, Lo/Hi byte, Mode 2, Binary
+    asm!("out dx, al", in("dx") 0x43u16, in("al") 0x34u8);
+    // Send divisor
+    asm!("out dx, al", in("dx") 0x40u16, in("al") divisor_low);
+    asm!("out dx, al", in("dx") 0x40u16, in("al") divisor_high);
+    
+    SERIAL_PORT.write_str("  PIT programmed - Command: 0x34, Divisor Low: 0x");
+    SERIAL_PORT.write_hex(divisor_low as u32);
+    SERIAL_PORT.write_str(", High: 0x");
+    SERIAL_PORT.write_hex(divisor_high as u32);
+    SERIAL_PORT.write_str("\n");
 }
 
-pub fn get_ticks() -> u64 {
-    unsafe { crate::kernel::interrupts::TIMER_TICKS }
+pub unsafe fn get_ticks() -> u64 {
+    TIMER_TICKS
 }

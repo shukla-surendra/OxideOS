@@ -2,9 +2,6 @@
 #![no_std]
 
 use core::arch::global_asm;
-// ============================================================================
-// ASSEMBLY INTERRUPT STUBS - CORRECTED WITH ALIGNMENT CHECK
-// ============================================================================
 
 global_asm!(r#"
 .section .text
@@ -24,26 +21,24 @@ test_timer_isr:
 .macro ISR_NOERR name num
     .global \name
 \name:
-    // Check and align stack (ESP must be 4-byte aligned)
+    // Align stack to 4 bytes
+    push eax                // Save EAX temporarily
     mov eax, esp
+    add eax, 4              // Account for EAX push
     and eax, 3              // Check low 2 bits (ESP % 4)
-    jz aligned_noerr_\num   // If zero, already aligned
-    push 0                  // Push 4 bytes to align stack
+    jz aligned_noerr_\num   // If aligned, skip padding
+    sub esp, eax            // Subtract 1-3 bytes to align
 aligned_noerr_\num:
+    pop eax                 // Restore EAX
     push 0                  // Dummy error code
     push \num               // Interrupt number
     pushad                  // Save all general purpose registers
 
-    push esp                // Push pointer to frame (now aligned)
-    call isr_common_handler // Call Rust handler with frame ptr
-    add esp, 4              // Clean up the pushed pointer
-
+    push esp                // Push aligned frame pointer
+    call isr_common_handler // Call Rust handler
+    add esp, 4              // Clean up frame pointer
     popad                   // Restore registers
     add esp, 8              // Remove int_no and err_code
-    test eax, eax           // Check if we pushed for alignment
-    jz no_pop_noerr_\num
-    add esp, 4              // Remove alignment padding
-no_pop_noerr_\num:
     iret                    // Return from interrupt
 .endm
 
@@ -51,31 +46,29 @@ no_pop_noerr_\num:
 .macro ISR_BREAKPOINT name num
     .global \name
 \name:
-    // Check and align stack
+    // Align stack to 4 bytes
+    push eax
     mov eax, esp
-    and eax, 3              // Check low 2 bits (ESP % 4)
+    add eax, 4
+    and eax, 3
     jz aligned_breakpoint_\num
-    push 0                  // Push 4 bytes to align stack
+    sub esp, eax
 aligned_breakpoint_\num:
+    pop eax
     push 0                  // Dummy error code
     push \num               // Interrupt number
     pushad                  // Save all general purpose registers
 
     // Advance CPU-saved EIP by 1 to skip INT3 (0xCC, 1 byte)
     mov ebx, esp
-    add ebx, 40             // Point to the CPU-saved EIP slot
+    add ebx, 40             // Point to CPU-saved EIP slot
     add dword ptr [ebx], 1  // Advance saved EIP by 1
 
-    push esp                // Push pointer to frame (now aligned)
-    call isr_common_handler // Call Rust handler with frame ptr
-    add esp, 4              // Clean up the pushed pointer
-
+    push esp                // Push aligned frame pointer
+    call isr_common_handler // Call Rust handler
+    add esp, 4              // Clean up frame pointer
     popad                   // Restore registers
     add esp, 8              // Remove int_no and err_code
-    test eax, eax           // Check if we pushed for alignment
-    jz no_pop_breakpoint_\num
-    add esp, 4              // Remove alignment padding
-no_pop_breakpoint_\num:
     iret                    // Return from interrupt
 .endm
 
@@ -83,25 +76,23 @@ no_pop_breakpoint_\num:
 .macro ISR_WITHERR name num
     .global \name
 \name:
-    // Check and align stack
+    // Align stack to 4 bytes
+    push eax
     mov eax, esp
-    and eax, 3              // Check low 2 bits (ESP % 4)
+    add eax, 4
+    and eax, 3
     jz aligned_witherr_\num
-    push 0                  // Push 4 bytes to align stack
+    sub esp, eax
 aligned_witherr_\num:
+    pop eax
     push \num               // Interrupt number (error code already on stack)
     pushad                  // Save all general purpose registers
     
-    push esp                // Push pointer to frame (now aligned)
-    call isr_common_handler // Call Rust handler with frame ptr
-    add esp, 4              // Clean up the pushed pointer
-    
+    push esp                // Push aligned frame pointer
+    call isr_common_handler // Call Rust handler
+    add esp, 4              // Clean up frame pointer
     popad                   // Restore registers
     add esp, 8              // Remove int_no and err_code
-    test eax, eax           // Check if we pushed for alignment
-    jz no_pop_witherr_\num
-    add esp, 4              // Remove alignment padding
-no_pop_witherr_\num:
     iret                    // Return from interrupt
 .endm
 
