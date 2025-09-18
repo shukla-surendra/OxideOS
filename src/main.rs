@@ -167,7 +167,7 @@ pub extern "C" fn _start() -> ! {
         LOGGER.info("Early memory setup (TODO - placeholder)");
         // mem::init_early_memory(info_ptr);
     }
-    
+
     // ========================================================================
     // STAGE 4: DISPLAY INITIALIZATION - Set up graphics and console
     // ========================================================================
@@ -206,8 +206,78 @@ pub extern "C" fn _start() -> ! {
     // ========================================================================
     // STAGE 5: INTERRUPT SYSTEM - Critical for multitasking and I/O
     // ========================================================================
+unsafe {
+        SERIAL_PORT.write_str("Step 5: Initializing PIC...\n");
+        pic::init();
+        SERIAL_PORT.write_str("  ✓ PIC remapped (IRQ0-7 -> ISR32-39)\n");
+        
+        SERIAL_PORT.write_str("Step 6: Initializing PIT timer...\n");
+        timer::init(100); // 100 Hz
+        SERIAL_PORT.write_str("  ✓ PIT timer initialized at 100Hz\n");
 
-    // In your _start function, before init_interrupts():
+        // Verify IDT entries before enabling interrupts
+        SERIAL_PORT.write_str("Step 7: Verifying IDT entries...\n");
+        verify_idt_entries();
+
+        // Testing PIC mapping
+        SERIAL_PORT.write_str("  Testing PIC mapping by unmasking IRQ0 briefly...\n");
+        
+        // Check stack alignment before enabling interrupts
+        let esp: u32;
+        asm!("mov {}, esp", out(reg) esp, options(nomem, nostack, preserves_flags));
+        SERIAL_PORT.write_str("  Pre-IRQ0 ESP: 0x");
+        SERIAL_PORT.write_hex(esp);
+        if esp % 4 != 0 {
+            SERIAL_PORT.write_str(" **MISALIGNED**");
+            SERIAL_PORT.write_str("\n  WARNING: Stack misaligned before enabling IRQ0! Continuing...\n");
+        } else {
+            SERIAL_PORT.write_str(" OK\n");
+        }
+
+        // Check EFLAGS before enabling interrupts
+        let eflags: u32;
+        asm!("pushf; pop {}", out(reg) eflags, options(nomem, nostack));
+        SERIAL_PORT.write_str("  Pre-IRQ0 EFLAGS: 0x");
+        SERIAL_PORT.write_hex(eflags);
+        if (eflags & (1 << 9)) == 0 {
+            SERIAL_PORT.write_str(" (IF=0, interrupts disabled)");
+        } else {
+            SERIAL_PORT.write_str(" (IF=1, interrupts enabled)");
+        }
+        SERIAL_PORT.write_str("\n");
+
+        // Enable interrupts and unmask IRQ0 only
+        asm!("sti");
+        asm!("out dx, al", in("dx") 0x21u16, in("al") 0xFEu8); // Only IRQ0 enabled
+        let mut current_ticks = timer::get_ticks();
+        let mut iterations: u32 = 0;
+
+        while timer::get_ticks() - current_ticks < 10 && iterations < 100000000 {
+            iterations += 1;
+            if iterations % 10000000 == 0 {
+                SERIAL_PORT.write_str("  Waiting for ticks: current = ");
+                SERIAL_PORT.write_decimal(timer::get_ticks() as u32);
+                SERIAL_PORT.write_str("\n");
+            }
+            asm!("hlt"); // Wait for interrupt
+        }
+
+        let final_ticks = timer::get_ticks() - current_ticks;
+        if final_ticks >= 10 {
+            SERIAL_PORT.write_str("  SUCCESS: Timer interrupts working! Ticks: ");
+            SERIAL_PORT.write_decimal(final_ticks as u32);
+            SERIAL_PORT.write_str("\n");
+        } else {
+            SERIAL_PORT.write_str("  WARNING: Timer test timed out after ");
+            SERIAL_PORT.write_decimal(iterations);
+            SERIAL_PORT.write_str(" iterations. Ticks: ");
+            SERIAL_PORT.write_decimal(final_ticks as u32);
+            SERIAL_PORT.write_str("\n");
+        }
+
+        // Mask IRQ0 again to stop timer for now
+        asm!("out dx, al", in("dx") 0x21u16, in("al") 0xFFu8);
+    }
     unsafe {
         check_system_tables();
         init_interrupts();
@@ -283,7 +353,7 @@ pub extern "C" fn _start() -> ! {
         loop_counter = loop_counter.wrapping_add(1);
         
         // Check timer periodically
-        let ticks = timer::get_ticks();
+        let ticks = unsafe { timer::get_ticks() };
         let seconds = ticks / 100;  // Assuming 100Hz timer
         
         if seconds != last_second {
@@ -333,8 +403,8 @@ fn init_interrupts() {
         SERIAL_PORT.write_str("  ✓ IDT loaded\n");
         
         // 4. Skip IDT entry verification for now - it's causing the panic
-        SERIAL_PORT.write_str("Step 4: Skipping IDT entry verification (was causing panic)\n");
-        // verify_idt_entries();  // COMMENTED OUT - causing panic
+        SERIAL_PORT.write_str("Step 4:verify_idt_entries\n");
+        verify_idt_entries();
         
         // Step 5: Initializing PIC
         SERIAL_PORT.write_str("Step 5: Initializing PIC...\n");
@@ -363,26 +433,27 @@ fn init_interrupts() {
         SERIAL_PORT.write_str("  ✓ Timer configured\n");
         
         // 8. Enable interrupts globally
-        SERIAL_PORT.write_str("Step 8: Enabling interrupts (STI)...\n");
+        SERIAL_PORT.write_str("  Enabling interrupts (STI)...\n");
         asm!("sti");
-        SERIAL_PORT.write_str("  ✓ Interrupts enabled (but all masked)\n");
+        SERIAL_PORT.write_str("  Unmasking only IRQ0 (timer)...\n");
+        asm!("out dx, al", in("dx") 0x21u16, in("al") 0xFEu8); // Only IRQ0 enabled
         
         // 9. Test basic exception handling with INT3
         SERIAL_PORT.write_str("Step 9: Testing exception handling with INT3 (breakpoint)...\n");
         // test_int3_exception();
         
         // 10. Enable keyboard interrupt only
-        SERIAL_PORT.write_str("Step 10: Enabling ONLY keyboard interrupt (IRQ1)...\n");
-        asm!("out dx, al", in("dx") 0x21u16, in("al") 0xFDu8);  // Only IRQ1 enabled
-        SERIAL_PORT.write_str("  ✓ Keyboard enabled, press a key to test\n");
+        // SERIAL_PORT.write_str("Step 10: Enabling ONLY keyboard interrupt (IRQ1)...\n");
+        // asm!("out dx, al", in("dx") 0x21u16, in("al") 0xFDu8);  // Only IRQ1 enabled
+        // SERIAL_PORT.write_str("  ✓ Keyboard enabled, press a key to test\n");
         
         // Wait for keyboard test
-        for _ in 0..10000000 {
-            asm!("nop");
-        }
+        // for _ in 0..10000000 {
+        //     asm!("nop");
+        // }
         
         // Step 11: Enable timer (IRQ0) - with better debugging
-        SERIAL_PORT.write_str("Step 11: Now enabling timer (IRQ0)...\n");
+        // SERIAL_PORT.write_str("Step 11: Now enabling timer (IRQ0)...\n");
         
         // First, let's see current timer ticks (should be 0)
         let initial_ticks = timer::get_ticks();
@@ -391,8 +462,8 @@ fn init_interrupts() {
         SERIAL_PORT.write_str("\n");
         
         // Enable only timer for now (mask = 0xFE = 11111110 binary = all masked except IRQ0)
-        SERIAL_PORT.write_str("  Unmasking only IRQ0 (timer)...\n");
-        asm!("out dx, al", in("dx") 0x21u16, in("al") 0xFEu8); // Only IRQ0 enabled
+        // SERIAL_PORT.write_str("  Unmasking only IRQ0 (timer)...\n");
+        // asm!("out dx, al", in("dx") 0x21u16, in("al") 0xFEu8); // Only IRQ0 enabled
         
         // Wait for exactly 10 timer interrupts
         SERIAL_PORT.write_str("  Waiting for timer interrupts...\n");
@@ -444,17 +515,27 @@ fn test_int3_exception() {
 }
 
 // Verify IDT entries are set correctly
+// Enhanced safer IDT verification to avoid null pointer panic
 fn verify_idt_entries() {
     unsafe {
-        // Read IDT base from IDTR
         let mut idtr: [u8; 6] = [0; 6];
         asm!("sidt [{}]", in(reg) &mut idtr);
+        let idt_limit = u16::from_le_bytes([idtr[0], idtr[1]]);
         let idt_base = u32::from_le_bytes([idtr[2], idtr[3], idtr[4], idtr[5]]);
         
-        // Check a few key entries
-        let idt_ptr = idt_base as *const u64;
-        
+        SERIAL_PORT.write_str("  IDT Base: 0x");
+        SERIAL_PORT.write_hex(idt_base);
+        SERIAL_PORT.write_str(", Limit: 0x");
+        SERIAL_PORT.write_hex(idt_limit as u32);
+        SERIAL_PORT.write_str("\n");
+
+        if idt_base == 0 {
+            SERIAL_PORT.write_str("  ERROR: IDT base is null! Cannot verify entries.\n");
+            return;
+        }
+
         // Check entry 0 (divide by zero)
+        let idt_ptr = idt_base as *const u64;
         let entry0 = *idt_ptr.offset(0);
         let offset0 = ((entry0 & 0xFFFF) | ((entry0 >> 32) & 0xFFFF0000)) as u32;
         SERIAL_PORT.write_str("  IDT[0] offset: 0x");
@@ -465,6 +546,16 @@ fn verify_idt_entries() {
         let offset32 = ((entry32 & 0xFFFF) | ((entry32 >> 32) & 0xFFFF0000)) as u32;
         SERIAL_PORT.write_str("\n  IDT[32] offset: 0x");
         SERIAL_PORT.write_hex(offset32);
+        // Compare with actual isr32 address
+        let isr32_addr = interrupts::isr32 as usize as u32;
+        SERIAL_PORT.write_str(" (isr32: 0x");
+        SERIAL_PORT.write_hex(isr32_addr);
+        SERIAL_PORT.write_str(")");
+        if offset32 != isr32_addr {
+            SERIAL_PORT.write_str(" **MISMATCH**");
+        } else {
+            SERIAL_PORT.write_str(" OK");
+        }
         
         // Check entry 33 (keyboard)
         let entry33 = *idt_ptr.offset(33);
@@ -474,51 +565,58 @@ fn verify_idt_entries() {
         SERIAL_PORT.write_str("\n");
     }
 }
-
 // Also add this diagnostic function to check GDT/IDT state:
+// Fix GDT entry print in check_system_tables
 unsafe fn check_system_tables() {
-    unsafe{
-    SERIAL_PORT.write_str("\n=== SYSTEM TABLE CHECK ===\n");
-    
-    // Check GDT
-    let mut gdt_ptr: [u8; 6] = [0; 6];
-    asm!("sgdt [{}]", in(reg) &mut gdt_ptr);
-    let gdt_limit = u16::from_le_bytes([gdt_ptr[0], gdt_ptr[1]]);
-    let gdt_base = u32::from_le_bytes([gdt_ptr[2], gdt_ptr[3], gdt_ptr[4], gdt_ptr[5]]);
-    
-    SERIAL_PORT.write_str("GDT Base: 0x");
-    SERIAL_PORT.write_hex(gdt_base);
-    SERIAL_PORT.write_str(", Limit: 0x");
-    SERIAL_PORT.write_hex(gdt_limit as u32);
-    SERIAL_PORT.write_str("\n");
-    
-    // Check IDT
-    let mut idt_ptr: [u8; 6] = [0; 6];
-    asm!("sidt [{}]", in(reg) &mut idt_ptr);
-    let idt_limit = u16::from_le_bytes([idt_ptr[0], idt_ptr[1]]);
-    let idt_base = u32::from_le_bytes([idt_ptr[2], idt_ptr[3], idt_ptr[4], idt_ptr[5]]);
-    
-    SERIAL_PORT.write_str("IDT Base: 0x");
-    SERIAL_PORT.write_hex(idt_base);
-    SERIAL_PORT.write_str(", Limit: 0x");
-    SERIAL_PORT.write_hex(idt_limit as u32);
-    SERIAL_PORT.write_str("\n");
-    
-    // Check CS register
-    let cs: u16;
-    asm!("mov {0:x}, cs", out(reg) cs, options(nomem, nostack, preserves_flags));
-    SERIAL_PORT.write_str("CS: 0x");
-    SERIAL_PORT.write_hex(cs as u32);
-    SERIAL_PORT.write_str("\n");
-    
-    // Check DS register
-    let ds: u16;
-    asm!("mov {0:x}, ds", out(reg) ds, options(nomem, nostack, preserves_flags));
-    SERIAL_PORT.write_str("DS: 0x");
-    SERIAL_PORT.write_hex(ds as u32);
-    SERIAL_PORT.write_str("\n");
-    
-    SERIAL_PORT.write_str("===================\n");
+    unsafe {
+        SERIAL_PORT.write_str("\n=== SYSTEM TABLE CHECK ===\n");
+        
+        // Check GDT
+        let mut gdt_ptr: [u8; 6] = [0; 6];
+        asm!("sgdt [{}]", in(reg) &mut gdt_ptr);
+        let gdt_limit = u16::from_le_bytes([gdt_ptr[0], gdt_ptr[1]]);
+        let gdt_base = u32::from_le_bytes([gdt_ptr[2], gdt_ptr[3], gdt_ptr[4], gdt_ptr[5]]);
+        
+        SERIAL_PORT.write_str("GDT Base: 0x");
+        SERIAL_PORT.write_hex(gdt_base);
+        SERIAL_PORT.write_str(", Limit: 0x");
+        SERIAL_PORT.write_hex(gdt_limit as u32);
+        SERIAL_PORT.write_str("\n");
+        
+        // Check IDT
+        let mut idt_ptr: [u8; 6] = [0; 6];
+        asm!("sidt [{}]", in(reg) &mut idt_ptr);
+        let idt_limit = u16::from_le_bytes([idt_ptr[0], idt_ptr[1]]);
+        let idt_base = u32::from_le_bytes([idt_ptr[2], idt_ptr[3], idt_ptr[4], idt_ptr[5]]);
+        
+        SERIAL_PORT.write_str("IDT Base: 0x");
+        SERIAL_PORT.write_hex(idt_base);
+        SERIAL_PORT.write_str(", Limit: 0x");
+        SERIAL_PORT.write_hex(idt_limit as u32);
+        SERIAL_PORT.write_str("\n");
+        
+        // Check CS register
+        let cs: u16;
+        asm!("mov {0:x}, cs", out(reg) cs, options(nomem, nostack, preserves_flags));
+        SERIAL_PORT.write_str("CS: 0x");
+        SERIAL_PORT.write_hex(cs as u32);
+        SERIAL_PORT.write_str("\n");
+
+        let gdt_base_ptr = gdt_base as *const u64;
+        let cs_entry = *gdt_base_ptr.offset((cs / 8) as isize);
+        SERIAL_PORT.write_str("CS GDT Entry: 0x");
+        SERIAL_PORT.write_hex((cs_entry >> 32) as u32); // High 32 bits
+        SERIAL_PORT.write_hex(cs_entry as u32);         // Low 32 bits
+        SERIAL_PORT.write_str("\n");
+        
+        // Check DS register
+        let ds: u16;
+        asm!("mov {0:x}, ds", out(reg) ds, options(nomem, nostack, preserves_flags));
+        SERIAL_PORT.write_str("DS: 0x");
+        SERIAL_PORT.write_hex(ds as u32);
+        SERIAL_PORT.write_str("\n");
+        
+        SERIAL_PORT.write_str("===================\n");
     }
 }
 

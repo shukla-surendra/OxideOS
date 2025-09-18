@@ -1,34 +1,17 @@
 // src/kernel/pic.rs
-use core::arch::asm;
 use crate::kernel::serial::SERIAL_PORT;
+use core::arch::asm;
 
-const PIC1_COMMAND: u16 = 0x20;
-const PIC1_DATA: u16 = 0x21;
-const PIC2_COMMAND: u16 = 0xA0;
-const PIC2_DATA: u16 = 0xA1;
+pub const PIC1_COMMAND: u16 = 0x20;
+pub const PIC1_DATA: u16 = 0x21;
+pub const PIC2_COMMAND: u16 = 0xA0;
+pub const PIC2_DATA: u16 = 0xA1;
+pub const PIC_EOI: u8 = 0x20;
 
-const PIC_EOI: u8 = 0x20;
-
-/// Send End-of-Interrupt to PIC
-pub unsafe fn send_eoi(irq: u8) {
-    if irq >= 8 {
-        asm!("out dx, al", in("dx") PIC2_COMMAND, in("al") PIC_EOI);
-        unsafe { io_wait() };
-    }
-    asm!("out dx, al", in("dx") PIC1_COMMAND, in("al") PIC_EOI);
-    unsafe { io_wait() };
+unsafe fn io_wait() {
+    asm!("out 0x80, al", in("al") 0u8);
 }
 
-/// Small delay for PIC initialization
-#[inline]
-pub unsafe fn io_wait() {
-    asm!("out 0x80, al", in("al") 0u8); // Write to unused port for delay    
-    for _ in 0..10 {
-        asm!("nop");
-    }
-}
-
-/// Initialize the PIC
 pub unsafe fn init() {
     // Save masks
     let mask1: u8;
@@ -37,13 +20,11 @@ pub unsafe fn init() {
     unsafe { io_wait() };
     asm!("in al, dx", out("al") mask2, in("dx") PIC2_DATA);
     unsafe { io_wait() };
-    unsafe{
-    SERIAL_PORT.write_str("  Saved PIC masks - Master: 0x");
-    SERIAL_PORT.write_hex(mask1 as u32);
-    SERIAL_PORT.write_str(", Slave: 0x");
-    SERIAL_PORT.write_hex(mask2 as u32);
-    SERIAL_PORT.write_str("\n");
-    }
+    unsafe { SERIAL_PORT.write_str("  Saved PIC masks - Master: 0x") };
+    unsafe { SERIAL_PORT.write_hex(mask1 as u32) };
+    unsafe { SERIAL_PORT.write_str(", Slave: 0x") };
+    unsafe { SERIAL_PORT.write_hex(mask2 as u32) };
+    unsafe { SERIAL_PORT.write_str("\n") };
 
     // Start initialization sequence (ICW1)
     asm!("out dx, al", in("dx") PIC1_COMMAND, in("al") 0x11u8); // Edge-triggered, cascade, ICW4 needed
@@ -69,12 +50,25 @@ pub unsafe fn init() {
     asm!("out dx, al", in("dx") PIC2_DATA, in("al") 0x01u8);
     unsafe { io_wait() };
     
-    // Restore masks
-    asm!("out dx, al", in("dx") PIC1_DATA, in("al") mask1);
+    // Clear masks to ensure IRQ0 is unmasked
+    asm!("out dx, al", in("dx") PIC1_DATA, in("al") 0xFEu8); // Unmask IRQ0 only
     unsafe { io_wait() };
-    asm!("out dx, al", in("dx") PIC2_DATA, in("al") mask2);
+    asm!("out dx, al", in("dx") PIC2_DATA, in("al") 0xFFu8); // Mask all slave IRQs
     unsafe { io_wait() };
 
-    // Log completion
+    // Clear any pending interrupts
+    asm!("out dx, al", in("dx") PIC1_COMMAND, in("al") PIC_EOI);
+    unsafe { io_wait() };
+    asm!("out dx, al", in("dx") PIC2_COMMAND, in("al") PIC_EOI);
+    unsafe { io_wait() };
+
     unsafe { SERIAL_PORT.write_str("  PIC initialized - Master vector: 0x20, Slave vector: 0x28\n") };
+    unsafe { SERIAL_PORT.write_str("  PIC masks set - Master: 0xFE, Slave: 0xFF\n") };
+}
+
+pub unsafe fn send_eoi(irq: u8) {
+    if irq >= 8 {
+        asm!("out dx, al", in("dx") PIC2_COMMAND, in("al") PIC_EOI);
+    }
+    asm!("out dx, al", in("dx") PIC1_COMMAND, in("al") PIC_EOI);
 }
