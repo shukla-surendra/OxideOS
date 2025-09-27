@@ -1,12 +1,47 @@
 // Complete mouse.rs - Replace your entire file with this
 
 use crate::kernel::serial::SERIAL_PORT;
+#[derive(Copy, Clone)]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+/// Get cursor position from interrupt system - FIXED VERSION
 
 pub struct MouseCursor {
     pub x: i64,
     pub y: i64,
     pub visible: bool,
     pub color: u32,
+}
+
+pub fn get_mouse_position() -> Option<(i64, i64)> {
+    unsafe {
+        use crate::kernel::interrupts::MOUSE_CURSOR;
+        // Use addr_of! for safe static access
+        let cursor_ptr = core::ptr::addr_of!(MOUSE_CURSOR);
+        (*cursor_ptr).as_ref().map(|cursor| cursor.get_position())
+    }
+}
+
+/// Check if mouse button is pressed - FIXED VERSION
+pub fn is_mouse_button_pressed(button: MouseButton) -> bool {
+    unsafe {
+        use crate::kernel::interrupts::MOUSE_CONTROLLER;
+        // Use addr_of! for safe static access
+        let controller_ptr = core::ptr::addr_of!(MOUSE_CONTROLLER);
+        if let Some(ref mouse) = (*controller_ptr).as_ref() {
+            match button {
+                MouseButton::Left => mouse.is_left_clicked(),
+                MouseButton::Right => mouse.is_right_clicked(),
+                MouseButton::Middle => mouse.middle_button,
+            }
+        } else {
+            false
+        }
+    }
 }
 
 impl MouseCursor {

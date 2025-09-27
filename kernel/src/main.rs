@@ -20,7 +20,9 @@ mod gui;                // GUI system
 // IMPORTS
 // ============================================================================
 use core::arch::asm;
-use gui::{Graphics, colors, widgets, font, MouseButton};
+use gui::graphics::Graphics;
+use gui::mouse::{MouseButton};
+use gui::{ colors, widgets, fonts };
 use kernel::serial::SERIAL_PORT;
 use kernel::{idt, interrupts, timer, pic};
 
@@ -271,7 +273,7 @@ unsafe fn run_gui_demo_with_mouse(graphics: &Graphics) {
         }
 
         // Check for mouse movement and redraw cursor if needed
-        if let Some(cursor_pos) = gui::get_mouse_position() {
+        if let Some(cursor_pos) = gui::mouse:: get_mouse_position() {
             if cursor_pos != last_cursor_pos {
                 SERIAL_PORT.write_str("CURSOR: Moved to (");
                 SERIAL_PORT.write_decimal(cursor_pos.0 as u32);
@@ -291,7 +293,7 @@ unsafe fn run_gui_demo_with_mouse(graphics: &Graphics) {
             }
 
             // Handle mouse clicks
-            if gui::is_mouse_button_pressed(MouseButton::Left) {
+            if gui::mouse::is_mouse_button_pressed(MouseButton::Left) {
                 SERIAL_PORT.write_str("CLICK: Left button at (");
                 SERIAL_PORT.write_decimal(cursor_pos.0 as u32);
                 SERIAL_PORT.write_str(",");
