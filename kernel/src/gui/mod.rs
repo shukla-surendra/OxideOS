@@ -1,9 +1,9 @@
 // src/gui/mod.rs - Basic GUI system for OxideOS
-#![no_std]
-
 use limine::framebuffer::Framebuffer;
 use crate::kernel::serial::SERIAL_PORT;
 
+// Export mouse module
+pub mod mouse;
 
 // Basic color definitions
 pub mod colors {
@@ -55,7 +55,7 @@ impl Graphics {
     pub fn clear_screen(&self, color: u32) {
         let fb_ptr = self.framebuffer_addr as *mut u32;
         let pixel_count = (self.width * self.height) as usize;
-        
+
         unsafe {
             for i in 0..pixel_count {
                 *fb_ptr.add(i) = color;
@@ -71,7 +71,7 @@ impl Graphics {
 
         let offset = (y * self.width + x) as usize;
         let fb_ptr = self.framebuffer_addr as *mut u32;
-        
+
         unsafe {
             *fb_ptr.add(offset) = color;
         }
@@ -99,7 +99,7 @@ impl Graphics {
                 }
             }
         }
-        
+
         // Left and right borders
         for i in 0..height {
             for t in 0..thickness {
@@ -172,7 +172,7 @@ impl Graphics {
     }
 
     // Helper function to safely put pixel with bounds checking
-    fn put_pixel_safe(&self, x: i64, y: i64, color: u32) {
+    pub fn put_pixel_safe(&self, x: i64, y: i64, color: u32) {
         if x >= 0 && y >= 0 && x < self.width as i64 && y < self.height as i64 {
             self.put_pixel(x as u64, y as u64, color);
         }
@@ -181,6 +181,55 @@ impl Graphics {
     // Get screen dimensions
     pub fn get_dimensions(&self) -> (u64, u64) {
         (self.width, self.height)
+    }
+
+    /// Draw a simple arrow cursor at the specified position
+    pub fn draw_cursor(&self, x: i64, y: i64, color: u32) {
+        // Simple arrow cursor (11x19 pixels)
+        let cursor_data = [
+            "X          ",
+            "XX         ",
+            "X.X        ",
+            "X..X       ",
+            "X...X      ",
+            "X....X     ",
+            "X.....X    ",
+            "X......X   ",
+            "X.......X  ",
+            "X........X ",
+            "X.........X",
+            "X......XXXX",
+            "X...X..X   ",
+            "X..X X..X  ",
+            "X.X  X..X  ",
+            "XX   X..X  ",
+            "X     X..X ",
+            "      X..X ",
+            "       XX  ",
+        ];
+
+        for (row, line) in cursor_data.iter().enumerate() {
+            for (col, ch) in line.chars().enumerate() {
+                let px = x + col as i64;
+                let py = y + row as i64;
+
+                match ch {
+                    'X' => self.put_pixel_safe(px, py, color),
+                    '.' => self.put_pixel_safe(px, py, 0xFF000000), // Black outline
+                    _ => {} // Transparent
+                }
+            }
+        }
+    }
+
+    /// Clear cursor area (call before redrawing)
+    pub fn clear_cursor(&self, x: i64, y: i64, bg_color: u32) {
+        // Clear a 11x19 area around cursor
+        for dy in 0..19 {
+            for dx in 0..11 {
+                self.put_pixel_safe(x + dx, y + dy, bg_color);
+            }
+        }
     }
 }
 
@@ -198,7 +247,7 @@ pub mod font {
         0b00111100,
     ];
 
-    // Simple 8x8 bitmap for letter 'S'  
+    // Simple 8x8 bitmap for letter 'S'
     pub const CHAR_S: [u8; 8] = [
         0b00111100,
         0b01100110,
@@ -211,7 +260,7 @@ pub mod font {
     ];
 
     // You can add more characters here...
-    
+
     pub fn draw_char(graphics: &super::Graphics, x: u64, y: u64, ch: char, color: u32) {
         let bitmap = match ch {
             'O' | 'o' => &CHAR_O,
@@ -265,13 +314,13 @@ pub mod widgets {
 
         pub fn draw(&self, graphics: &Graphics) {
             let bg = if self.pressed { colors::GRAY } else { self.bg_color };
-            
+
             // Draw button background
             graphics.fill_rect(self.x, self.y, self.width, self.height, bg);
-            
+
             // Draw border
             graphics.draw_rect(self.x, self.y, self.width, self.height, colors::BLACK, 1);
-            
+
             // Draw text (centered roughly)
             let text_x = self.x + (self.width / 2).saturating_sub((self.text.len() as u64 * 9) / 2);
             let text_y = self.y + (self.height / 2).saturating_sub(4);
@@ -280,7 +329,7 @@ pub mod widgets {
 
         pub fn is_clicked(&self, mouse_x: u64, mouse_y: u64) -> bool {
             mouse_x >= self.x && mouse_x < self.x + self.width &&
-            mouse_y >= self.y && mouse_y < self.y + self.height
+                mouse_y >= self.y && mouse_y < self.y + self.height
         }
     }
 
@@ -304,15 +353,50 @@ pub mod widgets {
         pub fn draw(&self, graphics: &Graphics) {
             // Draw window background
             graphics.fill_rect(self.x, self.y, self.width, self.height, self.bg_color);
-            
+
             // Draw title bar
             graphics.fill_rect(self.x, self.y, self.width, 30, colors::BLUE);
-            
+
             // Draw window border
             graphics.draw_rect(self.x, self.y, self.width, self.height, colors::BLACK, 2);
-            
+
             // Draw title text
             super::font::draw_string(graphics, self.x + 10, self.y + 11, self.title, colors::WHITE);
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+/// Get cursor position from interrupt system - FIXED VERSION
+pub fn get_mouse_position() -> Option<(i64, i64)> {
+    unsafe {
+        use crate::kernel::interrupts::MOUSE_CURSOR;
+        // Use addr_of! for safe static access
+        let cursor_ptr = core::ptr::addr_of!(MOUSE_CURSOR);
+        (*cursor_ptr).as_ref().map(|cursor| cursor.get_position())
+    }
+}
+
+/// Check if mouse button is pressed - FIXED VERSION
+pub fn is_mouse_button_pressed(button: MouseButton) -> bool {
+    unsafe {
+        use crate::kernel::interrupts::MOUSE_CONTROLLER;
+        // Use addr_of! for safe static access
+        let controller_ptr = core::ptr::addr_of!(MOUSE_CONTROLLER);
+        if let Some(ref mouse) = (*controller_ptr).as_ref() {
+            match button {
+                MouseButton::Left => mouse.is_left_clicked(),
+                MouseButton::Right => mouse.is_right_clicked(),
+                MouseButton::Middle => mouse.middle_button,
+            }
+        } else {
+            false
         }
     }
 }

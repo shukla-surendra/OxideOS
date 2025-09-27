@@ -1,14 +1,20 @@
-// src/kernel/interrupts.rs - Complete 64-bit interrupt handling
+// src/kernel/interrupts.rs - Complete 64-bit interrupt handling with mouse support
 use core::arch::asm;
 use crate::kernel::serial::SERIAL_PORT;
 use crate::kernel::pic;
 use super::interrupts_asm;
+use crate::gui::mouse::{PS2Mouse, MouseCursor};
 
 // ============================================================================
 // GLOBAL STATE
 // ============================================================================
 
 pub static mut TIMER_TICKS: u64 = 0;
+pub static mut MOUSE_CONTROLLER: Option<PS2Mouse> = None;
+pub static mut MOUSE_CURSOR: Option<MouseCursor> = None;
+pub static mut SCREEN_DIMENSIONS: (u64, u64) = (0, 0);
+
+static mut MOUSE_INTERRUPT_COUNT: u64 = 0;
 
 // ============================================================================
 // 64-BIT INTERRUPT FRAME STRUCTURE
@@ -33,11 +39,11 @@ pub struct InterruptFrame {
     pub rcx: u64,
     pub rbx: u64,
     pub rax: u64,
-    
+
     // Pushed by our stub before calling handler
     pub int_no: u64,
     pub err_code: u64,
-    
+
     // Pushed by CPU during interrupt (always present in 64-bit)
     pub rip: u64,
     pub cs: u64,
@@ -98,15 +104,20 @@ pub extern "C" fn isr_common_handler(frame: *mut InterruptFrame) {
                 handle_keyboard_interrupt();
                 pic::send_eoi(1);
             },
-            34..=47 => {
-                // Other hardware IRQs
+            34..=43 => {
+                // Other hardware IRQs (IRQ2-11) - EXCLUDE IRQ12
                 handle_hardware_irq(int_no);
-                // Send EOI to appropriate PIC
-                if int_no >= 40 {
-                    pic::send_eoi((int_no - 32) as u8); // Slave PIC
-                } else {
-                    pic::send_eoi(0); // Master PIC only
-                }
+                pic::send_eoi((int_no - 32) as u8);
+            },
+            44 => {
+                // PS/2 Mouse interrupt (IRQ12) - ONLY HANDLE HERE
+                handle_mouse_interrupt();
+                pic::send_eoi(12);
+            },
+            45..=47 => {
+                // Hardware IRQs 13-15
+                handle_hardware_irq(int_no);
+                pic::send_eoi((int_no - 32) as u8);
             },
             48..=127 => {
                 // Reserved/unused
@@ -142,14 +153,14 @@ pub extern "C" fn isr_common_handler(frame: *mut InterruptFrame) {
 /// Handle timer interrupt (IRQ0)
 unsafe fn handle_timer_interrupt() {
     TIMER_TICKS += 1;
-    
+
     // Periodic output to show system is alive
     if TIMER_TICKS <= 10 || TIMER_TICKS % 100 == 0 {
         SERIAL_PORT.write_str("T64:");
         SERIAL_PORT.write_decimal(TIMER_TICKS as u32);
         SERIAL_PORT.write_str(" ");
     }
-    
+
     // Detailed debug for first few ticks
     if TIMER_TICKS <= 3 {
         SERIAL_PORT.write_str("(RSP in timer: ");
@@ -163,32 +174,97 @@ unsafe fn handle_timer_interrupt() {
 
 /// Handle keyboard interrupt (IRQ1)
 unsafe fn handle_keyboard_interrupt() {
-    // Read scancode from keyboard controller
-    let scancode: u8;
-    asm!("in al, 0x60", out("al") scancode, options(nostack, nomem));
-    
-    SERIAL_PORT.write_str("K64:0x");
-    SERIAL_PORT.write_hex(scancode as u32);
-    SERIAL_PORT.write_str(" ");
-    
-    // Basic key processing (just for demonstration)
-    match scancode {
-        0x1E => SERIAL_PORT.write_str("(A) "), // A key
-        0x30 => SERIAL_PORT.write_str("(B) "), // B key
-        0x2E => SERIAL_PORT.write_str("(C) "), // C key
-        0x01 => SERIAL_PORT.write_str("(ESC) "), // Escape
-        0x1C => SERIAL_PORT.write_str("(ENTER) "), // Enter
-        _ => {} // Other keys
+    // Check status register FIRST to see if this is actually keyboard data
+    let status: u8;
+    asm!("in al, 0x64", out("al") status, options(nostack, nomem));
+
+    // Check if data is available (bit 0) and if it's from keyboard (bit 5 clear)
+    if (status & 0x01) != 0 {
+        if (status & 0x20) == 0 {
+            // This is keyboard data - process it
+            let scancode: u8;
+            asm!("in al, 0x60", out("al") scancode, options(nostack, nomem));
+
+            SERIAL_PORT.write_str("K64:0x");
+            SERIAL_PORT.write_hex(scancode as u32);
+            SERIAL_PORT.write_str(" ");
+
+            // Basic key processing (just for demonstration)
+            match scancode {
+                0x1E => SERIAL_PORT.write_str("(A) "), // A key
+                0x30 => SERIAL_PORT.write_str("(B) "), // B key
+                0x2E => SERIAL_PORT.write_str("(C) "), // C key
+                0x01 => SERIAL_PORT.write_str("(ESC) "), // Escape
+                0x1C => SERIAL_PORT.write_str("(ENTER) "), // Enter
+                _ => {} // Other keys
+            }
+        } else {
+            // This is mouse data that arrived on keyboard IRQ - DON'T consume it!
+            SERIAL_PORT.write_str("KEYBOARD IRQ but mouse data - not consuming\n");
+            // Don't read from 0x60 - let the mouse handler get it
+        }
+    } else {
+        SERIAL_PORT.write_str("KEYBOARD IRQ but no data available\n");
     }
 }
 
+// Also add this getter function:
+pub unsafe fn get_mouse_interrupt_count() -> u64 {
+    MOUSE_INTERRUPT_COUNT
+}
+/// Handle mouse interrupt (IRQ12) - FIXED VERSION
+/// Handle mouse interrupt (IRQ12) - DEBUG VERSION
+unsafe fn handle_mouse_interrupt() {
+    MOUSE_INTERRUPT_COUNT += 1;
+
+    // ALWAYS print when mouse interrupt fires (for debugging)
+    SERIAL_PORT.write_str("MOUSE_INT #");
+    SERIAL_PORT.write_decimal(MOUSE_INTERRUPT_COUNT as u32);
+    SERIAL_PORT.write_str(" fired!\n");
+
+    // Check if mouse data is actually available
+    let status: u8;
+    asm!("in al, 0x64", out("al") status, options(nostack, nomem));
+
+    SERIAL_PORT.write_str("  Status: 0x");
+    SERIAL_PORT.write_hex(status as u32);
+    if (status & 0x20) != 0 {
+        SERIAL_PORT.write_str(" (mouse data)");
+    } else {
+        SERIAL_PORT.write_str(" (keyboard data)");
+    }
+    SERIAL_PORT.write_str("\n");
+
+    // Only proceed if it's actually mouse data
+    if (status & 0x01) != 0 && (status & 0x20) != 0 {
+        // Use addr_of_mut! to avoid creating intermediate references
+        let mouse_ptr = core::ptr::addr_of_mut!(MOUSE_CONTROLLER);
+        let cursor_ptr = core::ptr::addr_of_mut!(MOUSE_CURSOR);
+
+        if let (Some(ref mut mouse), Some(ref mut cursor)) =
+            ((*mouse_ptr).as_mut(), (*cursor_ptr).as_mut()) {
+            let (width, height) = SCREEN_DIMENSIONS;
+            mouse.handle_interrupt(cursor, width, height);
+        } else {
+            // Only read and discard if no handler is available
+            let _data: u8;
+            asm!("in al, 0x60", out("al") _data, options(nostack, nomem));
+            SERIAL_PORT.write_str("  Mouse interrupt but no handler initialized\n");
+        }
+    } else {
+        SERIAL_PORT.write_str("  Mouse interrupt but no mouse data available!\n");
+        // Read and discard the data anyway
+        let _data: u8;
+        asm!("in al, 0x60", out("al") _data, options(nostack, nomem));
+    }
+}
 /// Handle other hardware IRQs
 unsafe fn handle_hardware_irq(int_no: u64) {
     let irq_num = int_no - 32;
     SERIAL_PORT.write_str("HW-IRQ:");
     SERIAL_PORT.write_decimal(irq_num as u32);
     SERIAL_PORT.write_str(" ");
-    
+
     // Handle specific IRQs if needed
     match irq_num {
         2 => { /* Cascade - should never happen */ }
@@ -198,7 +274,8 @@ unsafe fn handle_hardware_irq(int_no: u64) {
         6 => { /* Floppy */ }
         7 => { /* LPT1 */ }
         8 => { /* RTC */ }
-        12 => { /* PS/2 Mouse */ }
+        // REMOVE THIS CASE - IRQ12 is handled separately at interrupt 44
+        // 12 => { handle_mouse_interrupt(); }
         14 => { /* Primary ATA */ }
         15 => { /* Secondary ATA */ }
         _ => { /* Other IRQ */ }
@@ -209,14 +286,14 @@ unsafe fn handle_hardware_irq(int_no: u64) {
 unsafe fn handle_system_call(frame: *mut InterruptFrame) {
     // In 64-bit, system call number typically in RAX
     let syscall_num = (*frame).rax;
-    let arg1 = (*frame).rdi;
-    let arg2 = (*frame).rsi;
-    let arg3 = (*frame).rdx;
-    
+    let _arg1 = (*frame).rdi;
+    let _arg2 = (*frame).rsi;
+    let _arg3 = (*frame).rdx;
+
     SERIAL_PORT.write_str("SYSCALL:");
     SERIAL_PORT.write_decimal(syscall_num as u32);
     SERIAL_PORT.write_str(" ");
-    
+
     match syscall_num {
         0 => {
             // Example: sys_write
@@ -234,6 +311,40 @@ unsafe fn handle_system_call(frame: *mut InterruptFrame) {
 }
 
 // ============================================================================
+// MOUSE SYSTEM INITIALIZATION
+// ============================================================================
+
+/// Initialize mouse system - called after framebuffer is set up
+pub unsafe fn init_mouse_system(screen_width: u64, screen_height: u64) {
+    SERIAL_PORT.write_str("Initializing mouse system...\n");
+
+    SCREEN_DIMENSIONS = (screen_width, screen_height);
+
+    // Use addr_of_mut! for safe static access
+    let controller_ptr = core::ptr::addr_of_mut!(MOUSE_CONTROLLER);
+    let cursor_ptr = core::ptr::addr_of_mut!(MOUSE_CURSOR);
+
+    *controller_ptr = Some(PS2Mouse::new());
+    *cursor_ptr = Some(MouseCursor::new());
+
+    // Initialize the PS/2 mouse hardware
+    if let Some(ref mut mouse) = (*controller_ptr).as_mut() {
+        mouse.init();
+    }
+
+    // Enable mouse interrupt (IRQ12)
+    pic::unmask_irq(12);
+    // TODO Test
+    // verify_pic_mouse_state();
+
+    SERIAL_PORT.write_str("Mouse system initialized - IRQ12 enabled\n");
+    SERIAL_PORT.write_str("Screen dimensions: ");
+    SERIAL_PORT.write_decimal(screen_width as u32);
+    SERIAL_PORT.write_str("x");
+    SERIAL_PORT.write_decimal(screen_height as u32);
+    SERIAL_PORT.write_str("\n");
+}
+// ============================================================================
 // CPU EXCEPTION HANDLER - 64-bit version
 // ============================================================================
 
@@ -243,7 +354,7 @@ fn handle_cpu_exception_64(int_no: u64, err_code: u64, frame: *mut InterruptFram
         SERIAL_PORT.write_str("\n=== 64-BIT CPU EXCEPTION ===\n");
         SERIAL_PORT.write_str("Exception #");
         SERIAL_PORT.write_decimal(int_no as u32);
-        
+
         let name = match int_no {
             0 => " (Divide by Zero)",
             1 => " (Debug)",
@@ -269,44 +380,44 @@ fn handle_cpu_exception_64(int_no: u64, err_code: u64, frame: *mut InterruptFram
             21 => " (Control Protection Exception)",
             _ => " (Reserved/Unknown)",
         };
-        
+
         SERIAL_PORT.write_str(name);
         SERIAL_PORT.write_str("\n");
-        
+
         // Error code
         SERIAL_PORT.write_str("Error Code: 0x");
         SERIAL_PORT.write_hex((err_code >> 32) as u32);
         SERIAL_PORT.write_hex(err_code as u32);
         SERIAL_PORT.write_str("\n");
-        
+
         // Register dump
         SERIAL_PORT.write_str("RIP: 0x");
         SERIAL_PORT.write_hex(((*frame).rip >> 32) as u32);
         SERIAL_PORT.write_hex((*frame).rip as u32);
         SERIAL_PORT.write_str("\n");
-        
+
         SERIAL_PORT.write_str("RSP: 0x");
         SERIAL_PORT.write_hex(((*frame).rsp >> 32) as u32);
         SERIAL_PORT.write_hex((*frame).rsp as u32);
         SERIAL_PORT.write_str("\n");
-        
+
         SERIAL_PORT.write_str("RBP: 0x");
         SERIAL_PORT.write_hex(((*frame).rbp >> 32) as u32);
         SERIAL_PORT.write_hex((*frame).rbp as u32);
         SERIAL_PORT.write_str("\n");
-        
+
         SERIAL_PORT.write_str("RAX: 0x");
         SERIAL_PORT.write_hex(((*frame).rax >> 32) as u32);
         SERIAL_PORT.write_hex((*frame).rax as u32);
         SERIAL_PORT.write_str("\n");
-        
+
         SERIAL_PORT.write_str("CS: 0x");
         SERIAL_PORT.write_hex((*frame).cs as u32);
         SERIAL_PORT.write_str(" RFLAGS: 0x");
         SERIAL_PORT.write_hex(((*frame).rflags >> 32) as u32);
         SERIAL_PORT.write_hex((*frame).rflags as u32);
         SERIAL_PORT.write_str("\n");
-        
+
         // Special handling for specific exceptions
         match int_no {
             14 => {
@@ -317,7 +428,7 @@ fn handle_cpu_exception_64(int_no: u64, err_code: u64, frame: *mut InterruptFram
                 SERIAL_PORT.write_hex((fault_addr >> 32) as u32);
                 SERIAL_PORT.write_hex(fault_addr as u32);
                 SERIAL_PORT.write_str("\n");
-                
+
                 // Decode error code for page fault
                 SERIAL_PORT.write_str("Fault Type: ");
                 if err_code & 1 != 0 { SERIAL_PORT.write_str("Protection "); } else { SERIAL_PORT.write_str("Non-present "); }
@@ -335,10 +446,10 @@ fn handle_cpu_exception_64(int_no: u64, err_code: u64, frame: *mut InterruptFram
             },
             _ => {}
         }
-        
+
         SERIAL_PORT.write_str("=== SYSTEM HALTED ===\n");
     }
-    
+
     halt_system();
 }
 
@@ -366,7 +477,7 @@ fn halt_system() -> ! {
 pub fn verify_handlers() {
     unsafe {
         SERIAL_PORT.write_str("Verifying 64-bit ISR addresses:\n");
-        
+
         // Check key handlers
         let addrs = [
             ("isr0 (Divide by Zero)", isr0 as usize as u64),
@@ -375,8 +486,9 @@ pub fn verify_handlers() {
             ("isr14 (Page Fault)", isr14 as usize as u64),
             ("isr32 (Timer)", isr32 as usize as u64),
             ("isr33 (Keyboard)", isr33 as usize as u64),
+            ("isr44 (Mouse)", isr44 as usize as u64),
         ];
-        
+
         for (name, addr) in addrs.iter() {
             SERIAL_PORT.write_str("  ");
             SERIAL_PORT.write_str(name);
@@ -385,7 +497,7 @@ pub fn verify_handlers() {
             SERIAL_PORT.write_hex(*addr as u32);
             SERIAL_PORT.write_str("\n");
         }
-        
+
         // Verify addresses are in reasonable range for 64-bit kernel
         let first_addr = addrs[0].1;
         if first_addr < 0x100000 || first_addr >= 0x8000_0000_0000_0000 {
@@ -411,15 +523,65 @@ unsafe extern "C" {
     pub unsafe fn isr24();  pub unsafe fn isr25();  pub unsafe fn isr26();  pub unsafe fn isr27();
     pub unsafe fn isr28();  pub unsafe fn isr29();  pub unsafe fn isr30();  pub unsafe fn isr31();
 
-    // Hardware IRQs (32-47)  
+    // Hardware IRQs (32-47)
     pub unsafe fn isr32();  pub unsafe fn isr33();  pub unsafe fn isr34();  pub unsafe fn isr35();
     pub unsafe fn isr36();  pub unsafe fn isr37();  pub unsafe fn isr38();  pub unsafe fn isr39();
     pub unsafe fn isr40();  pub unsafe fn isr41();  pub unsafe fn isr42();  pub unsafe fn isr43();
     pub unsafe fn isr44();  pub unsafe fn isr45();  pub unsafe fn isr46();  pub unsafe fn isr47();
-    
+
     // Additional utility functions from assembly
     pub unsafe fn get_rsp() -> u64;
     pub unsafe fn get_rbp() -> u64;
     pub unsafe fn read_cr2() -> u64;
     pub unsafe fn read_cr3() -> u64;
+}
+
+
+// Add this function to your interrupts.rs file to verify PIC state
+pub unsafe fn verify_pic_mouse_state() {
+    SERIAL_PORT.write_str("=== VERIFYING PIC STATE FOR MOUSE ===\n");
+
+    // Read current PIC masks
+    let master_mask: u8;
+    let slave_mask: u8;
+
+    asm!("in al, 0x21", out("al") master_mask, options(nostack, nomem));
+    asm!("in al, 0xA1", out("al") slave_mask, options(nostack, nomem));
+
+    SERIAL_PORT.write_str("Current PIC masks:\n");
+    SERIAL_PORT.write_str("  Master (0x21): 0x");
+    SERIAL_PORT.write_hex(master_mask as u32);
+    SERIAL_PORT.write_str("\n");
+    SERIAL_PORT.write_str("  Slave (0xA1): 0x");
+    SERIAL_PORT.write_hex(slave_mask as u32);
+    SERIAL_PORT.write_str("\n");
+
+    // Check specific IRQs
+    SERIAL_PORT.write_str("IRQ Status:\n");
+    SERIAL_PORT.write_str("  IRQ0 (Timer): ");
+    if (master_mask & 0x01) == 0 { SERIAL_PORT.write_str("ENABLED"); } else { SERIAL_PORT.write_str("MASKED"); }
+    SERIAL_PORT.write_str("\n");
+
+    SERIAL_PORT.write_str("  IRQ1 (Keyboard): ");
+    if (master_mask & 0x02) == 0 { SERIAL_PORT.write_str("ENABLED"); } else { SERIAL_PORT.write_str("MASKED"); }
+    SERIAL_PORT.write_str("\n");
+
+    SERIAL_PORT.write_str("  IRQ2 (Cascade): ");
+    if (master_mask & 0x04) == 0 { SERIAL_PORT.write_str("ENABLED"); } else { SERIAL_PORT.write_str("MASKED"); }
+    SERIAL_PORT.write_str("\n");
+
+    SERIAL_PORT.write_str("  IRQ12 (Mouse): ");
+    if (slave_mask & 0x10) == 0 { SERIAL_PORT.write_str("ENABLED"); } else { SERIAL_PORT.write_str("MASKED"); }
+    SERIAL_PORT.write_str("\n");
+
+    // Force unmask IRQ12 again
+    SERIAL_PORT.write_str("Force unmasking IRQ12...\n");
+    let new_slave_mask = slave_mask & !0x10; // Clear bit 4 (IRQ12)
+    asm!("out 0xA1, al", in("al") new_slave_mask, options(nostack, nomem));
+
+    // Also ensure cascade is enabled
+    let new_master_mask = master_mask & !0x04; // Clear bit 2 (cascade)
+    asm!("out 0x21, al", in("al") new_master_mask, options(nostack, nomem));
+
+    SERIAL_PORT.write_str("=== PIC VERIFICATION COMPLETE ===\n");
 }

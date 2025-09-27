@@ -33,6 +33,9 @@ run-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).
 		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
+# 		-device usb-ehci,id=ehci \
+# 		-device usb-mouse,bus=ehci.0 \
+		-device i8042
 		$(QEMUFLAGS)
 
 .PHONY: run-hdd-x86_64

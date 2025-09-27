@@ -155,6 +155,7 @@ pub unsafe fn init() {
     SERIAL_PORT.write_str("64-bit PIC initialized:\n");
     SERIAL_PORT.write_str("  Master vector: 0x20 (32), Slave vector: 0x28 (40)\n");
     SERIAL_PORT.write_str("  All IRQs masked initially\n");
+    unmask_irq(2); // Enable cascade for slave PIC
 }
 
 pub unsafe fn send_eoi(irq: u8) {
