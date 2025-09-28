@@ -26,6 +26,7 @@ impl SerialPort {
 
     /// Initialize the serial port
     pub unsafe fn init(&self) {
+        unsafe{
         // Disable interrupts
         self.outb(INT_ENABLE_REG, 0x00);
 
@@ -57,20 +58,24 @@ impl SerialPort {
         // Set it in normal operation mode
         self.outb(MODEM_CTRL_REG, 0x0F);
     }
+    }
 
     /// Write a byte to the serial port
     pub unsafe fn write_byte(&self, byte: u8) {
+        unsafe{
         // Wait for transmit buffer to be empty
         while (self.inb(LINE_STATUS_REG) & TRANSMIT_EMPTY) == 0 {}
-        
         // Send the byte
         self.outb(DATA_REG, byte);
+        }
     }
 
     /// Write a string to the serial port
     pub unsafe fn write_str(&self, s: &str) {
-        for byte in s.bytes() {
-            self.write_byte(byte);
+        unsafe{
+                for byte in s.bytes() {
+                    self.write_byte(byte);
+                }
         }
     }
 

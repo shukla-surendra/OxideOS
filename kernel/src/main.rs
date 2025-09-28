@@ -5,8 +5,6 @@
 
 #![no_std]
 #![no_main]
-#![feature(asm_const)]
-#![feature(naked_functions)]
 #![feature(abi_x86_interrupt)] // Enables x86-interrupt ABI
 
 // ============================================================================
@@ -83,6 +81,19 @@ unsafe extern "C" fn kmain() -> ! {
     // ========================================================================
 
     init_interrupt_system();
+
+    // TODO FIX ALLOCATION still not working failing with test_minimal_allocation below
+    unsafe {
+    // Initialize the heap allocator
+    crate::kernel::allocator::init_heap(&MEMORY_MAP_REQUEST);
+    SERIAL_PORT.write_str("✓ Heap allocator initialized\n");
+   }
+
+    //test heap allocation
+    // unsafe { test_minimal_allocation() };
+
+
+
 
     // ========================================================================
     // STAGE 3: GRAPHICS INITIALIZATION
@@ -473,4 +484,36 @@ fn hcf() -> ! {
             asm!("idle 0");
         }
     }
+}
+
+
+
+unsafe fn test_minimal_allocation() {
+    extern crate alloc;
+
+    SERIAL_PORT.write_str("=== TESTING MINIMAL ALLOCATION ===\n");
+    
+    // First, check if we have ANY heap regions
+    crate::kernel::allocator::debug_heap();
+    
+    // If we have heap, try the smallest possible allocation
+    use core::alloc::{GlobalAlloc, Layout};
+    
+    let layout = Layout::from_size_align(8, 8).unwrap();
+    let ptr = crate::kernel::allocator::ALLOCATOR.alloc(layout);
+    
+    if ptr.is_null() {
+        SERIAL_PORT.write_str("FAILED: Could not allocate 8 bytes\n");
+    } else {
+        SERIAL_PORT.write_str("SUCCESS: Allocated 8 bytes at 0x");
+        SERIAL_PORT.write_hex((ptr as usize >> 32) as u32);
+        SERIAL_PORT.write_hex(ptr as usize as u32);
+        SERIAL_PORT.write_str("\n");
+        
+        // Write to the memory to verify it's actually usable
+        *ptr = 0x42;
+        SERIAL_PORT.write_str("Memory write test passed\n");
+    }
+    
+    SERIAL_PORT.write_str("=== MINIMAL ALLOCATION TEST COMPLETE ===\n");
 }

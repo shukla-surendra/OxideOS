@@ -6,3 +6,4 @@ pub mod pic;
 pub mod timer;
 pub mod interrupts_asm;
 pub mod keyboard;
+pub mod allocator;
