@@ -57,11 +57,15 @@ impl MouseCursor {
     }
 
     pub fn update(&mut self, dx: i8, dy: i8, screen_width: u64, screen_height: u64) {
-        self.x += dx as i64;
-        self.y -= dy as i64;
-
-        self.x = self.x.max(0).min(screen_width as i64 - 1);
-        self.y = self.y.max(0).min(screen_height as i64 - 1);
+        // Scale mouse movement for better control
+        let scale_factor = 1; // Adjust this: 1 = normal, 2 = faster
+        
+        self.x += (dx as i64) * scale_factor;
+        self.y -= (dy as i64) * scale_factor; // PS/2 Y is inverted
+        
+        // Clamp to screen bounds
+        self.x = self.x.max(0).min((screen_width - 1) as i64);
+        self.y = self.y.max(0).min((screen_height - 1) as i64);
     }
 
     pub fn get_position(&self) -> (i64, i64) {

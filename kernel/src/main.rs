@@ -181,23 +181,20 @@ unsafe fn init_interrupt_system() {
 // ============================================================================
 // GRAPHICS AND GUI FUNCTIONS (Fixed)
 // ============================================================================
-
 unsafe fn create_boot_screen(graphics: &Graphics) {
     let (width, height) = graphics.get_dimensions();
 
     SERIAL_PORT.write_str("Creating boot screen...\n");
 
-    // Clear screen
-    graphics.clear_screen(0xFF001133);
+    // Professional dark background
+    graphics.clear_screen(colors::dark_theme::BACKGROUND);
 
-    // Draw title bar
-    graphics.fill_rect(0, 0, width, 60, colors::BLUE);
+    // Modern taskbar at top
+    graphics.fill_rect(0, 0, width, 40, colors::dark_theme::SURFACE_VARIANT);
+    graphics.draw_rect(0, 40, width, 1, colors::dark_theme::BORDER, 1);
 
-    // Draw decorations
-    for i in 0..5 {
-        let y = 280 + i * 15;
-        graphics.draw_line(50, y as i64, (width - 50) as i64, y as i64, colors::CYAN);
-    }
+    // OS name in taskbar
+    gui::fonts::draw_string(graphics, 15, 16, "OxideOS", colors::dark_theme::ACCENT_PRIMARY);
 
     // Draw windows
     draw_demo_windows(graphics);
@@ -205,37 +202,30 @@ unsafe fn create_boot_screen(graphics: &Graphics) {
     SERIAL_PORT.write_str("Boot screen created\n");
 }
 
-
 unsafe fn draw_demo_windows(graphics: &Graphics) {
-    let (width, height) = graphics.get_dimensions();
+    let (width, _height) = graphics.get_dimensions();
 
-    // Window 1 - Terminal-style window
-    let win1 = widgets::Window::new(100, 150, 350, 200, "OxideOS Terminal");
+    // Terminal window
+    let win1 = widgets::Window::new(100, 100, 400, 250, "Terminal");
     win1.draw(graphics);
+    
+    // Terminal content area (darker)
+    graphics.fill_rect(110, 140, 380, 200, colors::dark_theme::BACKGROUND);
 
-    // Add some "terminal text" effect
-    graphics.fill_rect(110, 190, 330, 150, colors::BLACK);
-
-    // Window 2 - Control panel style
-    let win2 = widgets::Window::new(width - 280, 120, 250, 180, "System Info");
+    // System Info window
+    let win2 = widgets::Window::new(width - 320, 100, 300, 220, "System Info");
     win2.draw(graphics);
 
-    // Add some buttons to the control panel
-    let btn1 = widgets::Button::new(width - 260, 160, 100, 30, "Shutdown");
+    // Buttons with proper spacing
+    let btn1 = widgets::Button::new(width - 290, 150, 120, 35, "Shutdown");
     btn1.draw(graphics);
 
-    let btn2 = widgets::Button::new(width - 260, 200, 100, 30, "Restart");
+    let btn2 = widgets::Button::new(width - 290, 195, 120, 35, "Restart");
     btn2.draw(graphics);
 
-    let btn3 = widgets::Button::new(width - 260, 240, 100, 30, "Settings");
+    let btn3 = widgets::Button::new(width - 290, 240, 120, 35, "Settings");
     btn3.draw(graphics);
-    unsafe{
-        SERIAL_PORT.write_str("✓ Demo windows drawn\n");
-    }
-
 }
-
-
 unsafe fn run_gui_with_mouse(graphics: &Graphics) {
     let (width, height) = graphics.get_dimensions();
     unsafe { SERIAL_PORT.write_str("Starting GUI demo with mouse support...\n") };
