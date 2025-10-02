@@ -186,13 +186,16 @@ unsafe fn init_interrupt_system() {
 
 unsafe fn create_boot_screen(graphics: &Graphics) {
     let (width, height) = graphics.get_dimensions();
+    unsafe{
+        SERIAL_PORT.write_str("Creating boot screen...\n");
+        SERIAL_PORT.write_str("Screen dimensions: ");
+        SERIAL_PORT.write_decimal(width as u32);
+        SERIAL_PORT.write_str("x");
+        SERIAL_PORT.write_decimal(height as u32);
+        SERIAL_PORT.write_str("\n");
 
-    SERIAL_PORT.write_str("Creating boot screen...\n");
-    SERIAL_PORT.write_str("Screen dimensions: ");
-    SERIAL_PORT.write_decimal(width as u32);
-    SERIAL_PORT.write_str("x");
-    SERIAL_PORT.write_decimal(height as u32);
-    SERIAL_PORT.write_str("\n");
+    }
+
 
     // Clear screen with dark blue background
     graphics.clear_screen(0xFF001133);
@@ -303,14 +306,40 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics) {
 
             // Handle mouse clicks
             if gui::mouse::is_mouse_button_pressed(MouseButton::Left) {
-                SERIAL_PORT.write_str("CLICK: Left button at (");
+                unsafe{
+                    SERIAL_PORT.write_str("CLICK: Left button at (");
+                    // SERIAL_PORT.write_decimal(cursor_pos.0 as u32);
+                    // SERIAL_PORT.write_str(",");
+                    // SERIAL_PORT.write_decimal(cursor_pos.1 as u32);
+                    // SERIAL_PORT.write_str(")\n");
+                }
+
+                // Draw a small circle where clicked
+                graphics.draw_circle(cursor_pos.0, cursor_pos.1, 5, 0xFFFF0000);
+            }
+            
+            // Check RIGHT button
+            if gui::mouse::is_mouse_button_pressed(MouseButton::Right) {
+                SERIAL_PORT.write_str("CLICK: Right button at (");
                 SERIAL_PORT.write_decimal(cursor_pos.0 as u32);
                 SERIAL_PORT.write_str(",");
                 SERIAL_PORT.write_decimal(cursor_pos.1 as u32);
                 SERIAL_PORT.write_str(")\n");
 
-                // Draw a small circle where clicked
-                graphics.draw_circle(cursor_pos.0, cursor_pos.1, 5, 0xFFFF0000);
+                // Draw a GREEN circle for right click
+                graphics.draw_circle(cursor_pos.0, cursor_pos.1, 5, 0xFF00FF00);
+            }
+
+            // Check MIDDLE button
+            if gui::mouse::is_mouse_button_pressed(MouseButton::Middle) {
+                SERIAL_PORT.write_str("CLICK: Middle button at (");
+                SERIAL_PORT.write_decimal(cursor_pos.0 as u32);
+                SERIAL_PORT.write_str(",");
+                SERIAL_PORT.write_decimal(cursor_pos.1 as u32);
+                SERIAL_PORT.write_str(")\n");
+
+                // Draw a BLUE circle for middle click
+                graphics.draw_circle(cursor_pos.0, cursor_pos.1, 5, 0xFF0000FF);
             }
         }
 
