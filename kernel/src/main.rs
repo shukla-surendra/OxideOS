@@ -89,8 +89,6 @@ unsafe extern "C" fn kmain() -> ! {
     SERIAL_PORT.write_str("✓ Heap allocator initialized\n");
    }
 
-    //test heap allocation
-    // unsafe { test_minimal_allocation() };
 
 
 
@@ -186,41 +184,25 @@ unsafe fn init_interrupt_system() {
 
 unsafe fn create_boot_screen(graphics: &Graphics) {
     let (width, height) = graphics.get_dimensions();
-    unsafe{
-        SERIAL_PORT.write_str("Creating boot screen...\n");
-        SERIAL_PORT.write_str("Screen dimensions: ");
-        SERIAL_PORT.write_decimal(width as u32);
-        SERIAL_PORT.write_str("x");
-        SERIAL_PORT.write_decimal(height as u32);
-        SERIAL_PORT.write_str("\n");
 
-    }
+    SERIAL_PORT.write_str("Creating boot screen...\n");
 
-
-    // Clear screen with dark blue background
+    // Clear screen
     graphics.clear_screen(0xFF001133);
 
-    // Draw title bar at top
+    // Draw title bar
     graphics.fill_rect(0, 0, width, 60, colors::BLUE);
 
-    // Draw OxideOS logo area
-    let logo_x = width / 2 - 150;
-    let logo_y = 80;
-
-    // Simple "logo" - just a stylized "OS" text area
-    graphics.fill_rect(logo_x, logo_y, 300, 100, colors::WHITE);
-    graphics.draw_rect(logo_x, logo_y, 300, 100, colors::BLACK, 3);
-
-    // Draw some decorative elements
+    // Draw decorations
     for i in 0..5 {
-        let y = logo_y + 200 + i * 15;
+        let y = 280 + i * 15;
         graphics.draw_line(50, y as i64, (width - 50) as i64, y as i64, colors::CYAN);
     }
 
-    // Draw some "windows" to make it look like a desktop
+    // Draw windows
     draw_demo_windows(graphics);
 
-    SERIAL_PORT.write_str("✓ Boot screen created\n");
+    SERIAL_PORT.write_str("Boot screen created\n");
 }
 
 
@@ -514,7 +496,7 @@ fn hcf() -> ! {
 }
 
 
-
+    
 unsafe fn test_minimal_allocation() {
     extern crate alloc;
 
