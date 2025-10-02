@@ -1,6 +1,10 @@
-// Complete mouse.rs - Replace your entire file with this
+// src/gui/mouse.rs
 
 use crate::kernel::serial::SERIAL_PORT;
+use crate::kernel::interrupts::MOUSE_CURSOR;
+use crate::kernel::interrupts::MOUSE_CONTROLLER;
+
+
 #[derive(Copy, Clone)]
 pub enum MouseButton {
     Left,
@@ -8,7 +12,6 @@ pub enum MouseButton {
     Middle,
 }
 
-/// Get cursor position from interrupt system - FIXED VERSION
 
 pub struct MouseCursor {
     pub x: i64,
@@ -17,9 +20,9 @@ pub struct MouseCursor {
     pub color: u32,
 }
 
+/// Get cursor position from interrupt system
 pub fn get_mouse_position() -> Option<(i64, i64)> {
     unsafe {
-        use crate::kernel::interrupts::MOUSE_CURSOR;
         // Use addr_of! for safe static access
         let cursor_ptr = core::ptr::addr_of!(MOUSE_CURSOR);
         (*cursor_ptr).as_ref().map(|cursor| cursor.get_position())
@@ -29,7 +32,6 @@ pub fn get_mouse_position() -> Option<(i64, i64)> {
 /// Check if mouse button is pressed - FIXED VERSION
 pub fn is_mouse_button_pressed(button: MouseButton) -> bool {
     unsafe {
-        use crate::kernel::interrupts::MOUSE_CONTROLLER;
         // Use addr_of! for safe static access
         let controller_ptr = core::ptr::addr_of!(MOUSE_CONTROLLER);
         if let Some(ref mouse) = (*controller_ptr).as_ref() {
@@ -88,7 +90,8 @@ impl PS2Mouse {
 
     // Add this new function to clear any leftover data
     unsafe fn clear_buffer(&self) {
-        SERIAL_PORT.write_str("  Clearing mouse buffer...\n");
+        unsafe{
+            SERIAL_PORT.write_str("  Clearing mouse buffer...\n");
 
         // Read any pending data to clear the buffer
         for i in 0..10 {
@@ -106,9 +109,15 @@ impl PS2Mouse {
             }
         }
         SERIAL_PORT.write_str("  Buffer cleared\n");
+
+        }
+
     }
 
     pub unsafe fn init(&mut self) {
+        unsafe{
+
+        
         SERIAL_PORT.write_str("Initializing PS/2 mouse...\n");
 
         // Step 1: Enable mouse port on PS/2 controller
@@ -174,9 +183,10 @@ impl PS2Mouse {
         self.send_mouse_command(0xF4); // Enable reporting
 
         SERIAL_PORT.write_str("PS/2 mouse initialized\n");
+        }
     }
     // Wait for controller to be ready for commands
-    // Keep your existing wait functions...
+    // Keep existing wait functions...
     unsafe fn wait_controller_ready(&self) {
         let mut timeout = 10000;
         while timeout > 0 {

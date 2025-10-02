@@ -1,3 +1,4 @@
+// src/gui/fonts.rs
 use super::graphics::Graphics;
 
 // Complete 8x8 bitmap font for ASCII characters 32-126 (95 printable characters)

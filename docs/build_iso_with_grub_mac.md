@@ -1,6 +1,6 @@
 # Build a Bootable ISO with GRUB on macOS (BIOS + UEFI)
 
-> This guide shows how to package your OS kernel into a bootable **.iso** on macOS using **GRUB 2**.  
+> This guide shows how to package this OS kernel into a bootable **.iso** on macOS using **GRUB 2**.  
 > It covers prerequisites, folder layout, a minimal `grub.cfg`, building the ISO, testing in QEMU, and fixing common errors.
 
 ---
@@ -19,7 +19,7 @@ grub-file --is-x86-multiboot2 path/to/kernel.elf && echo "OK: multiboot2"
 grub-file --is-x86-multiboot path/to/kernel.elf && echo "OK: multiboot v1"
 ```
 
-If you see `no multiboot header found`, your binary doesn’t have a proper Multiboot header. Fix that before proceeding.
+If you see `no multiboot header found`, binary doesn’t have a proper Multiboot header. Fix that before proceeding.
 
 ---
 

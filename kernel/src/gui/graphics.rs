@@ -1,3 +1,4 @@
+// src/gui/fonts.rs
 use limine::framebuffer::Framebuffer;
 use crate::kernel::serial::SERIAL_PORT;
 
@@ -206,6 +207,40 @@ impl Graphics {
         for dy in 0..19 {
             for dx in 0..11 {
                 self.put_pixel_safe(x + dx, y + dy, bg_color);
+            }
+        }
+    }
+        /// Save pixels under cursor area and return them
+    pub fn save_cursor_area(&self, x: i64, y: i64) -> [[u32; 11]; 19] {
+        let mut saved = [[0u32; 11]; 19];
+        
+        for dy in 0..19 {
+            for dx in 0..11 {
+                let px = x + dx;
+                let py = y + dy;
+                
+                if px >= 0 && py >= 0 && px < self.width as i64 && py < self.height as i64 {
+                    let offset = (py as u64 * self.width + px as u64) as usize;
+                    let fb_ptr = self.framebuffer_addr as *mut u32;
+                    unsafe {
+                        saved[dy as usize][dx as usize] = *fb_ptr.add(offset);
+                    }
+                }
+            }
+        }
+        saved
+    }
+    
+    /// Restore saved pixels
+    pub fn restore_cursor_area(&self, x: i64, y: i64, saved: &[[u32; 11]; 19]) {
+        for dy in 0..19 {
+            for dx in 0..11 {
+                let px = x + dx;
+                let py = y + dy;
+                
+                if px >= 0 && py >= 0 && px < self.width as i64 && py < self.height as i64 {
+                    self.put_pixel(px as u64, py as u64, saved[dy as usize][dx as usize]);
+                }
             }
         }
     }

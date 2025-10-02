@@ -9,7 +9,7 @@ struct MbInfoHeader { total_size: u32, reserved: u32 }
 #[repr(C)]
 struct TagHeader { typ: u32, size: u32 }
 
-/// Framebuffer tag layout (common / typical layout). Adjust if your bootloader differs.
+/// Framebuffer tag layout (common / typical layout). Adjust if bootloader differs.
 #[repr(C)]
 struct FramebufferInfo {
     typ: u32,

@@ -503,7 +503,7 @@ unsafe extern "C" {
 }
 
 
-// Add this function to your interrupts.rs file to verify PIC state
+// Add this function to interrupts.rs file to verify PIC state
 pub unsafe fn verify_pic_mouse_state() {
     SERIAL_PORT.write_str("=== VERIFYING PIC STATE FOR MOUSE ===\n");
 

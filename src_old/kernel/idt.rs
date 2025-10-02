@@ -52,7 +52,7 @@ static mut IDT: [IdtEntry; 256] = [IdtEntry {
 
 unsafe extern "C" {
     unsafe fn test_timer_isr();
-    // ... your other ISR declarations
+    // ...other ISR declarations
 }
 
 // External assembly interrupt handlers - must be marked unsafe

@@ -10,7 +10,7 @@ use spin::Mutex;
 /// - a simple byte array map: 0 == free, 1 == used
 /// - returns physical addresses computed from a base address and page index
 ///
-/// Replace with your production allocator later.
+/// Replace with production allocator later.
 
 pub const PAGE_SIZE: u64 = 4096;
 const MAX_PAGES: usize = 16 * 1024; // 16k pages -> ~64MB coverage if 4KiB pages

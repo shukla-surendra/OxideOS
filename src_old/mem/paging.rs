@@ -4,14 +4,14 @@
 use core::result::Result;
 
 /// Very small paging helpers — these are intentionally lightweight stubs
-/// so the module compiles and shows the correct API. Replace with your
+/// so the module compiles and shows the correct API. Replace with
 /// real page table code as needed.
 
 pub const PAGE_TABLE_ENTRIES: usize = 512;
 pub const PAGE_SIZE: u64 = 4096;
 
 /// Map a single page `phys` -> `virt` with given `flags`.
-/// This is a stub — your real implementation should write real page table entries.
+/// This is a stub — real implementation should write real page table entries.
 pub fn map_page(_phys: u64, _virt: u64, _flags: u64) -> Result<(), &'static str> {
     // Real implementation writes into page tables using volatile stores and unsafe.
     Ok(())

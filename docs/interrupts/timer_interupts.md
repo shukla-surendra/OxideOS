@@ -12,5 +12,5 @@ Periodic Tasks - Triggers housekeeping like memory cleanup, disk syncing, networ
 Without timer interrupts, a cooperative system requires programs to voluntarily give up CPU control. One misbehaving program could freeze the entire system.
 With timer interrupts, you have a preemptive system where the OS forcibly takes control at regular intervals (typically 18-1000 times per second), ensuring system responsiveness and fair CPU sharing.
 Think of it as: The OS setting an alarm clock that rings constantly, reminding it to check on all running programs and make sure everything is fair and responsive.
-In your kernel, once timer interrupts work properly, you can implement multitasking, process scheduling, and time-based system calls!
+In kernel, once timer interrupts work properly, you can implement multitasking, process scheduling, and time-based system calls!
 

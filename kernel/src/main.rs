@@ -121,7 +121,7 @@ unsafe extern "C" fn kmain() -> ! {
                 create_boot_screen(&graphics);
 
                 // Start GUI demo with mouse support
-                run_gui_demo_with_mouse(&graphics);
+                run_gui_with_mouse(&graphics);
             }
 
         } else {
@@ -220,6 +220,7 @@ unsafe fn create_boot_screen(graphics: &Graphics) {
     SERIAL_PORT.write_str("✓ Boot screen created\n");
 }
 
+
 unsafe fn draw_demo_windows(graphics: &Graphics) {
     let (width, height) = graphics.get_dimensions();
 
@@ -249,13 +250,14 @@ unsafe fn draw_demo_windows(graphics: &Graphics) {
 
 }
 
-// Replace your run_gui_demo_with_mouse function with this version
-unsafe fn run_gui_demo_with_mouse(graphics: &Graphics) {
+
+unsafe fn run_gui_with_mouse(graphics: &Graphics) {
     let (width, height) = graphics.get_dimensions();
-    SERIAL_PORT.write_str("Starting GUI demo with mouse support...\n");
+    unsafe { SERIAL_PORT.write_str("Starting GUI demo with mouse support...\n") };
 
     let mut frame_count = 0u64;
     let mut last_cursor_pos = (-1i64, -1i64);
+    let mut saved_pixels = [[0u32; 11]; 19];
     let mut last_mouse_count = 0u64;
 
     loop {
@@ -286,20 +288,16 @@ unsafe fn run_gui_demo_with_mouse(graphics: &Graphics) {
         // Check for mouse movement and redraw cursor if needed
         if let Some(cursor_pos) = gui::mouse:: get_mouse_position() {
             if cursor_pos != last_cursor_pos {
-                SERIAL_PORT.write_str("CURSOR: Moved to (");
-                SERIAL_PORT.write_decimal(cursor_pos.0 as u32);
-                SERIAL_PORT.write_str(",");
-                SERIAL_PORT.write_decimal(cursor_pos.1 as u32);
-                SERIAL_PORT.write_str(")\n");
-
-                // Clear old cursor position
+                // Restore old position
                 if last_cursor_pos.0 >= 0 && last_cursor_pos.1 >= 0 {
-                    graphics.clear_cursor(last_cursor_pos.0, last_cursor_pos.1, 0xFF001133);
+                    graphics.restore_cursor_area(last_cursor_pos.0, last_cursor_pos.1, &saved_pixels);
                 }
-
-                // Draw cursor at new position
+                // Save new position
+                saved_pixels = graphics.save_cursor_area(cursor_pos.0, cursor_pos.1);
+                
+                // Draw cursor
                 graphics.draw_cursor(cursor_pos.0, cursor_pos.1, 0xFFFFFFFF);
-
+                
                 last_cursor_pos = cursor_pos;
             }
 

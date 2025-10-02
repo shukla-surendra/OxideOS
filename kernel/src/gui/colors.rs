@@ -1,3 +1,4 @@
+// src/gui/colors.rs
 // Complete color palette for OxideOS
 // Format: 0xAARRGGBB (Alpha, Red, Green, Blue)
 

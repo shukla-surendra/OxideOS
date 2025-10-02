@@ -239,7 +239,7 @@ pub fn kernel_panic(subsystem: &str, reason: &str) -> ! {
     panic!("Kernel subsystem failure: {}: {}", subsystem, reason);
 }
 
-/// Panic with formatted message (using your write_fmt capability)
+/// Panic with formatted message (using write_fmt capability)
 pub fn kernel_panic_fmt(subsystem: &str, args: core::fmt::Arguments) -> ! {
     unsafe {
         SERIAL_PORT.write_str("KERNEL PANIC in ");

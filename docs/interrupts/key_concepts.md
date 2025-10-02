@@ -26,4 +26,4 @@ A GPF is a CPU exception (interrupt vector 13) that occurs when the processor de
 * Execution of privileged instructions from user mode
 
 When a GPF occurs, the CPU generates interrupt 13, and if no handler is installed or the handler itself causes a fault, it typically results in a system crash or process termination.
-These concepts are tightly interconnected - the GDT defines your memory protection model, the IDT handles when things go wrong (including GPFs), and GPFs are the CPU's way of enforcing the protection rules you've set up in your GDT.
+These concepts are tightly interconnected - the GDT defines memory protection model, the IDT handles when things go wrong (including GPFs), and GPFs are the CPU's way of enforcing the protection rules you've set up in GDT.

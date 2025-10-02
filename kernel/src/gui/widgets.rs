@@ -1,3 +1,5 @@
+// src/gui/widgets.rs
+
 use super::graphics::{Graphics};
 use super::colors;
 

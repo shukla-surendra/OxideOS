@@ -165,7 +165,7 @@ impl SerialPort {
 
         impl<'a> fmt::Write for W<'a> {
             fn write_str(&mut self, s: &str) -> fmt::Result {
-                // SAFETY: forwarding to your existing write_str which uses port I/O
+                // SAFETY: forwarding to existing write_str which uses port I/O
                 unsafe { self.port.write_str(s) };
                 Ok(())
             }

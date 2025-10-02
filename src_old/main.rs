@@ -40,7 +40,7 @@ fn current_cs() -> u16 {
 }
 
 /// Check stack pointer before and after main loop iterations
-/// Fixed stack validation based on your actual stack location (around 0x7FD54)
+/// Fixed stack validation based on actual stack location (around 0x7FD54)
 unsafe fn check_stack_in_main_loop(iteration: u32) {
     let esp: u32;
     core::arch::asm!("mov {}, esp", out(reg) esp, options(nomem, nostack, preserves_flags));
@@ -50,12 +50,12 @@ unsafe fn check_stack_in_main_loop(iteration: u32) {
         SERIAL_PORT.write_str("Main loop ESP: 0x");
         SERIAL_PORT.write_hex(esp);
         
-        // Adjusted validation for your actual stack location (around 0x7FD54)
-        // Your stack is around 524KB, so let's be more realistic about bounds
+        // Adjusted validation for actual stack location (around 0x7FD54)
+        // stack is around 524KB, so let's be more realistic about bounds
         let valid = if esp == 0 {
             SERIAL_PORT.write_str(" **NULL**");
             false
-        } else if esp < 0x70000 {  // Below 448KB - too low for your setup
+        } else if esp < 0x70000 {  // Below 448KB - too low for setup
             SERIAL_PORT.write_str(" **TOO_LOW**");
             false
         } else if esp > 0x100000 {  // Above 1MB - too high for early boot
