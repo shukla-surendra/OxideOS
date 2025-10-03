@@ -1,33 +1,37 @@
-# Limine Rust Template
+# Oxide OS – Hobby Operating System in Rust
 
-This repository will demonstrate how to set up a basic kernel in Rust using Limine.
+Oxide OS is a hobby operating system written in Rust. This repository demonstrates how to set up a basic kernel using Rust and the Limine bootloader.
 
-## How to use this?
+## Overview
+
+This project is intended for learning and experimentation with OS development in Rust. You are free to use, modify, and improve Oxide OS. For full licensing terms, see the [LICENSE](./LICENSE) file.
+
+## How to Use
 
 ### Dependencies
 
-Any `make` command depends on GNU make (`gmake`) and is expected to be run using it. This usually means using `make` on most GNU/Linux distros, or `gmake` on other non-GNU systems.
+- The `make` commands depend on **GNU Make (`gmake`)**. On most GNU/Linux distributions, `make` will work; on non-GNU systems, `gmake` may be required.  
+- All `make all*` targets require **Rust** to be installed.  
+- Building a bootable ISO (`make all`) requires **xorriso**.  
+- Building a HDD/USB image (`make all-hdd`) requires **sgdisk** (from `gdisk` or `gptfdisk`) and **mtools**.
 
-All `make all*` targets depend on Rust.
+### Architectural Targets
 
-Additionally, building an ISO with `make all` requires `xorriso`, and building a HDD/USB image with `make all-hdd` requires `sgdisk` (usually from `gdisk` or `gptfdisk` packages) and `mtools`.
+The `KARCH` make variable specifies the target architecture for the kernel and image.  
 
-### Architectural targets
+- Default: `x86_64`  
+- Other options: `aarch64`, `riscv64`, `loongarch64`  
 
-The `KARCH` make variable determines the target architecture to build the kernel and image for.
+Additional architectures may need to be enabled in `kernel/rust-toolchain.toml`.
 
-The default `KARCH` is `x86_64`. Other options include: `aarch64`, `riscv64`, and `loongarch64`.
+### Makefile Targets
 
-Other architectures will need to be enabled in kernel/rust-toolchain.toml
+- `make all` – Compile the kernel (`kernel/`) and generate a bootable ISO image.  
+- `make all-hdd` – Compile the kernel and generate a raw image suitable for USB stick or HDD/SSD.  
+- `make run` – Build the kernel and bootable ISO, then run it in QEMU (if installed).  
+- `make run-hdd` – Build the kernel and raw HDD image, then run in QEMU.  
+- `run-uefi` / `run-hdd-uefi` – Equivalent to above targets but boot QEMU with UEFI-compatible firmware.  
 
-### Makefile targets
+## License
 
-Running `make all` will compile the kernel (from the `kernel/` directory) and then generate a bootable ISO image.
-
-Running `make all-hdd` will compile the kernel and then generate a raw image suitable to be flashed onto a USB stick or hard drive/SSD.
-
-Running `make run` will build the kernel and a bootable ISO (equivalent to make all) and then run it using `qemu` (if installed).
-
-Running `make run-hdd` will build the kernel and a raw HDD image (equivalent to make all-hdd) and then run it using `qemu` (if installed).
-
-The `run-uefi` and `run-hdd-uefi` targets are equivalent to their non `-uefi` counterparts except that they boot `qemu` using a UEFI-compatible firmware.
+See the [LICENSE](./LICENSE) file for licensing details.
