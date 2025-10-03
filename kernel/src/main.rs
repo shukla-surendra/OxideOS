@@ -19,8 +19,8 @@ mod gui;                // GUI system
 // ============================================================================
 use core::arch::asm;
 use gui::graphics::Graphics;
-use gui::mouse::{MouseButton};
-use gui::{ colors, widgets, fonts };
+use gui::mouse::MouseButton;
+use gui::{colors, widgets, fonts};
 use kernel::serial::SERIAL_PORT;
 use kernel::{idt, interrupts, timer, pic};
 use gui::window_manager::WindowManager;
@@ -28,7 +28,6 @@ use core::ptr;
 
 use limine::BaseRevision;
 use limine::request::{FramebufferRequest, MemoryMapRequest, RequestsEndMarker, RequestsStartMarker};
-use limine::framebuffer::Framebuffer;
 
 // ============================================================================
 // LIMINE REQUESTS - Required for bootloader communication
@@ -56,9 +55,9 @@ static _START_MARKER: RequestsStartMarker = RequestsStartMarker::new();
 #[unsafe(link_section = ".requests_end_marker")]
 static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
 
-
 // Global window manager
 static mut WINDOW_MANAGER: WindowManager = WindowManager::new();
+
 // ============================================================================
 // MAIN KERNEL ENTRY POINT
 // ============================================================================
@@ -70,12 +69,11 @@ unsafe extern "C" fn kmain() -> ! {
     // ========================================================================
 
     // Initialize serial port first for debugging output
-    unsafe{
+    unsafe {
         SERIAL_PORT.init();
         SERIAL_PORT.write_str("\n=== OXIDEOS 64-BIT KERNEL BOOT ===\n");
         SERIAL_PORT.write_str("Serial port initialized\n");
     }
-
 
     // Verify Limine base revision
     assert!(BASE_REVISION.is_supported());
@@ -87,16 +85,24 @@ unsafe extern "C" fn kmain() -> ! {
 
     init_interrupt_system();
 
-    // TODO FIX ALLOCATION still not working failing with test_minimal_allocation below
+    // ========================================================================
+    // STAGE 2.5: MEMORY ALLOCATOR INITIALIZATION
+    // ========================================================================
+
+    // CHOICE 1: Use original bump allocator (simple, no paging manipulation)
+    // unsafe {
+    //     crate::kernel::allocator::init_heap(&MEMORY_MAP_REQUEST);
+    //     SERIAL_PORT.write_str("✓ Bump allocator initialized\n");
+    // }
+
+    // CHOICE 2: Use new paging allocator (manipulates page tables)
     unsafe {
-    // Initialize the heap allocator
-    crate::kernel::allocator::init_heap(&MEMORY_MAP_REQUEST);
-    SERIAL_PORT.write_str("✓ Heap allocator initialized\n");
-   }
-
-
-
-
+        crate::kernel::paging_allocator::init_paging_heap(&MEMORY_MAP_REQUEST);
+        SERIAL_PORT.write_str("✓ Paging allocator initialized\n");
+        
+        // Optional: Test the allocator
+        test_paging_allocation();
+    }
 
     // ========================================================================
     // STAGE 3: GRAPHICS INITIALIZATION
@@ -110,11 +116,10 @@ unsafe extern "C" fn kmain() -> ! {
                 SERIAL_PORT.write_str("✓ Framebuffer acquired from Limine\n");
             }
 
-
             // Initialize GUI system
             let graphics = Graphics::new(framebuffer);
             let (width, height) = graphics.get_dimensions();
-            unsafe{
+            unsafe {
                 // INITIALIZE MOUSE SYSTEM HERE
                 SERIAL_PORT.write_str("=== ABOUT TO INITIALIZE MOUSE ===\n");
                 interrupts::init_mouse_system(width, height);
@@ -126,13 +131,11 @@ unsafe extern "C" fn kmain() -> ! {
                 // Start GUI demo with mouse support
                 run_gui_with_mouse(&graphics);
             }
-
         } else {
-            unsafe{
+            unsafe {
                 SERIAL_PORT.write_str("✗ No framebuffer available\n");
                 run_text_mode_kernel(); // This will never return
             }
-
         }
     } else {
         SERIAL_PORT.write_str("✗ Failed to get framebuffer response from Limine\n");
@@ -184,7 +187,67 @@ unsafe fn init_interrupt_system() {
 }
 
 // ============================================================================
-// GRAPHICS AND GUI FUNCTIONS (Fixed)
+// PAGING ALLOCATOR TEST FUNCTION
+// ============================================================================
+
+unsafe fn test_paging_allocation() {
+    extern crate alloc;
+    use alloc::boxed::Box;
+    use alloc::vec::Vec;
+
+    SERIAL_PORT.write_str("\n=== TESTING PAGING ALLOCATOR ===\n");
+
+    // Test 1: Simple Box allocation
+    SERIAL_PORT.write_str("Test 1: Box<u64> allocation...\n");
+    let boxed_value = Box::new(0x1234567890ABCDEFu64);
+    SERIAL_PORT.write_str("  Box allocated at: 0x");
+    SERIAL_PORT.write_hex(((&*boxed_value as *const u64 as usize) >> 32) as u32);
+    SERIAL_PORT.write_hex((&*boxed_value as *const u64 as usize) as u32);
+    SERIAL_PORT.write_str("\n  Value: 0x");
+    SERIAL_PORT.write_hex((*boxed_value >> 32) as u32);
+    SERIAL_PORT.write_hex(*boxed_value as u32);
+    SERIAL_PORT.write_str("\n");
+
+    // Test 2: Vec allocation
+    SERIAL_PORT.write_str("Test 2: Vec<u32> allocation...\n");
+    let mut vec = Vec::new();
+    for i in 0..10 {
+        vec.push(i * 100);
+    }
+    SERIAL_PORT.write_str("  Vec with 10 elements created\n");
+    SERIAL_PORT.write_str("  vec[5] = ");
+    SERIAL_PORT.write_decimal(vec[5]);
+    SERIAL_PORT.write_str("\n");
+
+    // Test 3: Large allocation (multiple pages)
+    SERIAL_PORT.write_str("Test 3: Large allocation (16KB)...\n");
+    let large_vec: Vec<u8> = Vec::with_capacity(16 * 1024);
+    SERIAL_PORT.write_str("  16KB allocation successful\n");
+    SERIAL_PORT.write_str("  Capacity: ");
+    SERIAL_PORT.write_decimal(large_vec.capacity() as u32);
+    SERIAL_PORT.write_str(" bytes\n");
+
+    // Test 4: Multiple small allocations
+    SERIAL_PORT.write_str("Test 4: Multiple small allocations...\n");
+    let mut boxes = Vec::new();
+    for i in 0..5 {
+        boxes.push(Box::new(i * 111));
+    }
+    SERIAL_PORT.write_str("  Created 5 boxed values\n");
+    for (i, b) in boxes.iter().enumerate() {
+        SERIAL_PORT.write_str("  boxes[");
+        SERIAL_PORT.write_decimal(i as u32);
+        SERIAL_PORT.write_str("] = ");
+        SERIAL_PORT.write_decimal(**b);
+        SERIAL_PORT.write_str("\n");
+    }
+
+    SERIAL_PORT.write_str("✓ All paging allocator tests passed!\n");
+    SERIAL_PORT.write_str("=== PAGING ALLOCATOR TEST COMPLETE ===\n\n");
+}
+
+// ============================================================================
+// GRAPHICS AND GUI FUNCTIONS
 // ============================================================================
 unsafe fn create_boot_screen(graphics: &Graphics) {
     let (width, height) = graphics.get_dimensions();
@@ -194,196 +257,22 @@ unsafe fn create_boot_screen(graphics: &Graphics) {
     // Professional dark background
     graphics.clear_screen(colors::dark_theme::BACKGROUND);
 
-    // Modern taskbar at top
-    graphics.fill_rect(0, 0, width, 40, colors::dark_theme::SURFACE_VARIANT);
-    graphics.draw_rect(0, 40, width, 1, colors::dark_theme::BORDER, 1);
+    // Initialize window manager with screen dimensions
+    let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
+    (*wm).set_screen_dimensions(width, height);
 
-    // OS name in taskbar
-    gui::fonts::draw_string(graphics, 15, 16, "OxideOS", colors::dark_theme::ACCENT_PRIMARY);
+    // Draw taskbar
+    (*wm).draw_taskbar(graphics);
 
-    // Initialize windows through window manager
+    // Initialize windows
     init_demo_windows(width, height);
 
     SERIAL_PORT.write_str("Boot screen created\n");
 }
 
-// unsafe fn init_demo_windows(screen_width: u64, _screen_height: u64) {
-//     // Terminal window
-//     let win1 = widgets::Window::new(100, 100, 400, 250, "Terminal");
-//     WINDOW_MANAGER.add_window(win1);
-
-//     // System Info window
-//     let win2 = widgets::Window::new(screen_width - 320, 100, 300, 220, "System Info");
-//     WINDOW_MANAGER.add_window(win2);
-
-//     SERIAL_PORT.write_str("Demo windows initialized\n");
-// }
-
-unsafe fn draw_demo_windows(graphics: &Graphics) {
-    let (width, _height) = graphics.get_dimensions();
-
-    // Terminal window
-    let win1 = widgets::Window::new(100, 100, 400, 250, "Terminal");
-    win1.draw(graphics);
-    
-    // Terminal content area (darker)
-    graphics.fill_rect(110, 140, 380, 200, colors::dark_theme::BACKGROUND);
-
-    // System Info window
-    let win2 = widgets::Window::new(width - 320, 100, 300, 220, "System Info");
-    win2.draw(graphics);
-
-    // Buttons with proper spacing
-    let btn1 = widgets::Button::new(width - 290, 150, 120, 35, "Shutdown");
-    btn1.draw(graphics);
-
-    let btn2 = widgets::Button::new(width - 290, 195, 120, 35, "Restart");
-    btn2.draw(graphics);
-
-    let btn3 = widgets::Button::new(width - 290, 240, 120, 35, "Settings");
-    btn3.draw(graphics);
-}
-
-// unsafe fn run_gui_with_mouse(graphics: &Graphics) {
-//     let (width, height) = graphics.get_dimensions();
-//     unsafe { SERIAL_PORT.write_str("Starting GUI demo with mouse support...\n") };
-
-//     let mut frame_count = 0u64;
-//     let mut last_cursor_pos = (-1i64, -1i64);
-//     let mut saved_pixels = [[0u32; 11]; 19];
-//     let mut last_mouse_count = 0u64;
-
-//     loop {
-//         frame_count += 1;
-
-//         // Check mouse interrupt count every 100 frames (roughly every second)
-//         if frame_count % 100 == 0 {
-//             let current_count = kernel::interrupts::get_mouse_interrupt_count();
-//             if current_count > last_mouse_count {
-//                 SERIAL_PORT.write_str("MOUSE: ");
-//                 SERIAL_PORT.write_decimal((current_count - last_mouse_count) as u32);
-//                 SERIAL_PORT.write_str(" interrupts in last second\n");
-//                 last_mouse_count = current_count;
-//             } else if frame_count % 500 == 0 { // Every 5 seconds, report if no interrupts
-//                 SERIAL_PORT.write_str("MOUSE: No interrupts detected (move mouse to test)\n");
-
-//                 // Try polling for mouse data manually
-//                 use crate::kernel::interrupts::{MOUSE_CONTROLLER};
-//                 let controller_ptr = core::ptr::addr_of!(MOUSE_CONTROLLER);
-//                 if let Some(ref mouse) = (*controller_ptr).as_ref() {
-//                     if mouse.poll_for_data() {
-//                         SERIAL_PORT.write_str("POLL: Found data but no interrupt!\n");
-//                     }
-//                 }
-//             }
-//         }
-
-//         // Check for mouse movement and redraw cursor if needed
-//         if let Some(cursor_pos) = gui::mouse:: get_mouse_position() {
-//             if cursor_pos != last_cursor_pos {
-//                 // Restore old position
-//                 if last_cursor_pos.0 >= 0 && last_cursor_pos.1 >= 0 {
-//                     graphics.restore_cursor_area(last_cursor_pos.0, last_cursor_pos.1, &saved_pixels);
-//                 }
-//                 // Save new position
-//                 saved_pixels = graphics.save_cursor_area(cursor_pos.0, cursor_pos.1);
-                
-//                 // Draw cursor
-//                 graphics.draw_cursor(cursor_pos.0, cursor_pos.1, 0xFFFFFFFF);
-                
-//                 last_cursor_pos = cursor_pos;
-//             }
-
-//             // Handle mouse clicks
-//             if gui::mouse::is_mouse_button_pressed(MouseButton::Left) {
-//                 unsafe{
-//                     SERIAL_PORT.write_str("CLICK: Left button at (");
-//                     // SERIAL_PORT.write_decimal(cursor_pos.0 as u32);
-//                     // SERIAL_PORT.write_str(",");
-//                     // SERIAL_PORT.write_decimal(cursor_pos.1 as u32);
-//                     // SERIAL_PORT.write_str(")\n");
-//                 }
-
-//                 // Draw a small circle where clicked
-//                 graphics.draw_circle(cursor_pos.0, cursor_pos.1, 5, 0xFFFF0000);
-//             }
-            
-//             // Check RIGHT button
-//             if gui::mouse::is_mouse_button_pressed(MouseButton::Right) {
-//                 SERIAL_PORT.write_str("CLICK: Right button at (");
-//                 SERIAL_PORT.write_decimal(cursor_pos.0 as u32);
-//                 SERIAL_PORT.write_str(",");
-//                 SERIAL_PORT.write_decimal(cursor_pos.1 as u32);
-//                 SERIAL_PORT.write_str(")\n");
-
-//                 // Draw a GREEN circle for right click
-//                 graphics.draw_circle(cursor_pos.0, cursor_pos.1, 5, 0xFF00FF00);
-//             }
-
-//             // Check MIDDLE button
-//             if gui::mouse::is_mouse_button_pressed(MouseButton::Middle) {
-//                 SERIAL_PORT.write_str("CLICK: Middle button at (");
-//                 SERIAL_PORT.write_decimal(cursor_pos.0 as u32);
-//                 SERIAL_PORT.write_str(",");
-//                 SERIAL_PORT.write_decimal(cursor_pos.1 as u32);
-//                 SERIAL_PORT.write_str(")\n");
-
-//                 // Draw a BLUE circle for middle click
-//                 graphics.draw_circle(cursor_pos.0, cursor_pos.1, 5, 0xFF0000FF);
-//             }
-//         }
-
-//         // Simple animation - moving progress bar
-//         if frame_count % 50000 == 0 {
-//             let animation_offset = ((frame_count / 50000) * 10) % (width - 200);
-
-//             // Clear previous progress bar area
-//             graphics.fill_rect(50, height - 50, width - 100, 20, colors::DARK_GRAY);
-
-//             // Draw animated progress bar
-//             graphics.fill_rect(50 + animation_offset, height - 50, 150, 20, colors::GREEN);
-//             graphics.draw_rect(50, height - 50, width - 100, 20, colors::WHITE, 1);
-//         }
-
-//         // Keyboard interaction demo
-//         if frame_count % 100000 == 0 {
-//             // Draw a small indicator that updates periodically
-//             let indicator_color = match (frame_count / 100000) % 4 {
-//                 0 => colors::RED,
-//                 1 => colors::GREEN,
-//                 2 => colors::BLUE,
-//                 _ => colors::YELLOW,
-//             };
-
-//             graphics.fill_rect(width - 30, 10, 20, 20, indicator_color);
-//             graphics.draw_rect(width - 30, 10, 20, 20, colors::WHITE, 1);
-
-//             SERIAL_PORT.write_str("GUI: Frame ");
-//             SERIAL_PORT.write_decimal((frame_count / 100000) as u32);
-//             SERIAL_PORT.write_str(" rendered\n");
-//         }
-
-//         core::arch::asm!("hlt");
-//     }
-// }
-unsafe fn init_demo_windows(screen_width: u64, _screen_height: u64) {
-    // Use addr_of_mut! for safe static access
-    let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
-    
-    // Terminal window
-    let win1 = widgets::Window::new(100, 100, 400, 250, "Terminal");
-    (*wm).add_window(win1);
-
-    // System Info window
-    let win2 = widgets::Window::new(screen_width - 320, 100, 300, 220, "System Info");
-    (*wm).add_window(win2);
-
-    SERIAL_PORT.write_str("Demo windows initialized\n");
-}
-
 unsafe fn run_gui_with_mouse(graphics: &Graphics) {
     let (width, height) = graphics.get_dimensions();
-    SERIAL_PORT.write_str("Starting GUI with window manager...\n");
+    SERIAL_PORT.write_str("Starting GUI with enhanced window manager...\n");
 
     let mut last_cursor_pos = (-1i64, -1i64);
     let mut saved_pixels = [[0u32; 11]; 19];
@@ -428,10 +317,15 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics) {
 
         // Full redraw if needed
         if needs_redraw {
+            // Clear screen
             graphics.clear_screen(colors::dark_theme::BACKGROUND);
-            graphics.fill_rect(0, 0, width, 40, colors::dark_theme::SURFACE_VARIANT);
-            fonts::draw_string(graphics, 15, 16, "OxideOS", colors::dark_theme::ACCENT_PRIMARY);
+            
+            // Draw taskbar (always on top)
+            (*wm).draw_taskbar(graphics);
+            
+            // Draw all windows
             (*wm).draw_all(graphics);
+            
             needs_redraw = false;
         }
 
@@ -444,6 +338,20 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics) {
         core::arch::asm!("hlt");
     }
 }
+unsafe fn init_demo_windows(screen_width: u64, _screen_height: u64) {
+    let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
+    
+    // Terminal window
+    let win1 = widgets::Window::new(100, 100, 400, 250, "Terminal");
+    (*wm).add_window(win1);
+
+    // System Info window
+    let win2 = widgets::Window::new(screen_width - 320, 100, 300, 220, "System Info");
+    (*wm).add_window(win2);
+
+    SERIAL_PORT.write_str("Demo windows initialized\n");
+}
+
 // ============================================================================
 // FALLBACK TEXT MODE
 // ============================================================================
@@ -471,7 +379,7 @@ unsafe fn check_system_tables_64bit() {
     SERIAL_PORT.write_str("\n=== 64-BIT SYSTEM TABLE CHECK ===\n");
 
     // Check GDT (64-bit format)
-    let mut gdt_ptr: [u8; 10] = [0; 10]; // 64-bit GDT pointer is 10 bytes
+    let mut gdt_ptr: [u8; 10] = [0; 10];
     asm!("sgdt [{}]", in(reg) &mut gdt_ptr);
     let gdt_limit = u16::from_le_bytes([gdt_ptr[0], gdt_ptr[1]]);
     let gdt_base = u64::from_le_bytes([
@@ -497,7 +405,7 @@ unsafe fn check_system_tables_64bit() {
 }
 
 unsafe fn verify_idt_entries_64bit() {
-    let mut idtr: [u8; 10] = [0; 10]; // 64-bit IDT pointer is 10 bytes
+    let mut idtr: [u8; 10] = [0; 10];
     asm!("sidt [{}]", in(reg) &mut idtr);
     let idt_limit = u16::from_le_bytes([idtr[0], idtr[1]]);
     let idt_base = u64::from_le_bytes([
@@ -512,7 +420,7 @@ unsafe fn verify_idt_entries_64bit() {
     SERIAL_PORT.write_hex(idt_limit as u32);
     SERIAL_PORT.write_str("\n");
 
-    if idt_base != 0 && idt_limit == 0xFFF { // 256 * 16 - 1 for 64-bit
+    if idt_base != 0 && idt_limit == 0xFFF {
         SERIAL_PORT.write_str("  ✓ 64-bit IDT appears loaded correctly\n");
     } else {
         SERIAL_PORT.write_str("  WARNING: 64-bit IDT may not be loaded correctly!\n");
@@ -524,7 +432,7 @@ unsafe fn test_64bit_interrupts() {
     asm!("sti");
 
     // Unmask only timer interrupt for testing
-    pic::unmask_irq(0); // IRQ0 = Timer
+    pic::unmask_irq(0);
 
     // Wait for timer interrupts
     let initial_ticks = timer::get_ticks();
@@ -552,15 +460,13 @@ unsafe fn test_64bit_interrupts() {
             break;
         }
 
-        // Short delay
         for _ in 0..100 {
-            asm!("pause"); // Better than nop for spin-wait in 64-bit
+            asm!("pause");
         }
     }
 
-    // Also enable keyboard for interactive testing
     SERIAL_PORT.write_str("  Enabling 64-bit keyboard interrupts...\n");
-    pic::unmask_irq(1); // IRQ1 = Keyboard
+    pic::unmask_irq(1);
     SERIAL_PORT.write_str("  ✓ Press keys to test 64-bit keyboard interrupts\n");
 }
 
@@ -579,36 +485,4 @@ fn hcf() -> ! {
             asm!("idle 0");
         }
     }
-}
-
-
-    
-unsafe fn test_minimal_allocation() {
-    extern crate alloc;
-
-    SERIAL_PORT.write_str("=== TESTING MINIMAL ALLOCATION ===\n");
-    
-    // First, check if we have ANY heap regions
-    crate::kernel::allocator::debug_heap();
-    
-    // If we have heap, try the smallest possible allocation
-    use core::alloc::{GlobalAlloc, Layout};
-    
-    let layout = Layout::from_size_align(8, 8).unwrap();
-    let ptr = crate::kernel::allocator::ALLOCATOR.alloc(layout);
-    
-    if ptr.is_null() {
-        SERIAL_PORT.write_str("FAILED: Could not allocate 8 bytes\n");
-    } else {
-        SERIAL_PORT.write_str("SUCCESS: Allocated 8 bytes at 0x");
-        SERIAL_PORT.write_hex((ptr as usize >> 32) as u32);
-        SERIAL_PORT.write_hex(ptr as usize as u32);
-        SERIAL_PORT.write_str("\n");
-        
-        // Write to the memory to verify it's actually usable
-        *ptr = 0x42;
-        SERIAL_PORT.write_str("Memory write test passed\n");
-    }
-    
-    SERIAL_PORT.write_str("=== MINIMAL ALLOCATION TEST COMPLETE ===\n");
 }
