@@ -49,6 +49,8 @@ impl Button {
     }
 }
 
+#[derive(Clone)]
+#[derive(Copy)]
 pub struct Window {
     pub x: u64,
     pub y: u64,
@@ -91,6 +93,39 @@ impl Window {
         super::fonts::draw_string(graphics, self.x + 10, self.y + 11, self.title, colors::dark_theme::TEXT_PRIMARY);
 
         // Close button
+        if self.has_close_button {
+            self.draw_close_button(graphics);
+        }
+    }
+
+        /// Draw window in unfocused state (dimmed)
+    pub fn draw_unfocused(&self, graphics: &Graphics) {
+        if !self.visible {
+            return;
+        }
+
+        // Shadow
+        graphics.fill_rect(self.x + 3, self.y + 3, self.width, self.height, 0x30000000);
+
+        // Window background
+        graphics.fill_rect(self.x, self.y, self.width, self.height, self.bg_color);
+
+        // Dimmed title bar
+        graphics.fill_rect(self.x, self.y, self.width, 30, colors::ui::TITLEBAR);
+
+        // Border
+        graphics.draw_rect(self.x, self.y, self.width, self.height, colors::dark_theme::BORDER, 1);
+
+        // Dimmed title text
+        super::fonts::draw_string(
+            graphics, 
+            self.x + 10, 
+            self.y + 11, 
+            self.title, 
+            colors::dark_theme::TEXT_SECONDARY
+        );
+
+        // Close button (still visible)
         if self.has_close_button {
             self.draw_close_button(graphics);
         }

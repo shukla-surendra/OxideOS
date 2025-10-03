@@ -23,6 +23,8 @@ use gui::mouse::{MouseButton};
 use gui::{ colors, widgets, fonts };
 use kernel::serial::SERIAL_PORT;
 use kernel::{idt, interrupts, timer, pic};
+use gui::window_manager::WindowManager;
+use core::ptr;
 
 use limine::BaseRevision;
 use limine::request::{FramebufferRequest, MemoryMapRequest, RequestsEndMarker, RequestsStartMarker};
@@ -54,6 +56,9 @@ static _START_MARKER: RequestsStartMarker = RequestsStartMarker::new();
 #[unsafe(link_section = ".requests_end_marker")]
 static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
 
+
+// Global window manager
+static mut WINDOW_MANAGER: WindowManager = WindowManager::new();
 // ============================================================================
 // MAIN KERNEL ENTRY POINT
 // ============================================================================
@@ -196,11 +201,23 @@ unsafe fn create_boot_screen(graphics: &Graphics) {
     // OS name in taskbar
     gui::fonts::draw_string(graphics, 15, 16, "OxideOS", colors::dark_theme::ACCENT_PRIMARY);
 
-    // Draw windows
-    draw_demo_windows(graphics);
+    // Initialize windows through window manager
+    init_demo_windows(width, height);
 
     SERIAL_PORT.write_str("Boot screen created\n");
 }
+
+// unsafe fn init_demo_windows(screen_width: u64, _screen_height: u64) {
+//     // Terminal window
+//     let win1 = widgets::Window::new(100, 100, 400, 250, "Terminal");
+//     WINDOW_MANAGER.add_window(win1);
+
+//     // System Info window
+//     let win2 = widgets::Window::new(screen_width - 320, 100, 300, 220, "System Info");
+//     WINDOW_MANAGER.add_window(win2);
+
+//     SERIAL_PORT.write_str("Demo windows initialized\n");
+// }
 
 unsafe fn draw_demo_windows(graphics: &Graphics) {
     let (width, _height) = graphics.get_dimensions();
@@ -226,123 +243,202 @@ unsafe fn draw_demo_windows(graphics: &Graphics) {
     let btn3 = widgets::Button::new(width - 290, 240, 120, 35, "Settings");
     btn3.draw(graphics);
 }
+
+// unsafe fn run_gui_with_mouse(graphics: &Graphics) {
+//     let (width, height) = graphics.get_dimensions();
+//     unsafe { SERIAL_PORT.write_str("Starting GUI demo with mouse support...\n") };
+
+//     let mut frame_count = 0u64;
+//     let mut last_cursor_pos = (-1i64, -1i64);
+//     let mut saved_pixels = [[0u32; 11]; 19];
+//     let mut last_mouse_count = 0u64;
+
+//     loop {
+//         frame_count += 1;
+
+//         // Check mouse interrupt count every 100 frames (roughly every second)
+//         if frame_count % 100 == 0 {
+//             let current_count = kernel::interrupts::get_mouse_interrupt_count();
+//             if current_count > last_mouse_count {
+//                 SERIAL_PORT.write_str("MOUSE: ");
+//                 SERIAL_PORT.write_decimal((current_count - last_mouse_count) as u32);
+//                 SERIAL_PORT.write_str(" interrupts in last second\n");
+//                 last_mouse_count = current_count;
+//             } else if frame_count % 500 == 0 { // Every 5 seconds, report if no interrupts
+//                 SERIAL_PORT.write_str("MOUSE: No interrupts detected (move mouse to test)\n");
+
+//                 // Try polling for mouse data manually
+//                 use crate::kernel::interrupts::{MOUSE_CONTROLLER};
+//                 let controller_ptr = core::ptr::addr_of!(MOUSE_CONTROLLER);
+//                 if let Some(ref mouse) = (*controller_ptr).as_ref() {
+//                     if mouse.poll_for_data() {
+//                         SERIAL_PORT.write_str("POLL: Found data but no interrupt!\n");
+//                     }
+//                 }
+//             }
+//         }
+
+//         // Check for mouse movement and redraw cursor if needed
+//         if let Some(cursor_pos) = gui::mouse:: get_mouse_position() {
+//             if cursor_pos != last_cursor_pos {
+//                 // Restore old position
+//                 if last_cursor_pos.0 >= 0 && last_cursor_pos.1 >= 0 {
+//                     graphics.restore_cursor_area(last_cursor_pos.0, last_cursor_pos.1, &saved_pixels);
+//                 }
+//                 // Save new position
+//                 saved_pixels = graphics.save_cursor_area(cursor_pos.0, cursor_pos.1);
+                
+//                 // Draw cursor
+//                 graphics.draw_cursor(cursor_pos.0, cursor_pos.1, 0xFFFFFFFF);
+                
+//                 last_cursor_pos = cursor_pos;
+//             }
+
+//             // Handle mouse clicks
+//             if gui::mouse::is_mouse_button_pressed(MouseButton::Left) {
+//                 unsafe{
+//                     SERIAL_PORT.write_str("CLICK: Left button at (");
+//                     // SERIAL_PORT.write_decimal(cursor_pos.0 as u32);
+//                     // SERIAL_PORT.write_str(",");
+//                     // SERIAL_PORT.write_decimal(cursor_pos.1 as u32);
+//                     // SERIAL_PORT.write_str(")\n");
+//                 }
+
+//                 // Draw a small circle where clicked
+//                 graphics.draw_circle(cursor_pos.0, cursor_pos.1, 5, 0xFFFF0000);
+//             }
+            
+//             // Check RIGHT button
+//             if gui::mouse::is_mouse_button_pressed(MouseButton::Right) {
+//                 SERIAL_PORT.write_str("CLICK: Right button at (");
+//                 SERIAL_PORT.write_decimal(cursor_pos.0 as u32);
+//                 SERIAL_PORT.write_str(",");
+//                 SERIAL_PORT.write_decimal(cursor_pos.1 as u32);
+//                 SERIAL_PORT.write_str(")\n");
+
+//                 // Draw a GREEN circle for right click
+//                 graphics.draw_circle(cursor_pos.0, cursor_pos.1, 5, 0xFF00FF00);
+//             }
+
+//             // Check MIDDLE button
+//             if gui::mouse::is_mouse_button_pressed(MouseButton::Middle) {
+//                 SERIAL_PORT.write_str("CLICK: Middle button at (");
+//                 SERIAL_PORT.write_decimal(cursor_pos.0 as u32);
+//                 SERIAL_PORT.write_str(",");
+//                 SERIAL_PORT.write_decimal(cursor_pos.1 as u32);
+//                 SERIAL_PORT.write_str(")\n");
+
+//                 // Draw a BLUE circle for middle click
+//                 graphics.draw_circle(cursor_pos.0, cursor_pos.1, 5, 0xFF0000FF);
+//             }
+//         }
+
+//         // Simple animation - moving progress bar
+//         if frame_count % 50000 == 0 {
+//             let animation_offset = ((frame_count / 50000) * 10) % (width - 200);
+
+//             // Clear previous progress bar area
+//             graphics.fill_rect(50, height - 50, width - 100, 20, colors::DARK_GRAY);
+
+//             // Draw animated progress bar
+//             graphics.fill_rect(50 + animation_offset, height - 50, 150, 20, colors::GREEN);
+//             graphics.draw_rect(50, height - 50, width - 100, 20, colors::WHITE, 1);
+//         }
+
+//         // Keyboard interaction demo
+//         if frame_count % 100000 == 0 {
+//             // Draw a small indicator that updates periodically
+//             let indicator_color = match (frame_count / 100000) % 4 {
+//                 0 => colors::RED,
+//                 1 => colors::GREEN,
+//                 2 => colors::BLUE,
+//                 _ => colors::YELLOW,
+//             };
+
+//             graphics.fill_rect(width - 30, 10, 20, 20, indicator_color);
+//             graphics.draw_rect(width - 30, 10, 20, 20, colors::WHITE, 1);
+
+//             SERIAL_PORT.write_str("GUI: Frame ");
+//             SERIAL_PORT.write_decimal((frame_count / 100000) as u32);
+//             SERIAL_PORT.write_str(" rendered\n");
+//         }
+
+//         core::arch::asm!("hlt");
+//     }
+// }
+unsafe fn init_demo_windows(screen_width: u64, _screen_height: u64) {
+    // Use addr_of_mut! for safe static access
+    let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
+    
+    // Terminal window
+    let win1 = widgets::Window::new(100, 100, 400, 250, "Terminal");
+    (*wm).add_window(win1);
+
+    // System Info window
+    let win2 = widgets::Window::new(screen_width - 320, 100, 300, 220, "System Info");
+    (*wm).add_window(win2);
+
+    SERIAL_PORT.write_str("Demo windows initialized\n");
+}
+
 unsafe fn run_gui_with_mouse(graphics: &Graphics) {
     let (width, height) = graphics.get_dimensions();
-    unsafe { SERIAL_PORT.write_str("Starting GUI demo with mouse support...\n") };
+    SERIAL_PORT.write_str("Starting GUI with window manager...\n");
 
-    let mut frame_count = 0u64;
     let mut last_cursor_pos = (-1i64, -1i64);
     let mut saved_pixels = [[0u32; 11]; 19];
-    let mut last_mouse_count = 0u64;
+    let mut last_left_button = false;
+    let mut needs_redraw = true;
+
+    let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
 
     loop {
-        frame_count += 1;
+        let cursor_pos = gui::mouse::get_mouse_position();
+        let left_button = gui::mouse::is_mouse_button_pressed(gui::mouse::MouseButton::Left);
 
-        // Check mouse interrupt count every 100 frames (roughly every second)
-        if frame_count % 100 == 0 {
-            let current_count = kernel::interrupts::get_mouse_interrupt_count();
-            if current_count > last_mouse_count {
-                SERIAL_PORT.write_str("MOUSE: ");
-                SERIAL_PORT.write_decimal((current_count - last_mouse_count) as u32);
-                SERIAL_PORT.write_str(" interrupts in last second\n");
-                last_mouse_count = current_count;
-            } else if frame_count % 500 == 0 { // Every 5 seconds, report if no interrupts
-                SERIAL_PORT.write_str("MOUSE: No interrupts detected (move mouse to test)\n");
-
-                // Try polling for mouse data manually
-                use crate::kernel::interrupts::{MOUSE_CONTROLLER};
-                let controller_ptr = core::ptr::addr_of!(MOUSE_CONTROLLER);
-                if let Some(ref mouse) = (*controller_ptr).as_ref() {
-                    if mouse.poll_for_data() {
-                        SERIAL_PORT.write_str("POLL: Found data but no interrupt!\n");
-                    }
-                }
-            }
+        // Restore old cursor position first
+        if last_cursor_pos.0 >= 0 {
+            graphics.restore_cursor_area(last_cursor_pos.0, last_cursor_pos.1, &saved_pixels);
         }
 
-        // Check for mouse movement and redraw cursor if needed
-        if let Some(cursor_pos) = gui::mouse:: get_mouse_position() {
-            if cursor_pos != last_cursor_pos {
-                // Restore old position
-                if last_cursor_pos.0 >= 0 && last_cursor_pos.1 >= 0 {
-                    graphics.restore_cursor_area(last_cursor_pos.0, last_cursor_pos.1, &saved_pixels);
+        // Handle mouse events
+        if let Some((mx, my)) = cursor_pos {
+            // Mouse moved
+            if (mx, my) != last_cursor_pos {
+                if (*wm).is_dragging() {
+                    (*wm).handle_drag(mx as u64, my as u64);
+                    needs_redraw = true;
                 }
-                // Save new position
-                saved_pixels = graphics.save_cursor_area(cursor_pos.0, cursor_pos.1);
-                
-                // Draw cursor
-                graphics.draw_cursor(cursor_pos.0, cursor_pos.1, 0xFFFFFFFF);
-                
-                last_cursor_pos = cursor_pos;
+                last_cursor_pos = (mx, my);
             }
 
-            // Handle mouse clicks
-            if gui::mouse::is_mouse_button_pressed(MouseButton::Left) {
-                unsafe{
-                    SERIAL_PORT.write_str("CLICK: Left button at (");
-                    // SERIAL_PORT.write_decimal(cursor_pos.0 as u32);
-                    // SERIAL_PORT.write_str(",");
-                    // SERIAL_PORT.write_decimal(cursor_pos.1 as u32);
-                    // SERIAL_PORT.write_str(")\n");
-                }
-
-                // Draw a small circle where clicked
-                graphics.draw_circle(cursor_pos.0, cursor_pos.1, 5, 0xFFFF0000);
-            }
-            
-            // Check RIGHT button
-            if gui::mouse::is_mouse_button_pressed(MouseButton::Right) {
-                SERIAL_PORT.write_str("CLICK: Right button at (");
-                SERIAL_PORT.write_decimal(cursor_pos.0 as u32);
-                SERIAL_PORT.write_str(",");
-                SERIAL_PORT.write_decimal(cursor_pos.1 as u32);
-                SERIAL_PORT.write_str(")\n");
-
-                // Draw a GREEN circle for right click
-                graphics.draw_circle(cursor_pos.0, cursor_pos.1, 5, 0xFF00FF00);
+            // Mouse button pressed (edge detection)
+            if left_button && !last_left_button {
+                (*wm).handle_click(mx as u64, my as u64);
+                needs_redraw = true;
             }
 
-            // Check MIDDLE button
-            if gui::mouse::is_mouse_button_pressed(MouseButton::Middle) {
-                SERIAL_PORT.write_str("CLICK: Middle button at (");
-                SERIAL_PORT.write_decimal(cursor_pos.0 as u32);
-                SERIAL_PORT.write_str(",");
-                SERIAL_PORT.write_decimal(cursor_pos.1 as u32);
-                SERIAL_PORT.write_str(")\n");
-
-                // Draw a BLUE circle for middle click
-                graphics.draw_circle(cursor_pos.0, cursor_pos.1, 5, 0xFF0000FF);
+            // Mouse button released
+            if !left_button && last_left_button {
+                (*wm).release_drag();
             }
+
+            last_left_button = left_button;
         }
 
-        // Simple animation - moving progress bar
-        if frame_count % 50000 == 0 {
-            let animation_offset = ((frame_count / 50000) * 10) % (width - 200);
-
-            // Clear previous progress bar area
-            graphics.fill_rect(50, height - 50, width - 100, 20, colors::DARK_GRAY);
-
-            // Draw animated progress bar
-            graphics.fill_rect(50 + animation_offset, height - 50, 150, 20, colors::GREEN);
-            graphics.draw_rect(50, height - 50, width - 100, 20, colors::WHITE, 1);
+        // Full redraw if needed
+        if needs_redraw {
+            graphics.clear_screen(colors::dark_theme::BACKGROUND);
+            graphics.fill_rect(0, 0, width, 40, colors::dark_theme::SURFACE_VARIANT);
+            fonts::draw_string(graphics, 15, 16, "OxideOS", colors::dark_theme::ACCENT_PRIMARY);
+            (*wm).draw_all(graphics);
+            needs_redraw = false;
         }
 
-        // Keyboard interaction demo
-        if frame_count % 100000 == 0 {
-            // Draw a small indicator that updates periodically
-            let indicator_color = match (frame_count / 100000) % 4 {
-                0 => colors::RED,
-                1 => colors::GREEN,
-                2 => colors::BLUE,
-                _ => colors::YELLOW,
-            };
-
-            graphics.fill_rect(width - 30, 10, 20, 20, indicator_color);
-            graphics.draw_rect(width - 30, 10, 20, 20, colors::WHITE, 1);
-
-            SERIAL_PORT.write_str("GUI: Frame ");
-            SERIAL_PORT.write_decimal((frame_count / 100000) as u32);
-            SERIAL_PORT.write_str(" rendered\n");
+        // Save and draw cursor at new position
+        if let Some((mx, my)) = cursor_pos {
+            saved_pixels = graphics.save_cursor_area(mx, my);
+            graphics.draw_cursor(mx, my, 0xFFFFFFFF);
         }
 
         core::arch::asm!("hlt");

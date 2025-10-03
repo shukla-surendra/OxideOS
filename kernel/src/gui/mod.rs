@@ -7,3 +7,4 @@ pub mod fonts;
 
 
 pub mod widgets;
+pub mod window_manager;
