@@ -84,6 +84,13 @@ unsafe extern "C" fn kmain() -> ! {
     // ========================================================================
 
     init_interrupt_system();
+    
+
+    unsafe {
+    crate::kernel::syscall_handler::init();
+    // TODO fix page fault on testing system call
+    // crate::kernel::syscall_handler::test_syscall(); // Optional test
+}
 
     // ========================================================================
     // STAGE 2.5: MEMORY ALLOCATOR INITIALIZATION

@@ -8,3 +8,5 @@ pub mod interrupts_asm;
 pub mod keyboard;
 // pub mod allocator;
 pub mod paging_allocator;
+pub mod syscall;
+pub mod syscall_handler;
