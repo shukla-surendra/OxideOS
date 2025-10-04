@@ -8,3 +8,4 @@ pub mod fonts;
 
 pub mod widgets;
 pub mod window_manager;
+pub mod text_editor;
