@@ -88,8 +88,7 @@ unsafe extern "C" fn kmain() -> ! {
 
     unsafe {
     crate::kernel::syscall_handler::init();
-    // TODO fix page fault on testing system call
-    // crate::kernel::syscall_handler::test_syscall(); // Optional test
+    crate::kernel::syscall_handler::test_syscall(); // 
 }
 
     // ========================================================================
