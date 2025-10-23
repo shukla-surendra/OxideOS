@@ -19,8 +19,7 @@ mod gui;                // GUI system
 // ============================================================================
 use core::arch::asm;
 use gui::graphics::Graphics;
-use gui::mouse::MouseButton;
-use gui::{colors, widgets, fonts};
+use gui::{colors, widgets};
 use kernel::serial::SERIAL_PORT;
 use kernel::{idt, interrupts, timer, pic};
 use gui::window_manager::WindowManager;

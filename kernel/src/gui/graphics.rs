@@ -1,4 +1,4 @@
-// src/gui/fonts.rs
+// src/gui/graphics.rs
 use limine::framebuffer::Framebuffer;
 use crate::kernel::serial::SERIAL_PORT;
 
