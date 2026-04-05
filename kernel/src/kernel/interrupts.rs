@@ -224,6 +224,35 @@ unsafe fn handle_mouse_interrupt() {
         asm!("in al, 0x60", out("al") _data, options(nostack, nomem));
     }
 }
+
+pub unsafe fn poll_mouse_data() -> bool {
+    let mut processed = false;
+
+    loop {
+        let status: u8;
+        asm!("in al, 0x64", out("al") status, options(nostack, nomem));
+
+        if (status & 0x01) == 0 || (status & 0x20) == 0 {
+            break;
+        }
+
+        let mouse_ptr = core::ptr::addr_of_mut!(MOUSE_CONTROLLER);
+        let cursor_ptr = core::ptr::addr_of_mut!(MOUSE_CURSOR);
+
+        if let (Some(ref mut mouse), Some(ref mut cursor)) =
+            ((*mouse_ptr).as_mut(), (*cursor_ptr).as_mut()) {
+            let (width, height) = SCREEN_DIMENSIONS;
+            mouse.handle_interrupt(cursor, width, height);
+        } else {
+            let _data: u8;
+            asm!("in al, 0x60", out("al") _data, options(nostack, nomem));
+        }
+
+        processed = true;
+    }
+
+    processed
+}
 /// Handle other hardware IRQs
 unsafe fn handle_hardware_irq(int_no: u64) {
     let irq_num = int_no - 32;

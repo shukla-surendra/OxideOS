@@ -32,6 +32,7 @@ struct SavedKernelContext {
     r13: u64,
     r14: u64,
     r15: u64,
+    rflags: u64,
 }
 
 static USER_MODE_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -45,6 +46,7 @@ static mut RETURN_CONTEXT: SavedKernelContext = SavedKernelContext {
     r13: 0,
     r14: 0,
     r15: 0,
+    rflags: 0,
 };
 
 global_asm!(
@@ -61,6 +63,9 @@ enter_user_mode_trampoline:
     mov [rip + RETURN_CONTEXT + 32], r13
     mov [rip + RETURN_CONTEXT + 40], r14
     mov [rip + RETURN_CONTEXT + 48], r15
+    pushfq
+    pop rax
+    mov [rip + RETURN_CONTEXT + 56], rax
 
     push 0x1b
     push rsi
@@ -96,6 +101,8 @@ pub unsafe fn exit_to_kernel(code: i64) -> ! {
         "mov r13, {saved_r13}",
         "mov r14, {saved_r14}",
         "mov r15, {saved_r15}",
+        "push {saved_rflags}",
+        "popfq",
         "mov rax, {exit_code}",
         "ret",
         saved_rsp = in(reg) ctx.rsp,
@@ -105,6 +112,7 @@ pub unsafe fn exit_to_kernel(code: i64) -> ! {
         saved_r13 = in(reg) ctx.r13,
         saved_r14 = in(reg) ctx.r14,
         saved_r15 = in(reg) ctx.r15,
+        saved_rflags = in(reg) ctx.rflags,
         exit_code = in(reg) code,
         options(noreturn)
     );

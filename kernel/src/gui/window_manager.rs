@@ -561,6 +561,17 @@ impl WindowManager {
         self.focused_window
     }
 
+    pub fn is_window_visible(&self, window_id: usize) -> bool {
+        if window_id >= MAX_WINDOWS {
+            return false;
+        }
+
+        self.windows[window_id]
+            .as_ref()
+            .map(|window| window.visible && self.window_states[window_id] != WindowState::Minimized)
+            .unwrap_or(false)
+    }
+
     pub fn is_dragging(&self) -> bool {
         self.dragging_window.is_some()
     }

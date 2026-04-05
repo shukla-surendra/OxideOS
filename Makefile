@@ -22,6 +22,9 @@ all-hdd: $(IMAGE_NAME).hdd
 .PHONY: run
 run: run-$(KARCH)
 
+.PHONY: run-gui
+run-gui: run-gui-$(KARCH)
+
 .PHONY: run-hdd
 run-hdd: run-hdd-$(KARCH)
 
@@ -33,7 +36,17 @@ run-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).
 		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
-		-device i8042 \
+		$(QEMUFLAGS)
+
+.PHONY: run-gui-x86_64
+run-gui-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
+	qemu-system-$(KARCH) \
+		-M q35 \
+		-serial stdio \
+		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
+		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
+		-cdrom $(IMAGE_NAME).iso \
+		-display gtk,grab-on-hover=on,show-tabs=off \
 		$(QEMUFLAGS)
 
 .PHONY: run-hdd-x86_64

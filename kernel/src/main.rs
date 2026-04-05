@@ -19,7 +19,7 @@ mod gui;                // GUI system
 // ============================================================================
 use core::arch::asm;
 use gui::graphics::Graphics;
-use gui::{colors, widgets};
+use gui::{colors, terminal, widgets};
 use kernel::serial::SERIAL_PORT;
 use kernel::{gdt, idt, interrupts, timer, pic};
 use gui::window_manager::WindowManager;
@@ -136,10 +136,10 @@ unsafe extern "C" fn kmain() -> ! {
                 SERIAL_PORT.write_str("=== MOUSE INIT COMPLETED ===\n");
 
                 // Create a beautiful boot screen
-                create_boot_screen(&graphics);
+                let terminal_window_id = create_boot_screen(&graphics);
 
                 // Start GUI demo with mouse support
-                run_gui_with_mouse(&graphics);
+                run_gui_with_mouse(&graphics, terminal_window_id);
             }
         } else {
             unsafe {
@@ -263,7 +263,7 @@ unsafe fn test_paging_allocation() {
 // ============================================================================
 // GRAPHICS AND GUI FUNCTIONS
 // ============================================================================
-unsafe fn create_boot_screen(graphics: &Graphics) {
+unsafe fn create_boot_screen(graphics: &Graphics) -> usize {
     let (width, height) = graphics.get_dimensions();
 
     SERIAL_PORT.write_str("Creating boot screen...\n");
@@ -279,25 +279,36 @@ unsafe fn create_boot_screen(graphics: &Graphics) {
     (*wm).draw_taskbar(graphics);
 
     // Initialize windows
-    init_demo_windows(width, height);
+    let terminal_window_id = init_demo_windows(width, height);
 
     SERIAL_PORT.write_str("Boot screen created\n");
+    terminal_window_id
 }
 
-unsafe fn run_gui_with_mouse(graphics: &Graphics) {
-    let (width, height) = graphics.get_dimensions();
+unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize) {
     SERIAL_PORT.write_str("Starting GUI with enhanced window manager...\n");
 
     let mut last_cursor_pos = (-1i64, -1i64);
     let mut saved_pixels = [[0u32; 11]; 19];
     let mut last_left_button = false;
     let mut needs_redraw = true;
+    let mut terminal_app = terminal::TerminalApp::new(terminal_window_id);
 
     let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
+    terminal::install_input_hooks();
 
     loop {
+        if interrupts::poll_mouse_data() {
+            needs_redraw = true;
+        }
+
         let cursor_pos = gui::mouse::get_mouse_position();
         let left_button = gui::mouse::is_mouse_button_pressed(gui::mouse::MouseButton::Left);
+        let terminal_focused = (*wm).get_focused() == Some(terminal_app.window_id());
+
+        if terminal_app.process_pending_input(terminal_focused) {
+            needs_redraw = true;
+        }
 
         // Restore old cursor position first
         if last_cursor_pos.0 >= 0 {
@@ -339,6 +350,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics) {
             
             // Draw all windows
             (*wm).draw_all(graphics);
+            terminal_app.draw(graphics, &*wm);
             
             needs_redraw = false;
         }
@@ -352,18 +364,19 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics) {
         core::arch::asm!("hlt");
     }
 }
-unsafe fn init_demo_windows(screen_width: u64, _screen_height: u64) {
+unsafe fn init_demo_windows(screen_width: u64, _screen_height: u64) -> usize {
     let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
     
     // Terminal window
     let win1 = widgets::Window::new(100, 100, 400, 250, "Terminal");
-    (*wm).add_window(win1);
+    let terminal_window_id = (*wm).add_window(win1).unwrap_or(0);
 
     // System Info window
     let win2 = widgets::Window::new(screen_width - 320, 100, 300, 220, "System Info");
     (*wm).add_window(win2);
 
     SERIAL_PORT.write_str("Demo windows initialized\n");
+    terminal_window_id
 }
 
 // ============================================================================
