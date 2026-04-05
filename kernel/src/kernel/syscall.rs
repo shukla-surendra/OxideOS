@@ -116,6 +116,16 @@ pub unsafe fn run_boot_self_tests() {
     SERIAL_PORT.write_str("=== SYSCALL BOOT SELF-TESTS COMPLETE ===\n\n");
 }
 
+pub fn snapshot_system_info() -> SystemInfo {
+    let ticks = unsafe { crate::kernel::timer::get_ticks() };
+    SystemInfo {
+        total_memory: 128 * 1024 * 1024,
+        free_memory: 64 * 1024 * 1024,
+        uptime_ms: ticks * 1000 / super::syscall_core::TIMER_HZ,
+        process_count: 1,
+    }
+}
+
 #[cfg(feature = "user_syscalls")]
 pub mod user {
     use super::*;

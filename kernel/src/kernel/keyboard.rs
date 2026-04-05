@@ -7,6 +7,8 @@ use core::arch::asm;
 use crate::kernel::serial::SERIAL_PORT;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+const KEYBOARD_DEBUG_LOGGING: bool = false;
+
 // ============================================================================
 // KEYBOARD STATE
 // ============================================================================
@@ -289,7 +291,7 @@ unsafe fn handle_modifier_keys(scancode: u8, is_release: bool, is_extended: bool
             if !is_release {
                 state.caps_lock = !state.caps_lock;
                 update_keyboard_leds();
-                unsafe {
+                if KEYBOARD_DEBUG_LOGGING {
                     SERIAL_PORT.write_str("[CAPS LOCK ");
                     if state.caps_lock {
                         SERIAL_PORT.write_str("ON");
@@ -305,7 +307,7 @@ unsafe fn handle_modifier_keys(scancode: u8, is_release: bool, is_extended: bool
             if !is_release {
                 state.num_lock = !state.num_lock;
                 update_keyboard_leds();
-                unsafe {
+                if KEYBOARD_DEBUG_LOGGING {
                     SERIAL_PORT.write_str("[NUM LOCK ");
                     if state.num_lock {
                         SERIAL_PORT.write_str("ON");
@@ -335,11 +337,15 @@ unsafe fn handle_key_press(scancode: u8, is_extended: bool) {
     // Handle special keys
     match scancode {
         SC_ESCAPE => {
-            unsafe { SERIAL_PORT.write_str("[ESC]\n") };
+            if KEYBOARD_DEBUG_LOGGING {
+                unsafe { SERIAL_PORT.write_str("[ESC]\n") };
+            }
             return;
         }
         SC_BACKSPACE => {
-            unsafe { SERIAL_PORT.write_str("[BACKSPACE]\n") };
+            if KEYBOARD_DEBUG_LOGGING {
+                unsafe { SERIAL_PORT.write_str("[BACKSPACE]\n") };
+            }
             handle_backspace();
             // Call callback with backspace
             if CALLBACK_ENABLED.load(Ordering::Relaxed) {
@@ -350,7 +356,9 @@ unsafe fn handle_key_press(scancode: u8, is_extended: bool) {
             return;
         }
         SC_TAB => {
-            unsafe { SERIAL_PORT.write_str("[TAB]\n") };
+            if KEYBOARD_DEBUG_LOGGING {
+                unsafe { SERIAL_PORT.write_str("[TAB]\n") };
+            }
             if CALLBACK_ENABLED.load(Ordering::Relaxed) {
                 if let Some(callback) = unsafe { KEY_CALLBACK } {
                     callback(b'\t');
@@ -359,7 +367,9 @@ unsafe fn handle_key_press(scancode: u8, is_extended: bool) {
             return;
         }
         SC_ENTER => {
-            unsafe { SERIAL_PORT.write_str("[ENTER]\n") };
+            if KEYBOARD_DEBUG_LOGGING {
+                unsafe { SERIAL_PORT.write_str("[ENTER]\n") };
+            }
             handle_enter();
             // Call callback with newline
             if CALLBACK_ENABLED.load(Ordering::Relaxed) {
@@ -378,19 +388,27 @@ unsafe fn handle_key_press(scancode: u8, is_extended: bool) {
             if let Some(callback) = unsafe { ARROW_KEY_CALLBACK } {
                 match scancode {
                     SC_UP => {
-                        unsafe { SERIAL_PORT.write_str("[UP]\n") };
+                        if KEYBOARD_DEBUG_LOGGING {
+                            unsafe { SERIAL_PORT.write_str("[UP]\n") };
+                        }
                         callback(ArrowKey::Up);
                     }
                     SC_DOWN => {
-                        unsafe { SERIAL_PORT.write_str("[DOWN]\n") };
+                        if KEYBOARD_DEBUG_LOGGING {
+                            unsafe { SERIAL_PORT.write_str("[DOWN]\n") };
+                        }
                         callback(ArrowKey::Down);
                     }
                     SC_LEFT => {
-                        unsafe { SERIAL_PORT.write_str("[LEFT]\n") };
+                        if KEYBOARD_DEBUG_LOGGING {
+                            unsafe { SERIAL_PORT.write_str("[LEFT]\n") };
+                        }
                         callback(ArrowKey::Left);
                     }
                     SC_RIGHT => {
-                        unsafe { SERIAL_PORT.write_str("[RIGHT]\n") };
+                        if KEYBOARD_DEBUG_LOGGING {
+                            unsafe { SERIAL_PORT.write_str("[RIGHT]\n") };
+                        }
                         callback(ArrowKey::Right);
                     }
                     _ => {}
@@ -406,8 +424,9 @@ unsafe fn handle_key_press(scancode: u8, is_extended: bool) {
         let state = unsafe { &mut *core::ptr::addr_of_mut!(KEYBOARD_STATE) };
         state.add_to_buffer(ch);
         
-        // Echo to serial
-        unsafe { SERIAL_PORT.write_byte(ch) };
+        if KEYBOARD_DEBUG_LOGGING {
+            unsafe { SERIAL_PORT.write_byte(ch) };
+        }
         
         // Call registered callback if any
         if CALLBACK_ENABLED.load(Ordering::Relaxed) {
@@ -471,13 +490,14 @@ unsafe fn handle_backspace() {
 unsafe fn handle_enter() {
     let state = unsafe { &mut *core::ptr::addr_of_mut!(KEYBOARD_STATE) };
     
-    // Process the input buffer (for shell/command line)
-    unsafe {
-        SERIAL_PORT.write_str("\nInput: ");
-        for &ch in state.get_buffer() {
-            SERIAL_PORT.write_byte(ch);
+    if KEYBOARD_DEBUG_LOGGING {
+        unsafe {
+            SERIAL_PORT.write_str("\nInput: ");
+            for &ch in state.get_buffer() {
+                SERIAL_PORT.write_byte(ch);
+            }
+            SERIAL_PORT.write_str("\n");
         }
-        SERIAL_PORT.write_str("\n");
     }
     
     // Clear buffer for next input

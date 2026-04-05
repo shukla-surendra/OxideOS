@@ -16,6 +16,7 @@ pub static mut MOUSE_CURSOR: Option<MouseCursor> = None;
 pub static mut SCREEN_DIMENSIONS: (u64, u64) = (0, 0);
 
 static mut MOUSE_INTERRUPT_COUNT: u64 = 0;
+const MOUSE_DEBUG_LOGGING: bool = false;
 
 // ============================================================================
 // 64-BIT INTERRUPT FRAME STRUCTURE
@@ -183,23 +184,23 @@ pub unsafe fn get_mouse_interrupt_count() -> u64 {
 unsafe fn handle_mouse_interrupt() {
     MOUSE_INTERRUPT_COUNT += 1;
 
-    // ALWAYS print when mouse interrupt fires (for debugging)
-    SERIAL_PORT.write_str("MOUSE_INT #");
-    SERIAL_PORT.write_decimal(MOUSE_INTERRUPT_COUNT as u32);
-    SERIAL_PORT.write_str(" fired!\n");
-
     // Check if mouse data is actually available
     let status: u8;
     asm!("in al, 0x64", out("al") status, options(nostack, nomem));
 
-    SERIAL_PORT.write_str("  Status: 0x");
-    SERIAL_PORT.write_hex(status as u32);
-    if (status & 0x20) != 0 {
-        SERIAL_PORT.write_str(" (mouse data)");
-    } else {
-        SERIAL_PORT.write_str(" (keyboard data)");
+    if MOUSE_DEBUG_LOGGING {
+        SERIAL_PORT.write_str("MOUSE_INT #");
+        SERIAL_PORT.write_decimal(MOUSE_INTERRUPT_COUNT as u32);
+        SERIAL_PORT.write_str(" fired!\n");
+        SERIAL_PORT.write_str("  Status: 0x");
+        SERIAL_PORT.write_hex(status as u32);
+        if (status & 0x20) != 0 {
+            SERIAL_PORT.write_str(" (mouse data)");
+        } else {
+            SERIAL_PORT.write_str(" (keyboard data)");
+        }
+        SERIAL_PORT.write_str("\n");
     }
-    SERIAL_PORT.write_str("\n");
 
     // Only proceed if it's actually mouse data
     if (status & 0x01) != 0 && (status & 0x20) != 0 {
@@ -215,13 +216,17 @@ unsafe fn handle_mouse_interrupt() {
             // Only read and discard if no handler is available
             let _data: u8;
             asm!("in al, 0x60", out("al") _data, options(nostack, nomem));
-            SERIAL_PORT.write_str("  Mouse interrupt but no handler initialized\n");
+            if MOUSE_DEBUG_LOGGING {
+                SERIAL_PORT.write_str("  Mouse interrupt but no handler initialized\n");
+            }
         }
     } else {
-        SERIAL_PORT.write_str("  Mouse interrupt but no mouse data available!\n");
         // Read and discard the data anyway
         let _data: u8;
         asm!("in al, 0x60", out("al") _data, options(nostack, nomem));
+        if MOUSE_DEBUG_LOGGING {
+            SERIAL_PORT.write_str("  Mouse interrupt but no mouse data available!\n");
+        }
     }
 }
 

@@ -411,6 +411,20 @@ impl WindowManager {
         }
     }
 
+    pub fn draw_window(&self, graphics: &Graphics, window_id: usize) {
+        if window_id >= MAX_WINDOWS || self.window_states[window_id] == WindowState::Minimized {
+            return;
+        }
+
+        if let Some(ref window) = self.windows[window_id] {
+            if window.visible {
+                let is_focused = self.focused_window == Some(window_id);
+                let is_maximized = self.window_states[window_id] == WindowState::Maximized;
+                self.draw_window_with_controls(graphics, window, is_focused, is_maximized);
+            }
+        }
+    }
+
     fn draw_window_with_controls(&self, graphics: &Graphics, window: &Window, is_focused: bool, is_maximized: bool) {
         // Shadow
         graphics.fill_rect(window.x + 3, window.y + 3, window.width, window.height, 0x30000000);

@@ -292,22 +292,21 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize) {
     let mut saved_pixels = [[0u32; 11]; 19];
     let mut last_left_button = false;
     let mut needs_redraw = true;
+    let mut terminal_dirty = false;
     let mut terminal_app = terminal::TerminalApp::new(terminal_window_id);
 
     let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
     terminal::install_input_hooks();
 
     loop {
-        if interrupts::poll_mouse_data() {
-            needs_redraw = true;
-        }
+        interrupts::poll_mouse_data();
 
         let cursor_pos = gui::mouse::get_mouse_position();
         let left_button = gui::mouse::is_mouse_button_pressed(gui::mouse::MouseButton::Left);
         let terminal_focused = (*wm).get_focused() == Some(terminal_app.window_id());
 
         if terminal_app.process_pending_input(terminal_focused) {
-            needs_redraw = true;
+            terminal_dirty = true;
         }
 
         // Restore old cursor position first
@@ -353,6 +352,11 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize) {
             terminal_app.draw(graphics, &*wm);
             
             needs_redraw = false;
+            terminal_dirty = false;
+        } else if terminal_dirty {
+            (*wm).draw_window(graphics, terminal_window_id);
+            terminal_app.draw(graphics, &*wm);
+            terminal_dirty = false;
         }
 
         // Save and draw cursor at new position

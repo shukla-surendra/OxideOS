@@ -41,11 +41,15 @@ impl Graphics {
     // Clear entire screen with color
     pub fn clear_screen(&self, color: u32) {
         let fb_ptr = self.framebuffer_addr as *mut u32;
+        let pitch_pixels = self.pitch_pixels();
+        let width = self.width as usize;
+        let height = self.height as usize;
 
         unsafe {
-            for y in 0..self.height {
-                for x in 0..self.width {
-                    *fb_ptr.add(self.pixel_offset(x, y)) = color;
+            for y in 0..height {
+                let row_start = y * pitch_pixels;
+                for x in 0..width {
+                    *fb_ptr.add(row_start + x) = color;
                 }
             }
         }
@@ -67,9 +71,23 @@ impl Graphics {
 
     // Draw a filled rectangle
     pub fn fill_rect(&self, x: u64, y: u64, width: u64, height: u64, color: u32) {
-        for dy in 0..height {
-            for dx in 0..width {
-                self.put_pixel(x + dx, y + dy, color);
+        if width == 0 || height == 0 || x >= self.width || y >= self.height {
+            return;
+        }
+
+        let clipped_width = width.min(self.width - x) as usize;
+        let clipped_height = height.min(self.height - y) as usize;
+        let start_x = x as usize;
+        let start_y = y as usize;
+        let pitch_pixels = self.pitch_pixels();
+        let fb_ptr = self.framebuffer_addr as *mut u32;
+
+        unsafe {
+            for dy in 0..clipped_height {
+                let row_start = (start_y + dy) * pitch_pixels + start_x;
+                for dx in 0..clipped_width {
+                    *fb_ptr.add(row_start + dx) = color;
+                }
             }
         }
     }

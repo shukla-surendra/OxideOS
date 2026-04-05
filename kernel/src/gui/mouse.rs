@@ -4,6 +4,8 @@ use crate::kernel::serial::SERIAL_PORT;
 use crate::kernel::interrupts::MOUSE_CURSOR;
 use crate::kernel::interrupts::MOUSE_CONTROLLER;
 
+const MOUSE_PACKET_DEBUG_LOGGING: bool = false;
+
 
 #[derive(Copy, Clone)]
 pub enum MouseButton {
@@ -248,9 +250,11 @@ impl PS2Mouse {
 
         // Validate first byte of packet (should have bit 3 set)
         if self.packet_index == 0 && (data & 0x08) == 0 {
-            SERIAL_PORT.write_str("Invalid packet start, discarding: 0x");
-            SERIAL_PORT.write_hex(data as u32);
-            SERIAL_PORT.write_str("\n");
+            if MOUSE_PACKET_DEBUG_LOGGING {
+                SERIAL_PORT.write_str("Invalid packet start, discarding: 0x");
+                SERIAL_PORT.write_hex(data as u32);
+                SERIAL_PORT.write_str("\n");
+            }
             return; // Discard invalid packet start
         }
 
@@ -277,7 +281,7 @@ impl PS2Mouse {
         cursor.update(dx, dy, screen_width, screen_height);
 
         unsafe {
-            if dx != 0 || dy != 0 {
+            if MOUSE_PACKET_DEBUG_LOGGING && (dx != 0 || dy != 0) {
                 SERIAL_PORT.write_str("Mouse: dx=");
                 SERIAL_PORT.write_decimal(dx as u32);
                 SERIAL_PORT.write_str(" dy=");
