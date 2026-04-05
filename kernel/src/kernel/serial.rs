@@ -1,3 +1,4 @@
+// src/kernel/serial.rs
 use core::arch::asm;
 use core::fmt;
 // COM1 serial port base address

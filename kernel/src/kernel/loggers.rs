@@ -1,3 +1,4 @@
+// src/kernel/loggers.rs
 use super::serial::SERIAL_PORT;
 use core::sync::atomic::{AtomicBool, Ordering};
 
