@@ -3,9 +3,9 @@
 //! This module handles kernel panics with proper message formatting
 //! and detailed error reporting.
 
+
 use core::panic::PanicInfo;
 use core::arch::asm;
-use core::fmt::Write;
 use crate::kernel::loggers::LOGGER;
 use crate::kernel::serial::SERIAL_PORT;
 

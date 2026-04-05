@@ -2,7 +2,7 @@
 use core::arch::asm;
 use crate::kernel::serial::SERIAL_PORT;
 use crate::kernel::pic;
-use super::interrupts_asm;
+use super::syscall;
 use crate::gui::mouse::{PS2Mouse, MouseCursor};
 use super::keyboard::handle_keyboard_interrupt;
 
@@ -248,32 +248,18 @@ unsafe fn handle_hardware_irq(int_no: u64) {
     }
 }
 
-/// Handle system call (int 0x80) - basic implementation
+/// Handle system call (int 0x80).
 unsafe fn handle_system_call(frame: *mut InterruptFrame) {
-    // In 64-bit, system call number typically in RAX
-    let syscall_num = (*frame).rax;
-    let _arg1 = (*frame).rdi;
-    let _arg2 = (*frame).rsi;
-    let _arg3 = (*frame).rdx;
+    let result = syscall::handle_syscall(
+        (*frame).rax,
+        (*frame).rdi,
+        (*frame).rsi,
+        (*frame).rdx,
+        (*frame).r10,
+        (*frame).r8,
+    );
 
-    SERIAL_PORT.write_str("SYSCALL:");
-    SERIAL_PORT.write_decimal(syscall_num as u32);
-    SERIAL_PORT.write_str(" ");
-
-    match syscall_num {
-        0 => {
-            // Example: sys_write
-            SERIAL_PORT.write_str("(write) ");
-        },
-        1 => {
-            // Example: sys_exit
-            SERIAL_PORT.write_str("(exit) ");
-        },
-        _ => {
-            SERIAL_PORT.write_str("(unknown) ");
-            (*frame).rax = u64::MAX; // Return error
-        }
-    }
+    (*frame).rax = result.value as u64;
 }
 
 // ============================================================================

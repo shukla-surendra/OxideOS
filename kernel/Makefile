@@ -34,6 +34,11 @@ all:
 	RUSTFLAGS="-C relocation-model=static" cargo build --target $(RUST_TARGET) --profile $(RUST_PROFILE) 2>&1 | tee build.log
 	cp target/$(RUST_TARGET)/$(RUST_PROFILE_SUBDIR)/$$(cd target/$(RUST_TARGET)/$(RUST_PROFILE_SUBDIR) && find -maxdepth 1 -perm -111 -type f) kernel
 
+.PHONY: test-syscalls
+test-syscalls:
+	rustc --edition=2024 --test tests/syscall_core.rs -o /tmp/oxideos-syscall-core-tests
+	/tmp/oxideos-syscall-core-tests
+
 # Remove object files and the final executable.
 .PHONY: clean
 clean:

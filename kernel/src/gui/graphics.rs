@@ -1,4 +1,4 @@
-// src/gui/fonts.rs
+// src/gui/graphics.rs
 use limine::framebuffer::Framebuffer;
 use crate::kernel::serial::SERIAL_PORT;
 
@@ -10,6 +10,14 @@ pub struct Graphics {
 }
 
 impl Graphics {
+    fn pitch_pixels(&self) -> usize {
+        (self.pitch / 4) as usize
+    }
+
+    fn pixel_offset(&self, x: u64, y: u64) -> usize {
+        y as usize * self.pitch_pixels() + x as usize
+    }
+
     pub fn new(framebuffer: Framebuffer) -> Self {
         unsafe {
             SERIAL_PORT.write_str("GUI: Initializing graphics system\n");
@@ -33,11 +41,12 @@ impl Graphics {
     // Clear entire screen with color
     pub fn clear_screen(&self, color: u32) {
         let fb_ptr = self.framebuffer_addr as *mut u32;
-        let pixel_count = (self.width * self.height) as usize;
 
         unsafe {
-            for i in 0..pixel_count {
-                *fb_ptr.add(i) = color;
+            for y in 0..self.height {
+                for x in 0..self.width {
+                    *fb_ptr.add(self.pixel_offset(x, y)) = color;
+                }
             }
         }
     }
@@ -48,7 +57,7 @@ impl Graphics {
             return;
         }
 
-        let offset = (y * self.width + x) as usize;
+        let offset = self.pixel_offset(x, y);
         let fb_ptr = self.framebuffer_addr as *mut u32;
 
         unsafe {
@@ -220,7 +229,7 @@ impl Graphics {
                 let py = y + dy;
                 
                 if px >= 0 && py >= 0 && px < self.width as i64 && py < self.height as i64 {
-                    let offset = (py as u64 * self.width + px as u64) as usize;
+                    let offset = self.pixel_offset(px as u64, py as u64);
                     let fb_ptr = self.framebuffer_addr as *mut u32;
                     unsafe {
                         saved[dy as usize][dx as usize] = *fb_ptr.add(offset);
@@ -245,4 +254,3 @@ impl Graphics {
         }
     }
 }
-

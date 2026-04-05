@@ -116,6 +116,7 @@ unsafe extern "C" {
     unsafe fn isr45();  // IRQ13
     unsafe fn isr46();  // IRQ14
     unsafe fn isr47();  // IRQ15
+    unsafe fn isr128(); // int 0x80 syscall entry
 }
 
 pub fn init() {
@@ -179,6 +180,7 @@ pub fn init() {
         IDT[45].set_handler(isr45, kernel_selector, 0x8E);
         IDT[46].set_handler(isr46, kernel_selector, 0x8E);
         IDT[47].set_handler(isr47, kernel_selector, 0x8E);
+        IDT[128].set_handler(isr128, kernel_selector, 0xEE); // DPL=3 interrupt gate
 
         // Default handler for unused entries
         unsafe extern "C" fn default_isr() {
@@ -187,7 +189,9 @@ pub fn init() {
 
         // Set default handlers for remaining entries
         for i in 48..256 {
-            IDT[i].set_handler(default_isr, kernel_selector, 0x8E);
+            if i != 128 {
+                IDT[i].set_handler(default_isr, kernel_selector, 0x8E);
+            }
         }
 
         // Set up IDT descriptor

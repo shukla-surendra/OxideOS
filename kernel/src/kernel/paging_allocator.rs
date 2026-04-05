@@ -60,6 +60,29 @@ impl PageTableFlags {
     fn kernel_flags() -> Self {
         Self(Self::PRESENT | Self::WRITABLE)
     }
+
+    fn user_flags(writable: bool, executable: bool) -> Self {
+        let mut flags = Self(Self::PRESENT | Self::USER);
+        if writable {
+            flags.0 |= Self::WRITABLE;
+        }
+        if !executable {
+            flags.0 |= Self::NO_EXECUTE;
+        }
+        flags
+    }
+
+    fn parent_table_flags(&self) -> Self {
+        let mut flags = Self(Self::PRESENT | Self::WRITABLE);
+        if self.0 & Self::USER != 0 {
+            flags.0 |= Self::USER;
+        }
+        flags
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
 }
 
 /// Single page table entry
@@ -273,6 +296,7 @@ impl PageTableManager {
 
     /// Map a virtual address to a physical frame
     unsafe fn map(&mut self, virt_addr: u64, phys_addr: u64, flags: PageTableFlags, frame_alloc: &mut PhysicalFrameAllocator) -> Result<(), &'static str> {
+        let parent_flags = flags.parent_table_flags();
         // Extract page table indices
         let l4_idx = ((virt_addr >> 39) & 0x1FF) as usize;
         let l3_idx = ((virt_addr >> 30) & 0x1FF) as usize;
@@ -282,12 +306,15 @@ impl PageTableManager {
         // Walk L4 -> L3
         let l4_table = self.get_table(self.l4_table_phys);
         let l3_phys = if l4_table.entries[l4_idx].is_present() {
+            let mut existing_flags = l4_table.entries[l4_idx].flags();
+            existing_flags.merge(parent_flags);
+            l4_table.entries[l4_idx].set(l4_table.entries[l4_idx].addr(), existing_flags);
             l4_table.entries[l4_idx].addr()
         } else {
             // Allocate new L3 table
             let new_table = frame_alloc.allocate_frame()
                 .ok_or("Out of physical frames")?;
-            l4_table.entries[l4_idx].set(new_table, PageTableFlags::kernel_flags());
+            l4_table.entries[l4_idx].set(new_table, parent_flags);
             
             // Zero the new table
             let table = self.get_table(new_table);
@@ -298,11 +325,14 @@ impl PageTableManager {
         // Walk L3 -> L2
         let l3_table = self.get_table(l3_phys);
         let l2_phys = if l3_table.entries[l3_idx].is_present() {
+            let mut existing_flags = l3_table.entries[l3_idx].flags();
+            existing_flags.merge(parent_flags);
+            l3_table.entries[l3_idx].set(l3_table.entries[l3_idx].addr(), existing_flags);
             l3_table.entries[l3_idx].addr()
         } else {
             let new_table = frame_alloc.allocate_frame()
                 .ok_or("Out of physical frames")?;
-            l3_table.entries[l3_idx].set(new_table, PageTableFlags::kernel_flags());
+            l3_table.entries[l3_idx].set(new_table, parent_flags);
             
             let table = self.get_table(new_table);
             table.zero();
@@ -312,11 +342,14 @@ impl PageTableManager {
         // Walk L2 -> L1
         let l2_table = self.get_table(l2_phys);
         let l1_phys = if l2_table.entries[l2_idx].is_present() {
+            let mut existing_flags = l2_table.entries[l2_idx].flags();
+            existing_flags.merge(parent_flags);
+            l2_table.entries[l2_idx].set(l2_table.entries[l2_idx].addr(), existing_flags);
             l2_table.entries[l2_idx].addr()
         } else {
             let new_table = frame_alloc.allocate_frame()
                 .ok_or("Out of physical frames")?;
-            l2_table.entries[l2_idx].set(new_table, PageTableFlags::kernel_flags());
+            l2_table.entries[l2_idx].set(new_table, parent_flags);
             
             let table = self.get_table(new_table);
             table.zero();
@@ -533,4 +566,40 @@ pub static ALLOCATOR: PagingAllocator = PagingAllocator::new();
 
 pub unsafe fn init_paging_heap(memory_map: &MemoryMapRequest) {
     ALLOCATOR.init(memory_map);
+}
+
+pub unsafe fn map_user_region(
+    virt_addr: u64,
+    num_pages: usize,
+    writable: bool,
+    executable: bool,
+) -> Result<(), &'static str> {
+    let inner = &mut *ALLOCATOR.inner.get();
+
+    if !inner.initialized.load(Ordering::Relaxed) {
+        return Err("Paging allocator not initialized");
+    }
+
+    let page_table_manager = inner
+        .page_table_manager
+        .as_mut()
+        .ok_or("Page table manager unavailable")?;
+    let flags = PageTableFlags::user_flags(writable, executable);
+
+    for page in 0..num_pages {
+        let page_addr = virt_addr + (page * 4096) as u64;
+        let phys_addr = inner
+            .frame_allocator
+            .allocate_frame()
+            .ok_or("Out of physical frames")?;
+
+        page_table_manager.map(page_addr, phys_addr, flags, &mut inner.frame_allocator)?;
+        core::ptr::write_bytes(page_addr as *mut u8, 0, 4096);
+    }
+
+    Ok(())
+}
+
+pub unsafe fn copy_to_region(dest: u64, bytes: &[u8]) {
+    core::ptr::copy_nonoverlapping(bytes.as_ptr(), dest as *mut u8, bytes.len());
 }

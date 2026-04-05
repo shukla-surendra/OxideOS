@@ -1,10 +1,13 @@
 // src/kernel/syscall_handler.rs
-//! Low-level syscall interrupt setup and handling
+//! Experimental `syscall/sysret` fast-path support.
+//!
+//! OxideOS keeps this code staged for future user-mode work. The currently
+//! supported syscall entry path is `int 0x80`.
 
 use core::arch::asm;
 use core::arch::naked_asm;
 use crate::kernel::serial::SERIAL_PORT;
-use super::syscall::{handle_syscall, SyscallResult};
+use super::syscall::handle_syscall;
 
 // MSR registers for syscall
 const IA32_STAR: u32 = 0xC0000081;

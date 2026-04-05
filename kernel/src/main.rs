@@ -19,10 +19,9 @@ mod gui;                // GUI system
 // ============================================================================
 use core::arch::asm;
 use gui::graphics::Graphics;
-use gui::mouse::MouseButton;
-use gui::{colors, widgets, fonts};
+use gui::{colors, widgets};
 use kernel::serial::SERIAL_PORT;
-use kernel::{idt, interrupts, timer, pic};
+use kernel::{gdt, idt, interrupts, timer, pic};
 use gui::window_manager::WindowManager;
 use core::ptr;
 
@@ -77,7 +76,9 @@ unsafe extern "C" fn kmain() -> ! {
 
     // Verify Limine base revision
     assert!(BASE_REVISION.is_supported());
-    SERIAL_PORT.write_str("Limine base revision supported\n");
+    unsafe {
+        SERIAL_PORT.write_str("Limine base revision supported\n");
+    }
 
     // ========================================================================
     // STAGE 2: INTERRUPT SYSTEM SETUP
@@ -85,11 +86,7 @@ unsafe extern "C" fn kmain() -> ! {
 
     init_interrupt_system();
     
-
-    unsafe {
-    crate::kernel::syscall_handler::init();
-    crate::kernel::syscall_handler::test_syscall(); // 
-}
+    crate::kernel::syscall::run_boot_self_tests();
 
     // ========================================================================
     // STAGE 2.5: MEMORY ALLOCATOR INITIALIZATION
@@ -108,6 +105,13 @@ unsafe extern "C" fn kmain() -> ! {
         
         // Optional: Test the allocator
         test_paging_allocation();
+    }
+
+    unsafe {
+        let exit_code = crate::kernel::user_mode::run_demo();
+        SERIAL_PORT.write_str("User mode demo returned to kernel with code: ");
+        SERIAL_PORT.write_decimal(exit_code as u32);
+        SERIAL_PORT.write_str("\n");
     }
 
     // ========================================================================
@@ -163,30 +167,34 @@ unsafe fn init_interrupt_system() {
     SERIAL_PORT.write_str("Step 1: Disabling interrupts (CLI)...\n");
     asm!("cli");
 
-    // Step 2: Check system state
+    SERIAL_PORT.write_str("Step 2: Installing x86_64 GDT/TSS...\n");
+    gdt::init();
+    SERIAL_PORT.write_str("  ✓ GDT/TSS initialized\n");
+
+    // Step 3: Check system state
     check_system_tables_64bit();
 
-    // Step 3: Initialize 64-bit IDT
-    SERIAL_PORT.write_str("Step 2: Initializing 64-bit IDT...\n");
+    // Step 4: Initialize 64-bit IDT
+    SERIAL_PORT.write_str("Step 3: Initializing 64-bit IDT...\n");
     idt::init();
     SERIAL_PORT.write_str("  ✓ 64-bit IDT loaded\n");
 
-    // Step 4: Verify 64-bit IDT entries
-    SERIAL_PORT.write_str("Step 3: Verifying 64-bit IDT entries...\n");
+    // Step 5: Verify 64-bit IDT entries
+    SERIAL_PORT.write_str("Step 4: Verifying 64-bit IDT entries...\n");
     verify_idt_entries_64bit();
 
-    // Step 5: Initialize PIC
-    SERIAL_PORT.write_str("Step 4: Initializing PIC for 64-bit...\n");
+    // Step 6: Initialize PIC
+    SERIAL_PORT.write_str("Step 5: Initializing PIC for 64-bit...\n");
     pic::init();
     SERIAL_PORT.write_str("  ✓ PIC remapped for 64-bit operation\n");
 
-    // Step 6: Initialize timer
-    SERIAL_PORT.write_str("Step 5: Initializing 64-bit timer...\n");
+    // Step 7: Initialize timer
+    SERIAL_PORT.write_str("Step 6: Initializing 64-bit timer...\n");
     timer::init(100); // 100 Hz
     SERIAL_PORT.write_str("  ✓ 64-bit timer initialized at 100Hz\n");
 
-    // Step 7: Test interrupt system
-    SERIAL_PORT.write_str("Step 6: Testing 64-bit interrupt system...\n");
+    // Step 8: Test interrupt system
+    SERIAL_PORT.write_str("Step 7: Testing 64-bit interrupt system...\n");
     test_64bit_interrupts();
 
     SERIAL_PORT.write_str("✓ 64-bit interrupt system fully operational\n");
