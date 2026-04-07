@@ -1,14 +1,16 @@
 // src/kernel/paging_allocator.rs
 //! Page Table Based Memory Allocator for OxideOS
-//! 
-//! This allocator actually manipulates page tables to map virtual addresses
-//! to physical frames on-demand, rather than just using pre-mapped memory.
+//!
+//! Allocates virtual memory by mapping physical frames on demand.
+//! Deallocation unmaps pages, frees physical frames, and recycles
+//! virtual address ranges via a fixed-size free list so the virtual
+//! address space is not exhausted on long-running workloads.
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicUsize, Ordering, AtomicBool};
 use core::cell::UnsafeCell;
-use limine::memory_map::{Entry, EntryType};
+use limine::memory_map::EntryType;
 use limine::request::MemoryMapRequest;
 use crate::kernel::serial::SERIAL_PORT;
 
@@ -16,144 +18,74 @@ use crate::kernel::serial::SERIAL_PORT;
 // PAGE TABLE STRUCTURES (x86_64)
 // ============================================================================
 
-/// Page table entry flags
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
 struct PageTableFlags(u64);
 
 impl PageTableFlags {
-    const PRESENT: u64      = 1 << 0;
-    const WRITABLE: u64     = 1 << 1;
-    const USER: u64         = 1 << 2;
-    const WRITE_THROUGH: u64 = 1 << 3;
-    const NO_CACHE: u64     = 1 << 4;
-    const ACCESSED: u64     = 1 << 5;
-    const DIRTY: u64        = 1 << 6;
-    const HUGE: u64         = 1 << 7;
-    const GLOBAL: u64       = 1 << 8;
-    const NO_EXECUTE: u64   = 1 << 63;
+    const PRESENT:      u64 = 1 << 0;
+    const WRITABLE:     u64 = 1 << 1;
+    const USER:         u64 = 1 << 2;
+    const NO_EXECUTE:   u64 = 1 << 63;
 
-    fn new() -> Self {
-        Self(0)
-    }
-
-    fn set_present(&mut self, present: bool) {
-        if present {
-            self.0 |= Self::PRESENT;
-        } else {
-            self.0 &= !Self::PRESENT;
-        }
-    }
-
-    fn set_writable(&mut self, writable: bool) {
-        if writable {
-            self.0 |= Self::WRITABLE;
-        } else {
-            self.0 &= !Self::WRITABLE;
-        }
-    }
-
-    fn is_present(&self) -> bool {
-        self.0 & Self::PRESENT != 0
-    }
-
-    fn kernel_flags() -> Self {
-        Self(Self::PRESENT | Self::WRITABLE)
-    }
+    fn kernel_flags() -> Self { Self(Self::PRESENT | Self::WRITABLE) }
 
     fn user_flags(writable: bool, executable: bool) -> Self {
-        let mut flags = Self(Self::PRESENT | Self::USER);
-        if writable {
-            flags.0 |= Self::WRITABLE;
-        }
-        if !executable {
-            flags.0 |= Self::NO_EXECUTE;
-        }
-        flags
+        let mut f = Self(Self::PRESENT | Self::USER);
+        if writable    { f.0 |= Self::WRITABLE; }
+        if !executable { f.0 |= Self::NO_EXECUTE; }
+        f
     }
 
     fn parent_table_flags(&self) -> Self {
-        let mut flags = Self(Self::PRESENT | Self::WRITABLE);
-        if self.0 & Self::USER != 0 {
-            flags.0 |= Self::USER;
-        }
-        flags
+        let mut f = Self(Self::PRESENT | Self::WRITABLE);
+        if self.0 & Self::USER != 0 { f.0 |= Self::USER; }
+        f
     }
 
-    fn merge(&mut self, other: Self) {
-        self.0 |= other.0;
-    }
+    fn merge(&mut self, other: Self) { self.0 |= other.0; }
 }
 
-/// Single page table entry
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
 struct PageTableEntry(u64);
 
 impl PageTableEntry {
-    fn new() -> Self {
-        Self(0)
-    }
-
-    fn is_present(&self) -> bool {
-        self.0 & PageTableFlags::PRESENT != 0
-    }
-
-    fn flags(&self) -> PageTableFlags {
-        PageTableFlags(self.0 & 0xFFF)
-    }
-
-    fn addr(&self) -> u64 {
-        self.0 & 0x000F_FFFF_FFFF_F000
-    }
-
+    fn new() -> Self { Self(0) }
+    fn is_present(&self) -> bool { self.0 & PageTableFlags::PRESENT != 0 }
+    fn flags(&self) -> PageTableFlags { PageTableFlags(self.0 & 0xFFF) }
+    fn addr(&self)  -> u64 { self.0 & 0x000F_FFFF_FFFF_F000 }
     fn set(&mut self, addr: u64, flags: PageTableFlags) {
         self.0 = (addr & 0x000F_FFFF_FFFF_F000) | (flags.0 & 0xFFF);
     }
-
-    fn clear(&mut self) {
-        self.0 = 0;
-    }
+    fn clear(&mut self) { self.0 = 0; }
 }
 
-/// Page table (512 entries)
 #[repr(align(4096))]
-struct PageTable {
-    entries: [PageTableEntry; 512],
-}
+struct PageTable { entries: [PageTableEntry; 512] }
 
 impl PageTable {
-    fn new() -> Self {
-        Self {
-            entries: [PageTableEntry::new(); 512],
-        }
-    }
-
-    fn zero(&mut self) {
-        for entry in &mut self.entries {
-            entry.clear();
-        }
-    }
+    fn new()  -> Self { Self { entries: [PageTableEntry::new(); 512] } }
+    fn zero(&mut self) { for e in &mut self.entries { e.clear(); } }
 }
 
 // ============================================================================
-// PHYSICAL FRAME ALLOCATOR
+// PHYSICAL FRAME ALLOCATOR  (bitmap, 256 MB range)
 // ============================================================================
 
-/// Tracks free physical frames using a bitmap
 struct PhysicalFrameAllocator {
-    bitmap: [u64; 1024], // 1024 * 64 = 65536 frames = 256MB manageable
-    next_frame: AtomicUsize,
-    total_frames: usize,
+    bitmap:           [u64; 1024],   // 1024×64 = 65536 frames = 256 MB
+    next_frame:       AtomicUsize,
+    total_frames:     usize,
     allocated_frames: AtomicUsize,
 }
 
 impl PhysicalFrameAllocator {
     const fn new() -> Self {
         Self {
-            bitmap: [0; 1024],
-            next_frame: AtomicUsize::new(0),
-            total_frames: 0,
+            bitmap:           [0; 1024],
+            next_frame:       AtomicUsize::new(0),
+            total_frames:     0,
             allocated_frames: AtomicUsize::new(0),
         }
     }
@@ -162,33 +94,25 @@ impl PhysicalFrameAllocator {
         unsafe { SERIAL_PORT.write_str("=== INITIALIZING PHYSICAL FRAME ALLOCATOR ===\n") };
 
         if let Some(map) = memory_map.get_response() {
-            // Mark all frames as used initially
-            for word in &mut self.bitmap {
-                *word = u64::MAX;
-            }
+            for word in &mut self.bitmap { *word = u64::MAX; } // all used
 
-            // Find usable regions and mark frames as free
             for entry in map.entries() {
                 if entry.entry_type == EntryType::USABLE {
-                    let start_frame = (entry.base as usize) / 4096;
-                    let frame_count = (entry.length as usize) / 4096;
+                    let start = (entry.base   as usize) / 4096;
+                    let count = (entry.length as usize) / 4096;
+                    let safe  = core::cmp::max(start, 4096); // skip first 16 MB
 
-                    // Only track frames above 16MB to be safe
-                    let safe_start_frame = core::cmp::max(start_frame, 4096); // 16MB
-                    
-                    if safe_start_frame < 65536 { // Within our bitmap range
-                        let end_frame = core::cmp::min(start_frame + frame_count, 65536);
-                        
-                        for frame in safe_start_frame..end_frame {
+                    if safe < 65536 {
+                        let end = core::cmp::min(start + count, 65536);
+                        for frame in safe..end {
                             self.mark_free(frame);
                             self.total_frames += 1;
                         }
-
                         unsafe {
                             SERIAL_PORT.write_str("  Tracked frames ");
-                            SERIAL_PORT.write_decimal(safe_start_frame as u32);
+                            SERIAL_PORT.write_decimal(safe as u32);
                             SERIAL_PORT.write_str(" - ");
-                            SERIAL_PORT.write_decimal(end_frame as u32);
+                            SERIAL_PORT.write_decimal(end as u32);
                             SERIAL_PORT.write_str("\n");
                         }
                     }
@@ -206,48 +130,26 @@ impl PhysicalFrameAllocator {
     }
 
     fn mark_free(&mut self, frame: usize) {
-        if frame < 65536 {
-            let idx = frame / 64;
-            let bit = frame % 64;
-            self.bitmap[idx] &= !(1u64 << bit);
-        }
+        if frame < 65536 { self.bitmap[frame / 64] &= !(1u64 << (frame % 64)); }
     }
-
     fn mark_used(&mut self, frame: usize) {
-        if frame < 65536 {
-            let idx = frame / 64;
-            let bit = frame % 64;
-            self.bitmap[idx] |= 1u64 << bit;
-        }
+        if frame < 65536 { self.bitmap[frame / 64] |=   1u64 << (frame % 64);  }
     }
-
     fn is_free(&self, frame: usize) -> bool {
-        if frame < 65536 {
-            let idx = frame / 64;
-            let bit = frame % 64;
-            (self.bitmap[idx] & (1u64 << bit)) == 0
-        } else {
-            false
-        }
+        frame < 65536 && (self.bitmap[frame / 64] & (1u64 << (frame % 64))) == 0
     }
 
     fn allocate_frame(&mut self) -> Option<u64> {
         let start = self.next_frame.load(Ordering::Relaxed);
-        
-        // Search for free frame
-        for offset in 0..self.total_frames {
-            let frame = (start + offset) % 65536;
-            
+        for off in 0..self.total_frames {
+            let frame = (start + off) % 65536;
             if self.is_free(frame) {
                 self.mark_used(frame);
                 self.next_frame.store((frame + 1) % 65536, Ordering::Relaxed);
                 self.allocated_frames.fetch_add(1, Ordering::Relaxed);
-                
-                // Return physical address
                 return Some((frame * 4096) as u64);
             }
         }
-
         None
     }
 
@@ -265,151 +167,115 @@ impl PhysicalFrameAllocator {
 // ============================================================================
 
 struct PageTableManager {
-    l4_table_phys: u64,
+    l4_table_phys:      u64,
     higher_half_offset: u64,
 }
 
 impl PageTableManager {
     fn new(higher_half_offset: u64) -> Self {
-        // Get current CR3 (root page table)
         let cr3: u64;
-        unsafe {
-            core::arch::asm!("mov {}, cr3", out(reg) cr3);
-        }
-
-        Self {
-            l4_table_phys: cr3 & 0x000F_FFFF_FFFF_F000,
-            higher_half_offset,
-        }
+        unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3); }
+        Self { l4_table_phys: cr3 & 0x000F_FFFF_FFFF_F000, higher_half_offset }
     }
 
-    /// Convert physical address to virtual (using higher half mapping)
     fn phys_to_virt(&self, phys: u64) -> *mut u8 {
         (phys + self.higher_half_offset) as *mut u8
     }
 
-    /// Get page table at physical address
-    unsafe fn get_table(&self, phys_addr: u64) -> &mut PageTable {
-        let virt = self.phys_to_virt(phys_addr);
-        &mut *(virt as *mut PageTable)
+    unsafe fn get_table(&self, phys: u64) -> &mut PageTable {
+        unsafe { &mut *(self.phys_to_virt(phys) as *mut PageTable) }
     }
 
-    /// Map a virtual address to a physical frame
-    unsafe fn map(&mut self, virt_addr: u64, phys_addr: u64, flags: PageTableFlags, frame_alloc: &mut PhysicalFrameAllocator) -> Result<(), &'static str> {
-        let parent_flags = flags.parent_table_flags();
-        // Extract page table indices
-        let l4_idx = ((virt_addr >> 39) & 0x1FF) as usize;
-        let l3_idx = ((virt_addr >> 30) & 0x1FF) as usize;
-        let l2_idx = ((virt_addr >> 21) & 0x1FF) as usize;
-        let l1_idx = ((virt_addr >> 12) & 0x1FF) as usize;
+    /// Walk/allocate the four-level page table and install a leaf mapping.
+    unsafe fn map(
+        &mut self,
+        virt:        u64,
+        phys:        u64,
+        flags:       PageTableFlags,
+        frame_alloc: &mut PhysicalFrameAllocator,
+    ) -> Result<(), &'static str> {
+        let pf = flags.parent_table_flags();
+        let l4i = ((virt >> 39) & 0x1FF) as usize;
+        let l3i = ((virt >> 30) & 0x1FF) as usize;
+        let l2i = ((virt >> 21) & 0x1FF) as usize;
+        let l1i = ((virt >> 12) & 0x1FF) as usize;
 
-        // Walk L4 -> L3
-        let l4_table = self.get_table(self.l4_table_phys);
-        let l3_phys = if l4_table.entries[l4_idx].is_present() {
-            let mut existing_flags = l4_table.entries[l4_idx].flags();
-            existing_flags.merge(parent_flags);
-            l4_table.entries[l4_idx].set(l4_table.entries[l4_idx].addr(), existing_flags);
-            l4_table.entries[l4_idx].addr()
-        } else {
-            // Allocate new L3 table
-            let new_table = frame_alloc.allocate_frame()
-                .ok_or("Out of physical frames")?;
-            l4_table.entries[l4_idx].set(new_table, parent_flags);
-            
-            // Zero the new table
-            let table = self.get_table(new_table);
-            table.zero();
-            new_table
-        };
-
-        // Walk L3 -> L2
-        let l3_table = self.get_table(l3_phys);
-        let l2_phys = if l3_table.entries[l3_idx].is_present() {
-            let mut existing_flags = l3_table.entries[l3_idx].flags();
-            existing_flags.merge(parent_flags);
-            l3_table.entries[l3_idx].set(l3_table.entries[l3_idx].addr(), existing_flags);
-            l3_table.entries[l3_idx].addr()
-        } else {
-            let new_table = frame_alloc.allocate_frame()
-                .ok_or("Out of physical frames")?;
-            l3_table.entries[l3_idx].set(new_table, parent_flags);
-            
-            let table = self.get_table(new_table);
-            table.zero();
-            new_table
-        };
-
-        // Walk L2 -> L1
-        let l2_table = self.get_table(l2_phys);
-        let l1_phys = if l2_table.entries[l2_idx].is_present() {
-            let mut existing_flags = l2_table.entries[l2_idx].flags();
-            existing_flags.merge(parent_flags);
-            l2_table.entries[l2_idx].set(l2_table.entries[l2_idx].addr(), existing_flags);
-            l2_table.entries[l2_idx].addr()
-        } else {
-            let new_table = frame_alloc.allocate_frame()
-                .ok_or("Out of physical frames")?;
-            l2_table.entries[l2_idx].set(new_table, parent_flags);
-            
-            let table = self.get_table(new_table);
-            table.zero();
-            new_table
-        };
-
-        // Set the final mapping in L1
-        let l1_table = self.get_table(l1_phys);
-        if l1_table.entries[l1_idx].is_present() {
-            return Err("Page already mapped");
-        }
-        l1_table.entries[l1_idx].set(phys_addr, flags);
-
-        // Flush TLB for this address
         unsafe {
-            core::arch::asm!("invlpg [{}]", in(reg) virt_addr);
-        }
+            // L4 → L3
+            let l4 = self.get_table(self.l4_table_phys);
+            let l3_phys = if l4.entries[l4i].is_present() {
+                let mut f = l4.entries[l4i].flags(); f.merge(pf);
+                l4.entries[l4i].set(l4.entries[l4i].addr(), f);
+                l4.entries[l4i].addr()
+            } else {
+                let t = frame_alloc.allocate_frame().ok_or("OOM: L3 table")?;
+                l4.entries[l4i].set(t, pf);
+                self.get_table(t).zero(); t
+            };
 
+            // L3 → L2
+            let l3 = self.get_table(l3_phys);
+            let l2_phys = if l3.entries[l3i].is_present() {
+                let mut f = l3.entries[l3i].flags(); f.merge(pf);
+                l3.entries[l3i].set(l3.entries[l3i].addr(), f);
+                l3.entries[l3i].addr()
+            } else {
+                let t = frame_alloc.allocate_frame().ok_or("OOM: L2 table")?;
+                l3.entries[l3i].set(t, pf);
+                self.get_table(t).zero(); t
+            };
+
+            // L2 → L1
+            let l2 = self.get_table(l2_phys);
+            let l1_phys = if l2.entries[l2i].is_present() {
+                let mut f = l2.entries[l2i].flags(); f.merge(pf);
+                l2.entries[l2i].set(l2.entries[l2i].addr(), f);
+                l2.entries[l2i].addr()
+            } else {
+                let t = frame_alloc.allocate_frame().ok_or("OOM: L1 table")?;
+                l2.entries[l2i].set(t, pf);
+                self.get_table(t).zero(); t
+            };
+
+            // Leaf
+            let l1 = self.get_table(l1_phys);
+            if l1.entries[l1i].is_present() { return Err("Page already mapped"); }
+            l1.entries[l1i].set(phys, flags);
+            core::arch::asm!("invlpg [{}]", in(reg) virt);
+        }
         Ok(())
     }
 
-    /// Unmap a virtual address
-    unsafe fn unmap(&mut self, virt_addr: u64, frame_alloc: &mut PhysicalFrameAllocator) -> Result<u64, &'static str> {
-        let l4_idx = ((virt_addr >> 39) & 0x1FF) as usize;
-        let l3_idx = ((virt_addr >> 30) & 0x1FF) as usize;
-        let l2_idx = ((virt_addr >> 21) & 0x1FF) as usize;
-        let l1_idx = ((virt_addr >> 12) & 0x1FF) as usize;
+    /// Remove a leaf mapping and return the freed physical address.
+    unsafe fn unmap(
+        &mut self,
+        virt:        u64,
+        frame_alloc: &mut PhysicalFrameAllocator,
+    ) -> Result<u64, &'static str> {
+        let l4i = ((virt >> 39) & 0x1FF) as usize;
+        let l3i = ((virt >> 30) & 0x1FF) as usize;
+        let l2i = ((virt >> 21) & 0x1FF) as usize;
+        let l1i = ((virt >> 12) & 0x1FF) as usize;
 
-        let l4_table = self.get_table(self.l4_table_phys);
-        if !l4_table.entries[l4_idx].is_present() {
-            return Err("Page not mapped (L4)");
-        }
-
-        let l3_table = self.get_table(l4_table.entries[l4_idx].addr());
-        if !l3_table.entries[l3_idx].is_present() {
-            return Err("Page not mapped (L3)");
-        }
-
-        let l2_table = self.get_table(l3_table.entries[l3_idx].addr());
-        if !l2_table.entries[l2_idx].is_present() {
-            return Err("Page not mapped (L2)");
-        }
-
-        let l1_table = self.get_table(l2_table.entries[l2_idx].addr());
-        if !l1_table.entries[l1_idx].is_present() {
-            return Err("Page not mapped (L1)");
-        }
-
-        let phys_addr = l1_table.entries[l1_idx].addr();
-        l1_table.entries[l1_idx].clear();
-
-        // Flush TLB
         unsafe {
-            core::arch::asm!("invlpg [{}]", in(reg) virt_addr);
+            let l4 = self.get_table(self.l4_table_phys);
+            if !l4.entries[l4i].is_present() { return Err("Not mapped (L4)"); }
+
+            let l3 = self.get_table(l4.entries[l4i].addr());
+            if !l3.entries[l3i].is_present() { return Err("Not mapped (L3)"); }
+
+            let l2 = self.get_table(l3.entries[l3i].addr());
+            if !l2.entries[l2i].is_present() { return Err("Not mapped (L2)"); }
+
+            let l1 = self.get_table(l2.entries[l2i].addr());
+            if !l1.entries[l1i].is_present() { return Err("Not mapped (L1)"); }
+
+            let phys = l1.entries[l1i].addr();
+            l1.entries[l1i].clear();
+            core::arch::asm!("invlpg [{}]", in(reg) virt);
+            frame_alloc.free_frame(phys);
+            Ok(phys)
         }
-
-        // Free the physical frame
-        frame_alloc.free_frame(phys_addr);
-
-        Ok(phys_addr)
     }
 }
 
@@ -417,64 +283,56 @@ impl PageTableManager {
 // PAGING ALLOCATOR
 // ============================================================================
 
+const FREE_LIST_CAPACITY: usize = 256;
+
 struct PagingAllocatorInner {
-    frame_allocator: PhysicalFrameAllocator,
+    frame_allocator:    PhysicalFrameAllocator,
     page_table_manager: Option<PageTableManager>,
-    next_virt_addr: AtomicUsize,
-    heap_start: usize,
-    heap_end: usize,
-    initialized: AtomicBool,
+    next_virt_addr:     AtomicUsize,
+    heap_start:         usize,
+    heap_end:           usize,
+    initialized:        AtomicBool,
+    /// Recycled virtual ranges: (virt_start, num_pages)
+    free_list:     [(usize, usize); FREE_LIST_CAPACITY],
+    free_list_len: usize,
 }
 
 pub struct PagingAllocator {
     inner: UnsafeCell<PagingAllocatorInner>,
 }
 
-// Safety: We ensure exclusive access through careful synchronization
 unsafe impl Sync for PagingAllocator {}
 
 impl PagingAllocator {
     pub const fn new() -> Self {
         Self {
             inner: UnsafeCell::new(PagingAllocatorInner {
-                frame_allocator: PhysicalFrameAllocator::new(),
+                frame_allocator:    PhysicalFrameAllocator::new(),
                 page_table_manager: None,
-                next_virt_addr: AtomicUsize::new(0),
-                heap_start: 0,
-                heap_end: 0,
-                initialized: AtomicBool::new(false),
+                next_virt_addr:     AtomicUsize::new(0),
+                heap_start:         0,
+                heap_end:           0,
+                initialized:        AtomicBool::new(false),
+                free_list:          [(0, 0); FREE_LIST_CAPACITY],
+                free_list_len:      0,
             }),
         }
     }
 
     pub unsafe fn init(&self, memory_map: &MemoryMapRequest) {
-        let inner = &mut *self.inner.get();
-        
+        let inner = unsafe { &mut *self.inner.get() };
+
         unsafe { SERIAL_PORT.write_str("=== INITIALIZING PAGING ALLOCATOR ===\n") };
+        unsafe { inner.frame_allocator.init(memory_map) };
 
-        // Initialize physical frame allocator
-        inner.frame_allocator.init(memory_map);
+        inner.page_table_manager = Some(PageTableManager::new(0xFFFF800000000000));
 
-        // Set up page table manager
-        // Assume higher half offset is 0xFFFF800000000000 (typical for x86_64)
-        let higher_half_offset = 0xFFFF800000000000;
-        inner.page_table_manager = Some(PageTableManager::new(higher_half_offset));
-
-        // IMPORTANT: Choose a heap address that doesn't conflict with Limine
-        // Limine typically uses:
-        // - 0xFFFF800000000000 - 0xFFFF800040000000: Direct map of physical memory
-        // - 0xFFFFFFFF80000000 - 0xFFFFFFFFFFFFFFFF: Kernel code/data
-        //
-        // We'll use 0xFFFFFF0000000000 which is:
-        // - In the canonical higher half (bit 47 = 1)
-        // - Far from typical mappings
-        // - Still accessible with sign-extended addresses
         inner.heap_start = 0xFFFFFF0000000000;
-        inner.heap_end = inner.heap_start + (64 * 1024 * 1024); // 64MB heap
+        inner.heap_end   = inner.heap_start + (64 * 1024 * 1024); // 64 MB
         inner.next_virt_addr.store(inner.heap_start, Ordering::Relaxed);
 
         unsafe {
-            SERIAL_PORT.write_str("Heap range: 0x");
+            SERIAL_PORT.write_str("Heap: 0x");
             SERIAL_PORT.write_hex((inner.heap_start >> 32) as u32);
             SERIAL_PORT.write_hex(inner.heap_start as u32);
             SERIAL_PORT.write_str(" - 0x");
@@ -488,44 +346,53 @@ impl PagingAllocator {
     }
 
     unsafe fn allocate_pages(&self, num_pages: usize) -> Option<NonNull<u8>> {
-        let inner = &mut *self.inner.get();
-        
-        if !inner.initialized.load(Ordering::Relaxed) {
-            return None;
+        let inner = unsafe { &mut *self.inner.get() };
+        if !inner.initialized.load(Ordering::Relaxed) { return None; }
+
+        // ── 1. Check free list for exact-size recycled range ─────────────────
+        for i in 0..inner.free_list_len {
+            let (fl_virt, fl_pages) = inner.free_list[i];
+            if fl_pages == num_pages {
+                // Swap-remove from free list
+                inner.free_list[i] = inner.free_list[inner.free_list_len - 1];
+                inner.free_list_len -= 1;
+
+                let ptm = inner.page_table_manager.as_mut()?;
+                for j in 0..num_pages {
+                    let virt = (fl_virt + j * 4096) as u64;
+                    let phys = inner.frame_allocator.allocate_frame()?;
+                    unsafe {
+                        if ptm.map(virt, phys, PageTableFlags::kernel_flags(),
+                                   &mut inner.frame_allocator).is_err() {
+                            return None;
+                        }
+                    }
+                }
+                return NonNull::new(fl_virt as *mut u8);
+            }
         }
 
-        let page_table_manager = inner.page_table_manager.as_mut()?;
-        
-        // Allocate virtual address space
+        // ── 2. Bump-allocate fresh virtual range ─────────────────────────────
+        let ptm = inner.page_table_manager.as_mut()?;
         let virt_start = inner.next_virt_addr.fetch_add(num_pages * 4096, Ordering::Relaxed);
-        
-        if virt_start + (num_pages * 4096) > inner.heap_end {
+
+        if virt_start + num_pages * 4096 > inner.heap_end {
             unsafe { SERIAL_PORT.write_str("PAGING ALLOCATOR: Heap exhausted!\n") };
             return None;
         }
 
-        // Map each page
         for i in 0..num_pages {
-            let virt_addr = (virt_start + i * 4096) as u64;
-            
-            // Allocate physical frame
-            let phys_addr = match inner.frame_allocator.allocate_frame() {
-                Some(addr) => addr,
+            let virt = (virt_start + i * 4096) as u64;
+            let phys = match inner.frame_allocator.allocate_frame() {
+                Some(a) => a,
                 None => {
-                    unsafe { SERIAL_PORT.write_str("PAGING ALLOCATOR: Out of physical frames!\n") };
-                    // TODO: Clean up already-mapped pages
+                    unsafe { SERIAL_PORT.write_str("PAGING ALLOCATOR: Out of frames!\n") };
                     return None;
                 }
             };
-
-            // Map virtual to physical
             unsafe {
-                if let Err(e) = page_table_manager.map(
-                    virt_addr,
-                    phys_addr,
-                    PageTableFlags::kernel_flags(),
-                    &mut inner.frame_allocator
-                ) {
+                if let Err(e) = ptm.map(virt, phys, PageTableFlags::kernel_flags(),
+                                        &mut inner.frame_allocator) {
                     SERIAL_PORT.write_str("PAGING ALLOCATOR: Map failed: ");
                     SERIAL_PORT.write_str(e);
                     SERIAL_PORT.write_str("\n");
@@ -540,20 +407,38 @@ impl PagingAllocator {
 
 unsafe impl GlobalAlloc for PagingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let size = layout.size();
-        let num_pages = (size + 4095) / 4096; // Round up to pages
-
-        if let Some(ptr) = self.allocate_pages(num_pages) {
-            ptr.as_ptr()
-        } else {
-            ptr::null_mut()
+        let num_pages = (layout.size() + 4095) / 4096;
+        match unsafe { self.allocate_pages(num_pages) } {
+            Some(p) => p.as_ptr(),
+            None    => ptr::null_mut(),
         }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // TODO: Implement deallocation
-        // Would need to unmap pages and free physical frames
-        let _ = (ptr, layout); // Suppress warnings for now
+        let inner = unsafe { &mut *self.inner.get() };
+        if !inner.initialized.load(Ordering::Relaxed) { return; }
+
+        let virt_start = ptr as usize;
+        let num_pages  = (layout.size() + 4095) / 4096;
+
+        let ptm = match inner.page_table_manager.as_mut() {
+            Some(p) => p,
+            None    => return,
+        };
+
+        // Unmap every page — this frees the backing physical frame each time
+        for i in 0..num_pages {
+            let virt = (virt_start + i * 4096) as u64;
+            let _ = unsafe { ptm.unmap(virt, &mut inner.frame_allocator) };
+        }
+
+        // Push virtual range into the free list for reuse
+        if inner.free_list_len < FREE_LIST_CAPACITY {
+            inner.free_list[inner.free_list_len] = (virt_start, num_pages);
+            inner.free_list_len += 1;
+        }
+        // If the list is full the VA range is simply abandoned — with a 64 MB
+        // heap and 256-entry list this is extremely unlikely in practice.
     }
 }
 
@@ -565,41 +450,35 @@ unsafe impl GlobalAlloc for PagingAllocator {
 pub static ALLOCATOR: PagingAllocator = PagingAllocator::new();
 
 pub unsafe fn init_paging_heap(memory_map: &MemoryMapRequest) {
-    ALLOCATOR.init(memory_map);
+    unsafe { ALLOCATOR.init(memory_map) };
 }
 
+// ── User-space region helpers (used by user_mode.rs) ─────────────────────
+
 pub unsafe fn map_user_region(
-    virt_addr: u64,
-    num_pages: usize,
-    writable: bool,
+    virt_addr:  u64,
+    num_pages:  usize,
+    writable:   bool,
     executable: bool,
 ) -> Result<(), &'static str> {
-    let inner = &mut *ALLOCATOR.inner.get();
-
+    let inner = unsafe { &mut *ALLOCATOR.inner.get() };
     if !inner.initialized.load(Ordering::Relaxed) {
         return Err("Paging allocator not initialized");
     }
-
-    let page_table_manager = inner
-        .page_table_manager
-        .as_mut()
-        .ok_or("Page table manager unavailable")?;
+    let ptm   = inner.page_table_manager.as_mut().ok_or("PTM unavailable")?;
     let flags = PageTableFlags::user_flags(writable, executable);
 
     for page in 0..num_pages {
-        let page_addr = virt_addr + (page * 4096) as u64;
-        let phys_addr = inner
-            .frame_allocator
-            .allocate_frame()
-            .ok_or("Out of physical frames")?;
-
-        page_table_manager.map(page_addr, phys_addr, flags, &mut inner.frame_allocator)?;
-        core::ptr::write_bytes(page_addr as *mut u8, 0, 4096);
+        let page_virt = virt_addr + (page * 4096) as u64;
+        let phys      = inner.frame_allocator.allocate_frame().ok_or("Out of frames")?;
+        unsafe {
+            ptm.map(page_virt, phys, flags, &mut inner.frame_allocator)?;
+            core::ptr::write_bytes(page_virt as *mut u8, 0, 4096);
+        }
     }
-
     Ok(())
 }
 
 pub unsafe fn copy_to_region(dest: u64, bytes: &[u8]) {
-    core::ptr::copy_nonoverlapping(bytes.as_ptr(), dest as *mut u8, bytes.len());
+    unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), dest as *mut u8, bytes.len()) };
 }

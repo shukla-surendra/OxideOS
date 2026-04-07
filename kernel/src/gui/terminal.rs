@@ -1,7 +1,7 @@
-//! Simple GUI terminal for OxideOS.
+//! GUI terminal for OxideOS.
 //!
-//! This is an in-kernel command terminal intended for debugging and early
-//! system bring-up. It is not a process-backed shell yet.
+//! In-kernel command console with RamFS integration.
+//! Supports file commands: ls, cat, mkdir, touch, write, rm, pwd.
 
 extern crate alloc;
 
@@ -11,40 +11,38 @@ use alloc::vec::Vec;
 use core::arch::asm;
 
 use crate::kernel::{keyboard, syscall, timer};
+use crate::kernel::fs::ramfs::{RAMFS, NodeKind};
 
 use super::colors;
 use super::fonts;
 use super::graphics::Graphics;
 use super::window_manager::WindowManager;
 
-const HISTORY_LIMIT: usize = 160;
+// ── Layout constants ───────────────────────────────────────────────────────
+const HISTORY_LIMIT:        usize = 160;
 const COMMAND_HISTORY_LIMIT: usize = 32;
-const INPUT_QUEUE_SIZE: usize = 256;
-const CHAR_WIDTH: u64 = 9;
-const LINE_HEIGHT: u64 = 16;
+const INPUT_QUEUE_SIZE:     usize = 256;
+const CHAR_WIDTH:   u64 = 9;
+const LINE_HEIGHT:  u64 = 16;
 const CONTENT_PADDING_X: u64 = 10;
 const CONTENT_PADDING_Y: u64 = 8;
 const INPUT_HEIGHT: u64 = 24;
 
-const EVENT_ARROW_UP: u16 = 0x100;
-const EVENT_ARROW_DOWN: u16 = 0x101;
-const EVENT_ARROW_LEFT: u16 = 0x102;
+// ── Special key events ─────────────────────────────────────────────────────
+const EVENT_ARROW_UP:    u16 = 0x100;
+const EVENT_ARROW_DOWN:  u16 = 0x101;
+const EVENT_ARROW_LEFT:  u16 = 0x102;
 const EVENT_ARROW_RIGHT: u16 = 0x103;
 
+// ── Tab-completion word list ───────────────────────────────────────────────
 const COMMANDS: &[&str] = &[
-    "about",
-    "clear",
-    "cls",
-    "echo",
-    "help",
-    "history",
-    "pid",
-    "sysinfo",
-    "ticks",
-    "uptime",
-    "version",
+    "about", "cat", "clear", "cls", "echo",
+    "help", "history", "ls", "mkdir", "pid",
+    "pwd", "rm", "sysinfo", "ticks", "touch",
+    "uptime", "version", "write",
 ];
 
+// ── Input queue (interrupt-safe ring buffer) ───────────────────────────────
 static mut INPUT_QUEUE: [u16; INPUT_QUEUE_SIZE] = [0; INPUT_QUEUE_SIZE];
 static mut INPUT_HEAD: usize = 0;
 static mut INPUT_TAIL: usize = 0;
@@ -55,15 +53,10 @@ fn with_interrupts_disabled<T>(f: impl FnOnce() -> T) -> T {
         asm!("pushfq; pop {}", out(reg) flags, options(nomem, preserves_flags));
         asm!("cli", options(nomem, preserves_flags));
     }
-
     let result = f();
-
     if (flags & (1 << 9)) != 0 {
-        unsafe {
-            asm!("sti", options(nomem, preserves_flags));
-        }
+        unsafe { asm!("sti", options(nomem, preserves_flags)); }
     }
-
     result
 }
 
@@ -77,28 +70,23 @@ unsafe fn queue_event(event: u16) {
 
 fn dequeue_event() -> Option<u16> {
     with_interrupts_disabled(|| unsafe {
-        if INPUT_HEAD == INPUT_TAIL {
-            None
-        } else {
-            let event = INPUT_QUEUE[INPUT_HEAD];
-            INPUT_HEAD = (INPUT_HEAD + 1) % INPUT_QUEUE_SIZE;
-            Some(event)
-        }
+        if INPUT_HEAD == INPUT_TAIL { return None; }
+        let event = INPUT_QUEUE[INPUT_HEAD];
+        INPUT_HEAD = (INPUT_HEAD + 1) % INPUT_QUEUE_SIZE;
+        Some(event)
     })
 }
 
-unsafe fn terminal_key_callback(ch: u8) {
-    queue_event(ch as u16);
-}
+unsafe fn terminal_key_callback(ch: u8) { unsafe { queue_event(ch as u16); } }
 
 unsafe fn terminal_arrow_callback(key: keyboard::ArrowKey) {
     let event = match key {
-        keyboard::ArrowKey::Up => EVENT_ARROW_UP,
-        keyboard::ArrowKey::Down => EVENT_ARROW_DOWN,
-        keyboard::ArrowKey::Left => EVENT_ARROW_LEFT,
+        keyboard::ArrowKey::Up    => EVENT_ARROW_UP,
+        keyboard::ArrowKey::Down  => EVENT_ARROW_DOWN,
+        keyboard::ArrowKey::Left  => EVENT_ARROW_LEFT,
         keyboard::ArrowKey::Right => EVENT_ARROW_RIGHT,
     };
-    queue_event(event);
+    unsafe { queue_event(event); }
 }
 
 pub unsafe fn install_input_hooks() {
@@ -106,146 +94,107 @@ pub unsafe fn install_input_hooks() {
     keyboard::register_arrow_key_callback(terminal_arrow_callback);
 }
 
+// ============================================================================
+// TERMINAL APPLICATION
+// ============================================================================
+
 pub struct TerminalApp {
-    window_id: usize,
-    history: Vec<String>,
-    input: String,
+    window_id:       usize,
+    history:         Vec<String>,
+    input:           String,
     command_history: Vec<String>,
-    history_cursor: Option<usize>,
+    history_cursor:  Option<usize>,
 }
 
 impl TerminalApp {
     pub fn new(window_id: usize) -> Self {
-        let mut terminal = Self {
+        let mut t = Self {
             window_id,
-            history: Vec::new(),
-            input: String::new(),
+            history:         Vec::new(),
+            input:           String::new(),
             command_history: Vec::new(),
-            history_cursor: None,
+            history_cursor:  None,
         };
-        terminal.print_banner();
-        terminal
+        t.print_banner();
+        t
     }
 
-    pub fn window_id(&self) -> usize {
-        self.window_id
-    }
+    pub fn window_id(&self) -> usize { self.window_id }
 
     pub fn process_pending_input(&mut self, focused: bool) -> bool {
         let mut changed = false;
-
         while let Some(event) = dequeue_event() {
-            if focused {
-                changed |= self.handle_event(event);
-            }
+            if focused { changed |= self.handle_event(event); }
         }
-
         changed
     }
 
+    // ── Drawing ─────────────────────────────────────────────────────────────
+
     pub fn draw(&self, graphics: &Graphics, wm: &WindowManager) {
-        if !wm.is_window_visible(self.window_id) {
-            return;
-        }
+        if !wm.is_window_visible(self.window_id) { return; }
+        let Some(window) = wm.get_window(self.window_id) else { return; };
 
-        let Some(window) = wm.get_window(self.window_id) else {
-            return;
-        };
-
-        let is_focused = wm.get_focused() == Some(self.window_id);
-        let content_x = window.x + CONTENT_PADDING_X;
-        let content_y = window.y + 30 + CONTENT_PADDING_Y;
+        let is_focused    = wm.get_focused() == Some(self.window_id);
+        let content_x     = window.x + CONTENT_PADDING_X;
+        let content_y     = window.y + 30 + CONTENT_PADDING_Y;
         let content_width = window.width.saturating_sub(CONTENT_PADDING_X * 2);
-        let content_height = window.height.saturating_sub(30 + CONTENT_PADDING_Y * 2);
+        let content_height= window.height.saturating_sub(30 + CONTENT_PADDING_Y * 2);
         let output_height = content_height.saturating_sub(INPUT_HEIGHT + 6);
-        let input_y = content_y + output_height + 6;
-        let max_chars = (content_width / CHAR_WIDTH).max(4) as usize;
+        let input_y       = content_y + output_height + 6;
+        let max_chars     = (content_width / CHAR_WIDTH).max(4) as usize;
         let visible_lines = (output_height / LINE_HEIGHT).max(1) as usize;
 
-        graphics.fill_rect(
-            content_x - 2,
-            content_y - 2,
-            content_width + 4,
-            content_height + 4,
-            colors::ui::INPUT_BORDER,
-        );
-        graphics.fill_rect(
-            content_x,
-            content_y,
-            content_width,
-            output_height,
-            colors::retro_theme::BACKGROUND,
-        );
-        graphics.fill_rect(
-            content_x,
-            input_y,
-            content_width,
-            INPUT_HEIGHT,
-            colors::ui::INPUT_BACKGROUND,
-        );
+        graphics.fill_rect(content_x - 2, content_y - 2,
+                           content_width + 4, content_height + 4,
+                           colors::ui::INPUT_BORDER);
+        graphics.fill_rect(content_x, content_y, content_width, output_height,
+                           colors::retro_theme::BACKGROUND);
+        graphics.fill_rect(content_x, input_y, content_width, INPUT_HEIGHT,
+                           colors::ui::INPUT_BACKGROUND);
 
         let start_line = self.history.len().saturating_sub(visible_lines);
-        for (index, line) in self.history.iter().skip(start_line).enumerate() {
-            let y = content_y + index as u64 * LINE_HEIGHT;
-            fonts::draw_string(
-                graphics,
-                content_x + 4,
-                y,
-                line,
-                colors::retro_theme::TEXT,
-            );
+        for (i, line) in self.history.iter().skip(start_line).enumerate() {
+            fonts::draw_string(graphics, content_x + 4,
+                               content_y + i as u64 * LINE_HEIGHT,
+                               line, colors::retro_theme::TEXT);
         }
 
         let prompt = format!("> {}", self.input);
-        let rendered_prompt = if prompt.len() > max_chars {
-            let start = prompt.len() - max_chars;
-            &prompt[start..]
+        let rendered = if prompt.len() > max_chars {
+            &prompt[prompt.len() - max_chars..]
         } else {
             &prompt
         };
-
-        fonts::draw_string(
-            graphics,
-            content_x + 4,
-            input_y + 8,
-            rendered_prompt,
-            colors::ui::INPUT_TEXT,
-        );
+        fonts::draw_string(graphics, content_x + 4, input_y + 8,
+                           rendered, colors::ui::INPUT_TEXT);
 
         if is_focused {
-            let cursor_x = content_x + 4 + (rendered_prompt.len() as u64 * CHAR_WIDTH);
-            graphics.fill_rect(
-                cursor_x,
-                input_y + 6,
-                2,
-                LINE_HEIGHT.saturating_sub(2),
-                colors::retro_theme::CURSOR,
-            );
+            let cx = content_x + 4 + rendered.len() as u64 * CHAR_WIDTH;
+            graphics.fill_rect(cx, input_y + 6, 2,
+                               LINE_HEIGHT.saturating_sub(2),
+                               colors::retro_theme::CURSOR);
         }
     }
 
+    // ── Input handling ───────────────────────────────────────────────────────
+
     fn handle_event(&mut self, event: u16) -> bool {
         match event {
-            EVENT_ARROW_UP => self.history_up(),
-            EVENT_ARROW_DOWN => self.history_down(),
-            EVENT_ARROW_LEFT | EVENT_ARROW_RIGHT => false,
-            _ => self.handle_key(event as u8),
+            EVENT_ARROW_UP              => self.history_up(),
+            EVENT_ARROW_DOWN            => self.history_down(),
+            EVENT_ARROW_LEFT |
+            EVENT_ARROW_RIGHT           => false,
+            _                           => self.handle_key(event as u8),
         }
     }
 
     fn handle_key(&mut self, ch: u8) -> bool {
         match ch {
-            8 => {
-                self.history_cursor = None;
-                self.input.pop();
-                true
-            }
-            b'\n' | b'\r' => {
-                self.submit_command();
-                true
-            }
-            b'\t' => self.autocomplete(),
-            32..=126 => {
+            8 => { self.history_cursor = None; self.input.pop(); true }
+            b'\n' | b'\r' => { self.submit_command(); true }
+            b'\t'         => self.autocomplete(),
+            32..=126      => {
                 self.history_cursor = None;
                 self.input.push(ch as char);
                 true
@@ -255,9 +204,8 @@ impl TerminalApp {
     }
 
     fn print_banner(&mut self) {
-        self.push_line("OxideOS Terminal");
-        self.push_line("Type 'help' to list available commands.");
-        self.push_line("Tips: Up/Down browse history, Tab completes commands.");
+        self.push_line("OxideOS Terminal v2");
+        self.push_line("Type 'help' for commands. Tab completes.");
         self.push_line("");
     }
 
@@ -266,99 +214,242 @@ impl TerminalApp {
         self.push_line(&format!("> {}", self.input));
         self.input.clear();
         self.history_cursor = None;
-
-        if command.is_empty() {
-            return;
-        }
-
+        if command.is_empty() { return; }
         self.record_command(&command);
         self.execute_command(&command);
     }
 
+    // ── Command dispatcher ────────────────────────────────────────────────────
+
     fn execute_command(&mut self, command: &str) {
         let mut parts = command.split_whitespace();
-        let Some(name) = parts.next() else {
-            return;
-        };
+        let Some(name) = parts.next() else { return; };
 
         match name {
+            // ── Filesystem commands ──────────────────────────────────────────
+            "ls" => {
+                let path = parts.next().unwrap_or("/");
+                unsafe {
+                    match RAMFS.get() {
+                        Some(fs) => match fs.list_dir(path) {
+                            Some(entries) => {
+                                if entries.is_empty() {
+                                    self.push_line("(empty directory)");
+                                } else {
+                                    for (name, kind) in &entries {
+                                        let suffix = if *kind == NodeKind::Directory { "/" } else { "" };
+                                        self.push_line(&format!("  {}{}", name, suffix));
+                                    }
+                                    self.push_line(&format!("  ({} entries)", entries.len()));
+                                }
+                            }
+                            None => self.push_line("ls: no such directory"),
+                        },
+                        None => self.push_line("ls: filesystem not ready"),
+                    }
+                }
+            }
+
+            "cat" => {
+                match parts.next() {
+                    None       => self.push_line("usage: cat <path>"),
+                    Some(path) => unsafe {
+                        match RAMFS.get() {
+                            Some(fs) => match fs.read_file(path) {
+                                Some(data) => {
+                                    if data.is_empty() {
+                                        self.push_line("(empty file)");
+                                    } else {
+                                        match core::str::from_utf8(data) {
+                                            Ok(text) => {
+                                                for line in text.lines() {
+                                                    self.push_line(line);
+                                                }
+                                            }
+                                            Err(_) => {
+                                                self.push_line(&format!(
+                                                    "(binary, {} bytes)", data.len()));
+                                            }
+                                        }
+                                    }
+                                }
+                                None => self.push_line("cat: no such file"),
+                            },
+                            None => self.push_line("cat: filesystem not ready"),
+                        }
+                    },
+                }
+            }
+
+            "mkdir" => {
+                match parts.next() {
+                    None       => self.push_line("usage: mkdir <path>"),
+                    Some(path) => unsafe {
+                        match RAMFS.get() {
+                            Some(fs) => match fs.create_dir(path) {
+                                Ok(_)    => self.push_line("directory created"),
+                                Err(-17) => self.push_line("mkdir: already exists"),
+                                Err(_)   => self.push_line("mkdir: failed (bad path?)"),
+                            },
+                            None => self.push_line("mkdir: filesystem not ready"),
+                        }
+                    },
+                }
+            }
+
+            "touch" => {
+                match parts.next() {
+                    None       => self.push_line("usage: touch <path>"),
+                    Some(path) => unsafe {
+                        match RAMFS.get() {
+                            Some(fs) => match fs.create_file(path) {
+                                Ok(_)  => self.push_line("file created"),
+                                Err(_) => self.push_line("touch: failed (bad path?)"),
+                            },
+                            None => self.push_line("touch: filesystem not ready"),
+                        }
+                    },
+                }
+            }
+
+            "write" => {
+                // write <path> <content...>
+                let rest = command.strip_prefix("write").unwrap_or("").trim_start();
+                let (path, content) = if let Some(sp) = rest.find(' ') {
+                    (&rest[..sp], rest[sp + 1..].trim_start())
+                } else {
+                    (rest, "")
+                };
+                if path.is_empty() {
+                    self.push_line("usage: write <path> <content>");
+                } else {
+                    unsafe {
+                        match RAMFS.get() {
+                            Some(fs) => {
+                                let mut data: Vec<u8> = Vec::from(content.as_bytes());
+                                data.push(b'\n');
+                                match fs.write_file(path, &data) {
+                                    Ok(_)  => self.push_line(&format!(
+                                        "wrote {} bytes to {}", data.len(), path)),
+                                    Err(_) => self.push_line("write: failed"),
+                                }
+                            }
+                            None => self.push_line("write: filesystem not ready"),
+                        }
+                    }
+                }
+            }
+
+            "rm" => {
+                match parts.next() {
+                    None       => self.push_line("usage: rm <path>"),
+                    Some(path) => unsafe {
+                        match RAMFS.get() {
+                            Some(fs) => match fs.remove_file(path) {
+                                Ok(_)    => self.push_line("removed"),
+                                Err(-21) => self.push_line("rm: is a directory"),
+                                Err(-2)  => self.push_line("rm: no such file"),
+                                Err(_)   => self.push_line("rm: failed"),
+                            },
+                            None => self.push_line("rm: filesystem not ready"),
+                        }
+                    },
+                }
+            }
+
+            "pwd" => self.push_line("/"),
+
+            // ── System commands ──────────────────────────────────────────────
             "help" => {
-                self.push_line("Commands:");
-                self.push_line("  help        - show this help");
-                self.push_line("  clear | cls - clear terminal output");
-                self.push_line("  echo TXT    - print text");
-                self.push_line("  ticks       - show timer ticks");
-                self.push_line("  uptime      - show uptime in ms");
-                self.push_line("  pid         - test getpid syscall");
-                self.push_line("  sysinfo     - show kernel system info");
-                self.push_line("  history     - show command history");
-                self.push_line("  version     - show build banner");
-                self.push_line("  about       - show terminal info");
+                self.push_line("Filesystem:");
+                self.push_line("  ls [path]          - list directory");
+                self.push_line("  cat <path>         - print file");
+                self.push_line("  mkdir <path>       - create directory");
+                self.push_line("  touch <path>       - create empty file");
+                self.push_line("  write <path> <txt> - write text to file");
+                self.push_line("  rm <path>          - remove file");
+                self.push_line("  pwd                - print working dir");
+                self.push_line("System:");
+                self.push_line("  ticks   - timer ticks");
+                self.push_line("  uptime  - uptime in ms");
+                self.push_line("  pid     - kernel PID");
+                self.push_line("  sysinfo - memory & uptime");
+                self.push_line("  echo <text>");
+                self.push_line("  clear | cls | history | version | about");
             }
-            "clear" | "cls" => {
-                self.history.clear();
-            }
+
+            "clear" | "cls" => self.history.clear(),
+
             "echo" => {
                 let text = command.strip_prefix("echo").unwrap_or("").trim_start();
                 self.push_line(text);
             }
+
             "ticks" => {
-                let ticks = unsafe { timer::get_ticks() };
-                self.push_line(&format!("ticks: {}", ticks));
+                let t = unsafe { timer::get_ticks() };
+                self.push_line(&format!("ticks: {}", t));
             }
+
             "uptime" => {
-                let ticks = unsafe { timer::get_ticks() };
-                self.push_line(&format!("uptime: {} ms", ticks * 10));
+                let t = unsafe { timer::get_ticks() };
+                self.push_line(&format!("uptime: {} ms", t * 10));
             }
+
             "pid" => {
-                let result =
-                    unsafe { syscall::handle_syscall(syscall::Syscall::GetPid as u64, 0, 0, 0, 0, 0) };
-                self.push_line(&format!("pid: {}", result.value));
+                let r = unsafe {
+                    syscall::handle_syscall(syscall::Syscall::GetPid as u64, 0, 0, 0, 0, 0)
+                };
+                self.push_line(&format!("pid: {}", r.value));
             }
+
             "sysinfo" => {
                 let info = syscall::snapshot_system_info();
                 self.push_line("system:");
-                self.push_line(&format!("  uptime_ms: {}", info.uptime_ms));
-                self.push_line(&format!("  total_memory: {} MB", info.total_memory / 1024 / 1024));
-                self.push_line(&format!("  free_memory: {} MB", info.free_memory / 1024 / 1024));
-                self.push_line(&format!("  process_count: {}", info.process_count));
+                self.push_line(&format!("  uptime:  {} ms",   info.uptime_ms));
+                self.push_line(&format!("  total:   {} MB",   info.total_memory / 1024 / 1024));
+                self.push_line(&format!("  free:    {} MB",   info.free_memory  / 1024 / 1024));
+                self.push_line(&format!("  procs:   {}",      info.process_count));
             }
+
             "history" => {
                 if self.command_history.is_empty() {
                     self.push_line("history: empty");
                 } else {
-                    self.push_line("command history:");
                     let start = self.command_history.len().saturating_sub(10);
-                    let entries: Vec<String> = self.command_history
-                        .iter()
+                    // Collect first to avoid simultaneous immutable + mutable borrow of self
+                    let lines: Vec<String> = self.command_history.iter()
                         .enumerate()
                         .skip(start)
-                        .map(|(index, entry)| format!("  {:02}: {}", index + 1, entry))
+                        .map(|(i, entry)| format!("  {:02}: {}", i + 1, entry))
                         .collect();
-                    for entry in entries {
-                        self.push_line(&entry);
+                    for line in &lines {
+                        self.push_line(line);
                     }
                 }
             }
+
             "version" => {
                 self.push_line("OxideOS kernel prototype");
-                self.push_line("GUI terminal revision 2");
+                self.push_line("GUI terminal revision 3 (with RamFS)");
             }
+
             "about" => {
                 self.push_line("OxideOS GUI terminal");
-                self.push_line("Status: in-kernel command console");
-                self.push_line("Features: history, tab complete, system info");
-                self.push_line("Next: user-space shell + binary loading");
+                self.push_line("Features: RamFS, history, tab-complete");
+                self.push_line("Filesystem: in-memory RamFS");
+                self.push_line("Next: process scheduler, ELF loader");
             }
+
             _ => {
-                self.push_line(&format!("unknown command: {}", command));
-                self.push_line("Try 'help'.");
+                self.push_line(&format!("unknown: {}  (try 'help')", command));
             }
         }
     }
 
+    // ── Command history ───────────────────────────────────────────────────────
+
     fn record_command(&mut self, command: &str) {
-        if self.command_history.last().map(|entry| entry.as_str()) != Some(command) {
+        if self.command_history.last().map(|s| s.as_str()) != Some(command) {
             self.command_history.push(String::from(command));
             while self.command_history.len() > COMMAND_HISTORY_LIMIT {
                 self.command_history.remove(0);
@@ -367,27 +458,23 @@ impl TerminalApp {
     }
 
     fn history_up(&mut self) -> bool {
-        if self.command_history.is_empty() {
-            return false;
-        }
-
-        let next_index = match self.history_cursor {
-            Some(index) if index > 0 => index - 1,
-            Some(0) => 0,
-            None => self.command_history.len() - 1,
-            _ => return false,
+        if self.command_history.is_empty() { return false; }
+        let next = match self.history_cursor {
+            Some(i) if i > 0 => i - 1,
+            Some(0)           => 0,
+            None              => self.command_history.len() - 1,
+            _                 => return false,
         };
-
-        self.history_cursor = Some(next_index);
-        self.input = self.command_history[next_index].clone();
+        self.history_cursor = Some(next);
+        self.input = self.command_history[next].clone();
         true
     }
 
     fn history_down(&mut self) -> bool {
         match self.history_cursor {
-            Some(index) if index + 1 < self.command_history.len() => {
-                self.history_cursor = Some(index + 1);
-                self.input = self.command_history[index + 1].clone();
+            Some(i) if i + 1 < self.command_history.len() => {
+                self.history_cursor = Some(i + 1);
+                self.input = self.command_history[i + 1].clone();
                 true
             }
             Some(_) => {
@@ -399,16 +486,15 @@ impl TerminalApp {
         }
     }
 
+    // ── Tab completion ────────────────────────────────────────────────────────
+
     fn autocomplete(&mut self) -> bool {
         let prefix = String::from(self.input.trim());
-        if prefix.is_empty() || prefix.contains(' ') {
-            return false;
-        }
+        if prefix.is_empty() || prefix.contains(' ') { return false; }
 
-        let matches: Vec<&str> = COMMANDS
-            .iter()
+        let matches: Vec<&str> = COMMANDS.iter()
             .copied()
-            .filter(|cmd| cmd.starts_with(prefix.as_str()))
+            .filter(|c| c.starts_with(prefix.as_str()))
             .collect();
 
         let Some(first) = matches.first().copied() else {
@@ -418,36 +504,33 @@ impl TerminalApp {
 
         if matches.len() > 1 {
             self.push_line("matches:");
-            for entry in matches {
-                self.push_line(&format!("  {}", entry));
-            }
+            for m in &matches { self.push_line(&format!("  {}", m)); }
             return true;
         }
 
         self.input = String::from(first);
-        if matches_argument(first) {
+        if matches!(first, "echo" | "cat" | "mkdir" | "touch" | "write" | "rm" | "ls") {
             self.input.push(' ');
         }
         true
     }
 
+    // ── Line buffer ───────────────────────────────────────────────────────────
+
     fn push_line(&mut self, text: &str) {
+        const MAX_CHARS: usize = 72;
         if text.is_empty() {
             self.history.push(String::new());
             self.trim_history();
             return;
         }
-
-        let max_chars = 72usize;
         let bytes = text.as_bytes();
-        let mut start = 0usize;
-
+        let mut start = 0;
         while start < bytes.len() {
-            let end = (start + max_chars).min(bytes.len());
+            let end = (start + MAX_CHARS).min(bytes.len());
             self.history.push(String::from(&text[start..end]));
             start = end;
         }
-
         self.trim_history();
     }
 
@@ -456,8 +539,4 @@ impl TerminalApp {
             self.history.remove(0);
         }
     }
-}
-
-fn matches_argument(command: &str) -> bool {
-    matches!(command, "echo")
 }

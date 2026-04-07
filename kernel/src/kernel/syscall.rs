@@ -44,9 +44,7 @@ impl SyscallRuntime for KernelRuntime {
 
     fn sleep_until_tick(&mut self, target_tick: u64) {
         while unsafe { crate::kernel::timer::get_ticks() } < target_tick {
-            unsafe {
-                asm!("hlt");
-            }
+            unsafe { asm!("hlt"); }
         }
     }
 
@@ -59,16 +57,52 @@ impl SyscallRuntime for KernelRuntime {
                 crate::kernel::user_mode::exit_to_kernel(code as i64);
             }
         }
-
         unsafe {
             SERIAL_PORT.write_str("Process exiting with code: ");
             SERIAL_PORT.write_decimal(code as u32);
             SERIAL_PORT.write_str("\n");
         }
+        loop { unsafe { asm!("hlt"); } }
+    }
 
-        loop {
-            unsafe {
-                asm!("hlt");
+    // ── Filesystem ──────────────────────────────────────────────────────────
+
+    fn fs_open(&mut self, path: &[u8], flags: u32) -> i64 {
+        let path_str = match core::str::from_utf8(path) {
+            Ok(s)  => s,
+            Err(_) => return -1,
+        };
+        unsafe {
+            match crate::kernel::fs::ramfs::RAMFS.get() {
+                Some(fs) => fs.open(path_str, flags),
+                None     => -2,
+            }
+        }
+    }
+
+    fn fs_close(&mut self, fd: i32) -> i64 {
+        unsafe {
+            match crate::kernel::fs::ramfs::RAMFS.get() {
+                Some(fs) => fs.close(fd),
+                None     => -2,
+            }
+        }
+    }
+
+    fn fs_read(&mut self, fd: i32, buf: &mut [u8]) -> i64 {
+        unsafe {
+            match crate::kernel::fs::ramfs::RAMFS.get() {
+                Some(fs) => fs.read_fd(fd, buf),
+                None     => -2,
+            }
+        }
+    }
+
+    fn fs_write_file(&mut self, fd: i32, buf: &[u8]) -> i64 {
+        unsafe {
+            match crate::kernel::fs::ramfs::RAMFS.get() {
+                Some(fs) => fs.write_fd(fd, buf),
+                None     => -2,
             }
         }
     }

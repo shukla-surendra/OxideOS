@@ -9,6 +9,7 @@ pub mod gdt;
 pub mod keyboard;
 // pub mod allocator;
 pub mod paging_allocator;
+pub mod fs;
 pub mod syscall;
 pub mod syscall_core;
 pub mod syscall_handler;
