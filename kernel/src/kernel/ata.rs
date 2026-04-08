@@ -83,11 +83,24 @@ unsafe fn wait_drq() -> bool {
 ///
 /// Must be called after interrupts are enabled (the PIC should be set up).
 pub unsafe fn init() {
-    // Software reset
-    unsafe { outb(PORT_CTRL, 0x04); }
-    unsafe { outb(PORT_CTRL, 0x00); }
-    if !unsafe { wait_not_busy() } {
-        SERIAL_PORT.write_str("ATA: reset timeout\n");
+    // Disable device IRQ, set nIEN, then do a soft reset.
+    unsafe { outb(PORT_CTRL, 0x02); }   // nIEN – disable IRQ while we probe
+    unsafe { outb(PORT_CTRL, 0x06); }   // SRST | nIEN
+    // 5 µs hold: read alt-status several times as a delay
+    for _ in 0..20 { let _ = unsafe { inb(PORT_CTRL) }; }
+    unsafe { outb(PORT_CTRL, 0x02); }   // Clear SRST, keep nIEN
+
+    // Wait up to ~500 ms for BSY to clear (10 M × ~50 ns each).
+    let mut status_after_reset = 0u8;
+    let mut found = false;
+    for _ in 0..10_000_000u32 {
+        status_after_reset = unsafe { inb(PORT_STATCMD) };
+        if status_after_reset & SR_BSY == 0 { found = true; break; }
+    }
+    if !found {
+        SERIAL_PORT.write_str("ATA: reset timeout, status=0x");
+        SERIAL_PORT.write_hex(status_after_reset as u32);
+        SERIAL_PORT.write_str("\n");
         return;
     }
 

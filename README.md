@@ -26,11 +26,29 @@ Additional architectures may need to be enabled in `kernel/rust-toolchain.toml`.
 
 ### Makefile Targets
 
-- `make all` – Compile the kernel (`kernel/`) and generate a bootable ISO image.  
-- `make all-hdd` – Compile the kernel and generate a raw image suitable for USB stick or HDD/SSD.  
-- `make run` – Build the kernel and bootable ISO, then run it in QEMU (if installed).  
-- `make run-hdd` – Build the kernel and raw HDD image, then run in QEMU.  
-- `run-uefi` / `run-hdd-uefi` – Equivalent to above targets but boot QEMU with UEFI-compatible firmware.  
+| Target | Description |
+|--------|-------------|
+| `make all` | Compile the kernel and generate a bootable ISO image. |
+| `make all-hdd` | Compile the kernel and generate a raw HDD/USB image. |
+| `make run` | Build and run in QEMU (UEFI, q35, no disk). |
+| `make run-gui` | Same as `run` but with SDL display for mouse support. |
+| `make run-bios` | Build and run in QEMU using **BIOS + `-M pc`** — required for ATA disk access. |
+| `make disk` | Create `oxide_disk.img` — a 4 MB FAT16 disk image (run once). |
+| `make clean` | Remove build artefacts and ISO. |
+| `make clean-disk` | Remove `oxide_disk.img`. |
+
+### Booting with a Persistent Disk
+
+ATA PIO disk access requires the legacy IDE controller at I/O port `0x1F0`, which is only
+available with the i440FX/PIIX4 chipset (`-M pc`). The default `run` targets use q35 + UEFI
+where the IDE port floats.
+
+```bash
+make disk       # create oxide_disk.img (once)
+make run-bios   # boot with disk attached — shows "ATA detected" in System Info
+```
+
+See [docs/disk_and_filesystem.md](docs/disk_and_filesystem.md) for the full explanation.
 
 ## License
 

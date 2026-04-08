@@ -30,7 +30,7 @@ disk: $(DISK_IMAGE)
 
 $(DISK_IMAGE):
 	dd if=/dev/zero bs=512 count=$(DISK_SECTORS) of=$(DISK_IMAGE)
-	mkfs.fat -F 16 -S 512 $(DISK_IMAGE)
+	mformat -i $(DISK_IMAGE) -F -v OXIDEDISK ::
 
 .PHONY: run
 run: run-$(KARCH)
@@ -42,8 +42,8 @@ run-gui: run-gui-$(KARCH)
 run-hdd: run-hdd-$(KARCH)
 
 # Optional ATA disk flag — only passed when the image exists.
-DISK_FLAG := $(if $(wildcard $(DISK_IMAGE)),-drive file=$(DISK_IMAGE)$(comma)format=raw$(comma)if=ide,)
-comma := ,
+comma     := ,
+DISK_FLAG := $(if $(wildcard $(DISK_IMAGE)),-drive file=$(DISK_IMAGE)$(comma)format=raw$(comma)if=ide)
 
 .PHONY: run-x86_64
 run-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
@@ -180,12 +180,16 @@ run-hdd-loongarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMA
 		$(QEMUFLAGS)
 
 
+# run-bios: uses -M pc (440FX + PIIX4) which maps legacy IDE to 0x1F0.
+# q35 + OVMF puts the IDE controller in native PCI mode so 0x1F0 floats (0xFF).
 .PHONY: run-bios
 run-bios: $(IMAGE_NAME).iso
 	qemu-system-$(KARCH) \
-		-M q35 \
+		-M pc \
+		-serial stdio \
 		-cdrom $(IMAGE_NAME).iso \
 		-boot d \
+		$(if $(wildcard $(DISK_IMAGE)),-drive file=$(DISK_IMAGE)$(comma)format=raw$(comma)if=ide) \
 		$(QEMUFLAGS)
 
 .PHONY: run-hdd-bios
