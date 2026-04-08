@@ -6,6 +6,19 @@ Oxide OS is a hobby operating system written in Rust. This repository demonstrat
 
 This project is intended for learning and experimentation with OS development in Rust. You are free to use, modify, and improve Oxide OS. For full licensing terms, see the [LICENSE](./LICENSE) file.
 
+## Current Features
+
+OxideOS currently implements the following core operating system concepts:
+
+- **Boot Process:** Utilizes the Limine bootloader to enter 64-bit long mode, establish initial page tables, and gather system information.
+- **CPU & Interrupts:** Custom GDT, TSS, and IDT setup. Includes PIC remapping and a 100Hz timer interrupt for foundational multitasking.
+- **Memory Management:** Paging-based physical frame allocator managing 4KB pages and a dynamic heap allocator via Rust's `#[global_allocator]`.
+- **User Mode (Ring 3) & Syscalls:** Privilege separation with a secure `int 0x80` syscall ABI, enabling execution of restricted user-mode applications.
+- **Graphics & GUI:** Linear framebuffer graphics stack with double buffering. Features an event-driven Window Manager with a Painter's Algorithm for rendering windows and handling mouse/keyboard input.
+- **Storage Stack:** Custom ATA PIO hardware disk driver and a read-only FAT16 filesystem driver for persistent storage access.
+
+For detailed explanations of these subsystems, please refer to the technical documentation in the `docs/` directory, notably the [OxideOS Technical Documentation](docs/OxideOS_Technical_Documentation.md) or the individual component guides.
+
 ## How to Use
 
 ### Dependencies
