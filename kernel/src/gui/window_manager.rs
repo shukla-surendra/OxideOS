@@ -443,147 +443,153 @@ impl WindowManager {
     }
 
     fn draw_window_with_controls(&self, graphics: &Graphics, window: &Window, is_focused: bool, is_maximized: bool) {
-        // Shadow
-        graphics.fill_rect(window.x + 3, window.y + 3, window.width, window.height, 0x30000000);
+        // Layered drop shadow — 4 progressively darker rectangles
+        let shadow_cols = [0xFF0C1826u32, 0xFF0A1420u32, 0xFF08101Au32, 0xFF060C14u32];
+        for (i, &sc) in shadow_cols.iter().enumerate() {
+            let o = (i as u64 + 1) * 2;
+            graphics.fill_rect(window.x + o, window.y + o, window.width, window.height, sc);
+        }
 
-        // Window background
+        // Window body
         graphics.fill_rect(window.x, window.y, window.width, window.height, window.bg_color);
 
-        // Title bar
-        let titlebar_color = if is_focused {
-            colors::ui::TITLEBAR_ACTIVE
+        // Title bar — horizontal gradient
+        let (tb_left, tb_right) = if is_focused {
+            (0xFF0D5FA0, 0xFF072C50) // vivid blue → deep blue
         } else {
-            colors::ui::TITLEBAR
+            (0xFF2A2D38, 0xFF1C1F28) // dark slate → darker slate
         };
-        graphics.fill_rect(window.x, window.y, window.width, 30, titlebar_color);
+        graphics.fill_rect_gradient_h(window.x, window.y, window.width, 30, tb_left, tb_right);
 
-        // Border
-        graphics.draw_rect(window.x, window.y, window.width, window.height, colors::dark_theme::BORDER, 1);
+        // Thin accent line at bottom of titlebar
+        let accent_line = if is_focused { 0xFF00AAFF } else { 0xFF3A3F50 };
+        graphics.fill_rect(window.x, window.y + 29, window.width, 1, accent_line);
 
-        // Title text
-        let title_color = if is_focused {
-            colors::dark_theme::TEXT_PRIMARY
-        } else {
-            colors::dark_theme::TEXT_SECONDARY
-        };
+        // Outer border
+        let border_col = if is_focused { 0xFF1A5F9A } else { 0xFF2A2F3E };
+        graphics.draw_rect(window.x, window.y, window.width, window.height, border_col, 1);
+
+        // Title text with subtle text-shadow offset (+1,+1)
+        let shadow_txt = 0xFF000000;
+        let title_color = if is_focused { 0xFFE8F0FE } else { colors::dark_theme::TEXT_SECONDARY };
+        fonts::draw_string(graphics, window.x + 11, window.y + 12, window.title, shadow_txt);
         fonts::draw_string(graphics, window.x + 10, window.y + 11, window.title, title_color);
 
-        // Control buttons (right to left: close, maximize, minimize)
+        // Control buttons
         self.draw_close_button(graphics, window);
         self.draw_maximize_button(graphics, window, is_maximized);
         self.draw_minimize_button(graphics, window);
     }
 
     fn draw_close_button(&self, graphics: &Graphics, window: &Window) {
-        let button_x = window.x + window.width - 25;
-        let button_y = window.y + 5;
-        let button_size = 20;
-
-        graphics.fill_rect(button_x, button_y, button_size, button_size, colors::dark_theme::ERROR);
-        
-        let center_x = button_x + button_size / 2;
-        let center_y = button_y + button_size / 2;
-        let offset = 5;
-
-        graphics.draw_line(
-            (center_x - offset) as i64, (center_y - offset) as i64,
-            (center_x + offset) as i64, (center_y + offset) as i64,
-            colors::WHITE,
-        );
-        graphics.draw_line(
-            (center_x + offset) as i64, (center_y - offset) as i64,
-            (center_x - offset) as i64, (center_y + offset) as i64,
-            colors::WHITE,
-        );
+        let bx = window.x + window.width - 26;
+        let by = window.y + 5;
+        // Red gradient button
+        graphics.fill_rect_gradient_v(bx, by, 20, 20, 0xFFE05050, 0xFFA02020);
+        graphics.draw_rect(bx, by, 20, 20, 0xFFFF7070, 1);
+        let cx = bx + 10; let cy = by + 10;
+        for d in -4i64..=4 {
+            graphics.put_pixel_safe(cx as i64 + d, cy as i64 + d, 0xFFFFFFFF);
+            graphics.put_pixel_safe(cx as i64 + d, cy as i64 - d, 0xFFFFFFFF);
+            // 2px thick
+            graphics.put_pixel_safe(cx as i64 + d + 1, cy as i64 + d, 0xFFFFFFFF);
+            graphics.put_pixel_safe(cx as i64 + d + 1, cy as i64 - d, 0xFFFFFFFF);
+        }
     }
 
     fn draw_maximize_button(&self, graphics: &Graphics, window: &Window, is_maximized: bool) {
-        let button_x = window.x + window.width - 50;
-        let button_y = window.y + 5;
-        let button_size = 20;
-
-        graphics.fill_rect(button_x, button_y, button_size, button_size, colors::dark_theme::BUTTON_SECONDARY);
-        
+        let bx = window.x + window.width - 50;
+        let by = window.y + 5;
+        // Green gradient button
+        graphics.fill_rect_gradient_v(bx, by, 20, 20, 0xFF38A838, 0xFF1E6E1E);
+        graphics.draw_rect(bx, by, 20, 20, 0xFF60E060, 1);
         if is_maximized {
-            // Draw "restore" icon (two overlapping squares)
-            graphics.draw_rect(button_x + 6, button_y + 6, 8, 8, colors::WHITE, 1);
-            graphics.draw_rect(button_x + 9, button_y + 9, 8, 8, colors::WHITE, 1);
+            graphics.draw_rect(bx + 5, by + 7, 7, 7, 0xFFFFFFFF, 1);
+            graphics.draw_rect(bx + 8, by + 5, 7, 7, 0xFFFFFFFF, 1);
         } else {
-            // Draw maximize icon (single square)
-            graphics.draw_rect(button_x + 5, button_y + 5, 10, 10, colors::WHITE, 2);
+            graphics.draw_rect(bx + 5, by + 5, 10, 10, 0xFFFFFFFF, 2);
         }
     }
 
     fn draw_minimize_button(&self, graphics: &Graphics, window: &Window) {
-        let button_x = window.x + window.width - 75;
-        let button_y = window.y + 5;
-        let button_size = 20;
-
-        graphics.fill_rect(button_x, button_y, button_size, button_size, colors::dark_theme::BUTTON_SECONDARY);
-        
-        // Draw horizontal line
-        graphics.fill_rect(button_x + 5, button_y + button_size / 2, 10, 2, colors::WHITE);
+        let bx = window.x + window.width - 74;
+        let by = window.y + 5;
+        // Yellow/amber gradient button
+        graphics.fill_rect_gradient_v(bx, by, 20, 20, 0xFFC8A020, 0xFF8A6A10);
+        graphics.draw_rect(bx, by, 20, 20, 0xFFFFCC40, 1);
+        // Minus icon
+        graphics.fill_rect(bx + 5, by + 9, 10, 2, 0xFFFFFFFF);
     }
 
     pub fn draw_taskbar(&self, graphics: &Graphics) {
-        // Taskbar background
-        graphics.fill_rect(0, 0, self.screen_width, TASKBAR_HEIGHT, colors::dark_theme::SURFACE_VARIANT);
-        graphics.draw_rect(0, TASKBAR_HEIGHT - 1, self.screen_width, 1, colors::dark_theme::BORDER, 1);
+        // Gradient taskbar: slightly lighter at top, darker at bottom
+        graphics.fill_rect_gradient_v(0, 0, self.screen_width, TASKBAR_HEIGHT,
+                                      0xFF252A38, 0xFF161B28);
+        // Bright blue accent line at the very bottom
+        graphics.fill_rect(0, TASKBAR_HEIGHT - 2, self.screen_width, 2, 0xFF007ACC);
 
-        // OS name
-        fonts::draw_string(graphics, 15, 16, "OxideOS", colors::dark_theme::ACCENT_PRIMARY);
+        // OS logo / name — bold with accent colour + small icon dot
+        graphics.fill_rect(8, 12, 16, 16, 0xFF007ACC);       // coloured square icon
+        graphics.fill_rect(10, 14, 12, 12, 0xFF00AAFF);      // inner lighter square
+        graphics.fill_rect(12, 16, 8, 8, 0xFFE8F0FE);        // white core
+        fonts::draw_string(graphics, 30, 13, "OxideOS", 0xFF007ACC);
+        // thin vertical separator after the name
+        graphics.fill_rect(95, 8, 1, 24, 0xFF3A4060);
 
-        // Draw taskbar items for each window
+        // Taskbar window items
         let start_x = 100u64;
-
         for i in 0..self.window_count {
             let window_id = self.z_order[i];
             let item_x = start_x + (i as u64) * (TASKBAR_ITEM_WIDTH + TASKBAR_ITEM_SPACING);
-
             if let Some(ref window) = self.windows[window_id] {
                 self.draw_taskbar_item(graphics, window, window_id, item_x);
             }
         }
 
-        // Clock — right-aligned, shows uptime as HH:MM:SS
-        // "HH:MM:SS" = 8 chars × 9 px/char = 72 px wide
+        // ── Clock box ──────────────────────────────────────────────────────────
         const CLOCK_CHARS: u64 = 8;
-        const CHAR_W: u64 = 9;
+        const CHAR_W:  u64 = 9;
         const CLOCK_W: u64 = CLOCK_CHARS * CHAR_W; // 72
-        const CLOCK_PAD: u64 = 15;
-        let clock_x = self.screen_width.saturating_sub(CLOCK_W + CLOCK_PAD);
+        const BOX_PAD: u64 = 8;
+        const BOX_W:   u64 = CLOCK_W + BOX_PAD * 2;  // 88
+        let box_x = self.screen_width.saturating_sub(BOX_W + 8);
 
+        // Clock background pill
+        graphics.fill_rect_gradient_v(box_x, 5, BOX_W, 30, 0xFF1E2840, 0xFF141C30);
+        graphics.draw_rect(box_x, 5, BOX_W, 30, 0xFF007ACC, 1);
+
+        // Clock text
         let mut time_buf = [0u8; 8];
         let ticks = unsafe { crate::kernel::timer::get_ticks() };
         format_uptime(ticks, &mut time_buf);
         let time_str = core::str::from_utf8(&time_buf).unwrap_or("00:00:00");
-
-        fonts::draw_string(graphics, clock_x, 16, time_str, colors::dark_theme::TEXT_PRIMARY);
+        fonts::draw_string(graphics, box_x + BOX_PAD, 14, time_str, 0xFF7FC8FF);
     }
 
     fn draw_taskbar_item(&self, graphics: &Graphics, window: &Window, window_id: usize, x: u64) {
-        let is_focused = self.focused_window == Some(window_id);
+        let is_focused   = self.focused_window == Some(window_id);
         let is_minimized = self.window_states[window_id] == WindowState::Minimized;
-        
-        let bg_color = if is_focused && !is_minimized {
-            colors::dark_theme::ACCENT_PRIMARY
+
+        let (top_c, bot_c, border_c) = if is_focused && !is_minimized {
+            (0xFF1A6FB0, 0xFF0D4070, 0xFF00AAFF) // bright blue gradient
         } else if is_minimized {
-            colors::dark_theme::BUTTON_SECONDARY
+            (0xFF2A2E40, 0xFF1C2030, 0xFF4A5070) // muted dark
         } else {
-            colors::dark_theme::SURFACE
+            (0xFF242840, 0xFF181C2E, 0xFF3A4060) // resting state
         };
 
-        // Item background
-        graphics.fill_rect(x, 5, TASKBAR_ITEM_WIDTH, 30, bg_color);
-        graphics.draw_rect(x, 5, TASKBAR_ITEM_WIDTH, 30, colors::dark_theme::BORDER, 1);
+        graphics.fill_rect_gradient_v(x, 5, TASKBAR_ITEM_WIDTH, 30, top_c, bot_c);
+        graphics.draw_rect(x, 5, TASKBAR_ITEM_WIDTH, 30, border_c, 1);
 
-        // Window title (truncated if needed)
-        let text_color = if is_focused && !is_minimized {
-            colors::WHITE
-        } else {
-            colors::dark_theme::TEXT_PRIMARY
-        };
-        
+        // Active indicator: 2-px bottom bar
+        if is_focused && !is_minimized {
+            graphics.fill_rect(x + 2, 33, TASKBAR_ITEM_WIDTH - 4, 2, 0xFF00D4FF);
+        }
+
+        let text_color = if is_focused && !is_minimized { 0xFFE8F4FF }
+                         else if is_minimized           { 0xFF6080A0 }
+                         else                           { 0xFFB0C0D8 };
+
         fonts::draw_string(graphics, x + 8, 16, window.title, text_color);
     }
 

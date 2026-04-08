@@ -284,4 +284,66 @@ impl Graphics {
             }
         }
     }
+
+    // ── Gradient & background helpers ──────────────────────────────────────────
+
+    /// Linearly interpolate between two opaque 0xFFRRGGBB colours.
+    /// t=0 → colour a, t=255 → colour b.
+    #[inline]
+    pub fn lerp_color(a: u32, b: u32, t: u8) -> u32 {
+        let inv = 255 - t as u32;
+        let t   = t as u32;
+        let r = (((a >> 16) & 0xFF) * inv + ((b >> 16) & 0xFF) * t) / 255;
+        let g = (((a >>  8) & 0xFF) * inv + ((b >>  8) & 0xFF) * t) / 255;
+        let bl = ((a & 0xFF) * inv + (b & 0xFF) * t) / 255;
+        0xFF000000 | (r << 16) | (g << 8) | bl
+    }
+
+    /// Fill a rectangle with a vertical colour gradient (top → bottom).
+    pub fn fill_rect_gradient_v(&self, x: u64, y: u64, w: u64, h: u64, top: u32, bot: u32) {
+        if w == 0 || h == 0 { return; }
+        for row in 0..h {
+            let t = if h <= 1 { 0u8 } else { ((row * 255) / (h - 1)) as u8 };
+            self.fill_rect(x, y + row, w, 1, Self::lerp_color(top, bot, t));
+        }
+    }
+
+    /// Fill a rectangle with a horizontal colour gradient (left → right).
+    pub fn fill_rect_gradient_h(&self, x: u64, y: u64, w: u64, h: u64, lft: u32, rgt: u32) {
+        if w == 0 || h == 0 { return; }
+        for col in 0..w {
+            let t = if w <= 1 { 0u8 } else { ((col * 255) / (w - 1)) as u8 };
+            self.fill_rect(x + col, y, 1, h, Self::lerp_color(lft, rgt, t));
+        }
+    }
+
+    /// Draw the desktop wallpaper: deep-navy-to-black gradient + subtle dot grid.
+    pub fn draw_desktop_background(&self) {
+        // Vertical gradient: deep navy → near-black
+        self.fill_rect_gradient_v(0, 0, self.width, self.height, 0xFF0D1B2A, 0xFF08101C);
+
+        // Subtle 40×40 dot grid — slightly lighter than background
+        let grid_col = 0xFF142030;
+        let mut gy = 0u64;
+        while gy < self.height {
+            let mut gx = 0u64;
+            while gx < self.width {
+                self.put_pixel(gx, gy, grid_col);
+                gx += 40;
+            }
+            gy += 40;
+        }
+    }
+
+    /// Draw a horizontal progress bar (filled fraction 0–100).
+    pub fn draw_progress_bar(&self, x: u64, y: u64, w: u64, h: u64, pct: u8,
+                              bg: u32, fill: u32, border: u32) {
+        self.fill_rect(x, y, w, h, bg);
+        self.draw_rect(x, y, w, h, border, 1);
+        let filled = ((w.saturating_sub(2)) * pct.min(100) as u64) / 100;
+        if filled > 0 {
+            self.fill_rect_gradient_h(x + 1, y + 1, filled, h.saturating_sub(2),
+                                      fill, Self::lerp_color(fill, 0xFF00D4FF, 200));
+        }
+    }
 }

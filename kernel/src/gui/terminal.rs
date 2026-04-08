@@ -77,6 +77,32 @@ fn dequeue_event() -> Option<u16> {
     })
 }
 
+/// Pick a colour for a terminal history line based on its prefix/content.
+fn line_color(line: &str) -> u32 {
+    if line.starts_with("[info]") || line.starts_with("[ok]") {
+        0xFF40C8A0  // teal — informational
+    } else if line.starts_with("[error]") || line.starts_with("error:") {
+        0xFFFF5050  // red — errors
+    } else if line.starts_with("[warn]") {
+        0xFFFFB030  // amber — warnings
+    } else if line.starts_with('>') {
+        0xFF8090B0  // dim slate — echoed commands
+    } else if line.starts_with("  ") {
+        0xFF607898  // dim — directory listings / indented
+    } else if line.starts_with("exited") {
+        0xFF60A070  // green — exit messages
+    } else if line.starts_with("spawned") {
+        0xFF40C870  // bright green — spawn confirmation
+    } else if line.starts_with(' ') && line.contains('/') {
+        0xFF5090C0  // blue — paths
+    } else if line.starts_with("  ___") || line.starts_with(" / _")
+           || line.starts_with("| |")  || line.starts_with(" \\___") {
+        0xFF007ACC  // brand blue — ASCII art banner
+    } else {
+        0xFFCCDCEC  // default: light blue-white
+    }
+}
+
 unsafe fn terminal_key_callback(ch: u8) { unsafe { queue_event(ch as u16); } }
 
 unsafe fn terminal_arrow_callback(key: keyboard::ArrowKey) {
@@ -156,35 +182,43 @@ impl TerminalApp {
         let max_chars     = (content_width / CHAR_WIDTH).max(4) as usize;
         let visible_lines = (output_height / LINE_HEIGHT).max(1) as usize;
 
-        graphics.fill_rect(content_x - 2, content_y - 2,
-                           content_width + 4, content_height + 4,
-                           colors::ui::INPUT_BORDER);
-        graphics.fill_rect(content_x, content_y, content_width, output_height,
-                           colors::retro_theme::BACKGROUND);
-        graphics.fill_rect(content_x, input_y, content_width, INPUT_HEIGHT,
-                           colors::ui::INPUT_BACKGROUND);
+        // Output area — dark background with subtle top border
+        graphics.fill_rect(content_x, content_y, content_width, output_height, 0xFF0A1018);
+        graphics.fill_rect(content_x, content_y, content_width, 1, 0xFF1A5F9A);
+        graphics.draw_rect(content_x, content_y, content_width, output_height, 0xFF1E2840, 1);
 
+        // Input area
+        graphics.fill_rect(content_x, input_y, content_width, INPUT_HEIGHT, 0xFF0D1520);
+        graphics.fill_rect(content_x, input_y, content_width, 1,
+                           if is_focused { 0xFF007ACC } else { 0xFF1E2840 });
+        graphics.draw_rect(content_x, input_y, content_width, INPUT_HEIGHT,
+                           if is_focused { 0xFF1A5F9A } else { 0xFF151E2E }, 1);
+
+        // History lines — colour-coded
         let start_line = self.history.len().saturating_sub(visible_lines);
         for (i, line) in self.history.iter().skip(start_line).enumerate() {
-            fonts::draw_string(graphics, content_x + 4,
-                               content_y + i as u64 * LINE_HEIGHT,
-                               line, colors::retro_theme::TEXT);
+            let color = line_color(line);
+            fonts::draw_string(graphics, content_x + 6,
+                               content_y + 2 + i as u64 * LINE_HEIGHT,
+                               line, color);
         }
 
-        let prompt = format!("> {}", self.input);
-        let rendered = if prompt.len() > max_chars {
-            &prompt[prompt.len() - max_chars..]
+        // Prompt: coloured ">" then input text
+        let prompt_sym = ">";
+        let input_display: alloc::string::String = if self.input.len() > max_chars.saturating_sub(3) {
+            alloc::string::String::from(&self.input[self.input.len().saturating_sub(max_chars.saturating_sub(3))..])
         } else {
-            &prompt
+            self.input.clone()
         };
-        fonts::draw_string(graphics, content_x + 4, input_y + 8,
-                           rendered, colors::ui::INPUT_TEXT);
+        fonts::draw_string(graphics, content_x + 6, input_y + 8,
+                           prompt_sym, 0xFF00D060);           // bright green >
+        fonts::draw_string(graphics, content_x + 6 + CHAR_WIDTH * 2, input_y + 8,
+                           &input_display, 0xFFD8E8FF);       // light blue input text
 
         if is_focused {
-            let cx = content_x + 4 + rendered.len() as u64 * CHAR_WIDTH;
-            graphics.fill_rect(cx, input_y + 6, 2,
-                               LINE_HEIGHT.saturating_sub(2),
-                               colors::retro_theme::CURSOR);
+            let cx = content_x + 6 + CHAR_WIDTH * 2 + input_display.len() as u64 * CHAR_WIDTH;
+            // Blinking-style cursor block
+            graphics.fill_rect(cx, input_y + 5, 2, LINE_HEIGHT - 2, 0xFF00AAFF);
         }
     }
 
@@ -215,8 +249,13 @@ impl TerminalApp {
     }
 
     fn print_banner(&mut self) {
-        self.push_line("OxideOS Terminal v2");
-        self.push_line("Type 'help' for commands. Tab completes.");
+        self.push_line("  ___          _    _       ___  ____");
+        self.push_line(" / _ \\ __  __ (_)  | |     / _ \\/ ___|");
+        self.push_line("| | | |\\ \\/ / | |  | |  _ | | | \\___ \\");
+        self.push_line("| |_| | >  <  | |  | |_| || |_| |___) |");
+        self.push_line(" \\___/ /_/\\_\\ |_|  |_____| \\___/|____/");
+        self.push_line("");
+        self.push_line("[info] Type 'help' for commands. Tab completes.");
         self.push_line("");
     }
 

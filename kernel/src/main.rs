@@ -103,8 +103,8 @@ unsafe extern "C" fn kmain() -> ! {
                 interrupts::init_mouse_system(width, height);
                 SERIAL_PORT.write_str("=== MOUSE INIT COMPLETED ===\n");
 
-                let terminal_window_id = create_boot_screen(&graphics);
-                run_gui_with_mouse(&graphics, terminal_window_id);
+                let (terminal_window_id, sysinfo_window_id) = create_boot_screen(&graphics);
+                run_gui_with_mouse(&graphics, terminal_window_id, sysinfo_window_id);
             }
         } else {
             unsafe {
@@ -192,22 +192,22 @@ unsafe fn test_paging_allocation() {
 // GUI
 // ============================================================================
 
-unsafe fn create_boot_screen(graphics: &Graphics) -> usize {
+unsafe fn create_boot_screen(graphics: &Graphics) -> (usize, usize) {
     let (width, height) = graphics.get_dimensions();
     SERIAL_PORT.write_str("Creating boot screen...\n");
 
-    graphics.clear_screen(colors::dark_theme::BACKGROUND);
+    graphics.draw_desktop_background();
 
     let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
     unsafe { (*wm).set_screen_dimensions(width, height); }
     unsafe { (*wm).draw_taskbar(graphics); }
 
-    let terminal_window_id = init_demo_windows(width, height);
+    let ids = init_demo_windows(width, height);
     SERIAL_PORT.write_str("Boot screen created\n");
-    terminal_window_id
+    ids
 }
 
-unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize) {
+unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sysinfo_window_id: usize) {
     SERIAL_PORT.write_str("Starting GUI with enhanced window manager...\n");
 
     let mut last_cursor_pos = (-1i64, -1i64);
@@ -262,10 +262,11 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize) {
         }
 
         if needs_redraw {
-            graphics.clear_screen(colors::dark_theme::BACKGROUND);
+            graphics.draw_desktop_background();
             unsafe { (*wm).draw_taskbar(graphics); }
             unsafe { (*wm).draw_all(graphics); }
             terminal_app.draw(graphics, unsafe { &*wm });
+            draw_sysinfo_panel(graphics, unsafe { &*wm }, sysinfo_window_id);
             needs_redraw   = false;
             terminal_dirty = false;
         } else if terminal_dirty {
@@ -293,17 +294,118 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize) {
     }
 }
 
-unsafe fn init_demo_windows(screen_width: u64, _screen_height: u64) -> usize {
+unsafe fn init_demo_windows(screen_width: u64, screen_height: u64) -> (usize, usize) {
     let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
 
-    let win1 = widgets::Window::new(100, 100, 400, 250, "Terminal");
-    let terminal_window_id = unsafe { (*wm).add_window(win1).unwrap_or(0) };
+    // Terminal — taller, wider, comfortable reading area
+    let term_h = (screen_height.saturating_sub(80 + 50)).min(420).max(260);
+    let win1 = widgets::Window::new(50, 70, 560, term_h, "Terminal");
+    let terminal_id = unsafe { (*wm).add_window(win1).unwrap_or(0) };
 
-    let win2 = widgets::Window::new(screen_width - 320, 100, 300, 220, "System Info");
-    unsafe { (*wm).add_window(win2); }
+    // System Info — fixed width on the right
+    let win2 = widgets::Window::new(screen_width - 310, 70, 290, 280, "System Info");
+    let sysinfo_id = unsafe { (*wm).add_window(win2).unwrap_or(1) };
 
     SERIAL_PORT.write_str("Demo windows initialized\n");
-    terminal_window_id
+    (terminal_id, sysinfo_id)
+}
+
+// ============================================================================
+// SYSTEM INFO PANEL
+// ============================================================================
+
+unsafe fn draw_sysinfo_panel(
+    graphics: &Graphics,
+    wm: &gui::window_manager::WindowManager,
+    window_id: usize,
+) {
+    use gui::fonts;
+    use gui::colors;
+
+    if !wm.is_window_visible(window_id) { return; }
+    let Some(win) = wm.get_window(window_id) else { return; };
+
+    let cx = win.x + 12;
+    let mut cy = win.y + 38;
+    let row = 20u64;
+    let bar_w = win.width.saturating_sub(24);
+
+    // ── Header divider ─────────────────────────────────────────────────────
+    graphics.fill_rect(cx, cy, bar_w, 1, 0xFF1A5F9A);
+    cy += 6;
+
+    // ── OS name & version ──────────────────────────────────────────────────
+    fonts::draw_string(graphics, cx, cy, "OxideOS  v0.1.0-dev", 0xFF7FC8FF);
+    cy += row;
+    fonts::draw_string(graphics, cx, cy, "x86_64  Limine bootloader", 0xFF4A6080);
+    cy += row + 4;
+
+    graphics.fill_rect(cx, cy, bar_w, 1, 0xFF1E2840);
+    cy += 8;
+
+    // ── Uptime ────────────────────────────────────────────────────────────
+    let ticks = unsafe { kernel::timer::get_ticks() };
+    fonts::draw_string(graphics, cx, cy, "UPTIME", 0xFF007ACC);
+    let mut tbuf = [0u8; 8];
+    {
+        let total = ticks / 100;
+        let h = (total / 3600) % 100;
+        let m = (total / 60) % 60;
+        let s = total % 60;
+        tbuf[0] = b'0' + (h/10) as u8; tbuf[1] = b'0' + (h%10) as u8; tbuf[2] = b':';
+        tbuf[3] = b'0' + (m/10) as u8; tbuf[4] = b'0' + (m%10) as u8; tbuf[5] = b':';
+        tbuf[6] = b'0' + (s/10) as u8; tbuf[7] = b'0' + (s%10) as u8;
+    }
+    let tstr = core::str::from_utf8(&tbuf).unwrap_or("00:00:00");
+    fonts::draw_string(graphics, cx + 72, cy, tstr, 0xFFE0F0FF);
+    cy += row;
+
+    // ── Memory bar ────────────────────────────────────────────────────────
+    fonts::draw_string(graphics, cx, cy, "MEMORY", 0xFF007ACC);
+    fonts::draw_string(graphics, cx + 72, cy, "128 MB total", 0xFF4A6080);
+    cy += row - 4;
+    graphics.draw_progress_bar(cx, cy, bar_w, 12, 30,
+                                0xFF0D1B2A, 0xFF007ACC, 0xFF1A4060);
+    fonts::draw_string(graphics, cx + bar_w + 2, cy - 1, "30%", 0xFF4A6080);
+    cy += 18;
+
+    graphics.fill_rect(cx, cy, bar_w, 1, 0xFF1E2840);
+    cy += 8;
+
+    // ── Disk ──────────────────────────────────────────────────────────────
+    fonts::draw_string(graphics, cx, cy, "DISK", 0xFF007ACC);
+    let (disk_str, disk_col) = if kernel::ata::is_present() {
+        let mut sec_str = [b' '; 12];
+        let secs = kernel::ata::sector_count();
+        // write decimal
+        let mb = secs / 2048;
+        // simple format: "XXX MB"
+        let mut n = mb; let mut i = 5usize;
+        sec_str[6] = b'M'; sec_str[7] = b'B';
+        loop { sec_str[i] = b'0' + (n % 10) as u8; n /= 10; if n == 0 || i == 0 { break; } i -= 1; }
+        ("ATA detected", 0xFF40C040u32)
+    } else {
+        ("No disk", 0xFF806040u32)
+    };
+    fonts::draw_string(graphics, cx + 54, cy, disk_str, disk_col);
+    cy += row;
+
+    // ── Tasks ─────────────────────────────────────────────────────────────
+    fonts::draw_string(graphics, cx, cy, "TASKS", 0xFF007ACC);
+    let task_str = if kernel::scheduler::has_task() { "1 running" } else { "idle" };
+    let task_col = if kernel::scheduler::has_task() { 0xFF40C040u32 } else { 0xFF4A6080u32 };
+    fonts::draw_string(graphics, cx + 63, cy, task_str, task_col);
+    cy += row;
+
+    // ── Ticks ─────────────────────────────────────────────────────────────
+    fonts::draw_string(graphics, cx, cy, "TICKS", 0xFF007ACC);
+    // write tick count (up to 10 digits)
+    let mut num_buf = [b' '; 12];
+    let mut n = ticks; let mut i = 11usize;
+    loop { num_buf[i] = b'0' + (n % 10) as u8; n /= 10; if n == 0 || i == 0 { break; } i -= 1; }
+    if let Ok(s) = core::str::from_utf8(&num_buf[i..12]) {
+        fonts::draw_string(graphics, cx + 63, cy, s, 0xFF4A8090);
+    }
 }
 
 // ============================================================================
