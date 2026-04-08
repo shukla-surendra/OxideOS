@@ -1,21 +1,34 @@
 // src/gui/graphics.rs
+extern crate alloc;
+
 use limine::framebuffer::Framebuffer;
 use crate::kernel::serial::SERIAL_PORT;
 
 pub struct Graphics {
     framebuffer_addr: *mut u8,
+    /// Back buffer in plain RAM — all drawing targets this.
+    /// Layout: row-major, stride = width (no padding), size = width * height u32s.
+    back_buffer: *mut u32,
     width: u64,
     height: u64,
+    /// Framebuffer pitch in bytes (may include row padding).
     pitch: u64,
 }
 
+// Safety: single-threaded kernel; no concurrent access.
+unsafe impl Send for Graphics {}
+unsafe impl Sync for Graphics {}
+
 impl Graphics {
+    #[inline(always)]
     fn pitch_pixels(&self) -> usize {
         (self.pitch / 4) as usize
     }
 
+    /// Offset into the **back buffer** for pixel (x, y).
+    #[inline(always)]
     fn pixel_offset(&self, x: u64, y: u64) -> usize {
-        y as usize * self.pitch_pixels() + x as usize
+        y as usize * self.width as usize + x as usize
     }
 
     pub fn new(framebuffer: Framebuffer) -> Self {
@@ -30,71 +43,91 @@ impl Graphics {
             SERIAL_PORT.write_str("\n");
         }
 
+        let width  = framebuffer.width();
+        let height = framebuffer.height();
+        let buf_size = (width * height) as usize;
+
+        // Allocate back buffer in heap RAM and leak it (kernel lives forever).
+        let mut back_vec: alloc::vec::Vec<u32> = alloc::vec![0u32; buf_size];
+        let back_ptr = back_vec.as_mut_ptr();
+        core::mem::forget(back_vec);
+
         Self {
             framebuffer_addr: framebuffer.addr(),
-            width: framebuffer.width(),
-            height: framebuffer.height(),
+            back_buffer: back_ptr,
+            width,
+            height,
             pitch: framebuffer.pitch(),
         }
     }
 
-    // Clear entire screen with color
-    pub fn clear_screen(&self, color: u32) {
-        let fb_ptr = self.framebuffer_addr as *mut u32;
+    // ── Present ────────────────────────────────────────────────────────────────
+
+    /// Blit the back buffer to the real framebuffer.
+    /// Called once per frame after all drawing is done.
+    pub fn present(&self) {
+        let fb_ptr       = self.framebuffer_addr as *mut u32;
         let pitch_pixels = self.pitch_pixels();
-        let width = self.width as usize;
-        let height = self.height as usize;
+        let w            = self.width  as usize;
+        let h            = self.height as usize;
 
         unsafe {
-            for y in 0..height {
-                let row_start = y * pitch_pixels;
-                for x in 0..width {
-                    *fb_ptr.add(row_start + x) = color;
-                }
+            for y in 0..h {
+                let src = self.back_buffer.add(y * w);
+                let dst = fb_ptr.add(y * pitch_pixels);
+                core::ptr::copy_nonoverlapping(src, dst, w);
             }
         }
     }
 
-    // Draw a single pixel
+    // ── Primitives (all write to back buffer) ──────────────────────────────────
+
+    /// Clear entire screen with a solid color.
+    pub fn clear_screen(&self, color: u32) {
+        let total = (self.width * self.height) as usize;
+        unsafe {
+            let buf = core::slice::from_raw_parts_mut(self.back_buffer, total);
+            buf.fill(color);
+        }
+    }
+
+    /// Draw a single pixel.
     pub fn put_pixel(&self, x: u64, y: u64, color: u32) {
         if x >= self.width || y >= self.height {
             return;
         }
-
         let offset = self.pixel_offset(x, y);
-        let fb_ptr = self.framebuffer_addr as *mut u32;
-
         unsafe {
-            *fb_ptr.add(offset) = color;
+            *self.back_buffer.add(offset) = color;
         }
     }
 
-    // Draw a filled rectangle
+    /// Draw a filled rectangle.
     pub fn fill_rect(&self, x: u64, y: u64, width: u64, height: u64, color: u32) {
         if width == 0 || height == 0 || x >= self.width || y >= self.height {
             return;
         }
 
-        let clipped_width = width.min(self.width - x) as usize;
+        let clipped_width  = width.min(self.width - x)   as usize;
         let clipped_height = height.min(self.height - y) as usize;
-        let start_x = x as usize;
-        let start_y = y as usize;
-        let pitch_pixels = self.pitch_pixels();
-        let fb_ptr = self.framebuffer_addr as *mut u32;
+        let start_x        = x as usize;
+        let start_y        = y as usize;
+        let w              = self.width as usize;
+        let total          = (self.width * self.height) as usize;
 
         unsafe {
             for dy in 0..clipped_height {
-                let row_start = (start_y + dy) * pitch_pixels + start_x;
-                for dx in 0..clipped_width {
-                    *fb_ptr.add(row_start + dx) = color;
-                }
+                let row_start = (start_y + dy) * w + start_x;
+                if row_start + clipped_width > total { break; }
+                let row = core::slice::from_raw_parts_mut(
+                    self.back_buffer.add(row_start), clipped_width);
+                row.fill(color);
             }
         }
     }
 
-    // Draw rectangle outline
+    /// Draw a rectangle outline.
     pub fn draw_rect(&self, x: u64, y: u64, width: u64, height: u64, color: u32, thickness: u64) {
-        // Top and bottom borders
         for i in 0..width {
             for t in 0..thickness {
                 if y + t < self.height {
@@ -105,8 +138,6 @@ impl Graphics {
                 }
             }
         }
-
-        // Left and right borders
         for i in 0..height {
             for t in 0..thickness {
                 if x + t < self.width {
@@ -119,7 +150,7 @@ impl Graphics {
         }
     }
 
-    // Draw a line using Bresenham's algorithm
+    /// Draw a line using Bresenham's algorithm.
     pub fn draw_line(&self, x0: i64, y0: i64, x1: i64, y1: i64, color: u32) {
         let dx = (x1 - x0).abs();
         let dy = (y1 - y0).abs();
@@ -133,31 +164,20 @@ impl Graphics {
             if x >= 0 && y >= 0 && x < self.width as i64 && y < self.height as i64 {
                 self.put_pixel(x as u64, y as u64, color);
             }
-
-            if x == x1 && y == y1 {
-                break;
-            }
-
+            if x == x1 && y == y1 { break; }
             let e2 = 2 * err;
-            if e2 > -dy {
-                err -= dy;
-                x += sx;
-            }
-            if e2 < dx {
-                err += dx;
-                y += sy;
-            }
+            if e2 > -dy { err -= dy; x += sx; }
+            if e2 < dx  { err += dx; y += sy; }
         }
     }
 
-    // Draw a circle using midpoint algorithm
+    /// Draw a circle using the midpoint algorithm.
     pub fn draw_circle(&self, center_x: i64, center_y: i64, radius: i64, color: u32) {
         let mut x = 0;
         let mut y = radius;
         let mut d = 1 - radius;
 
         while x <= y {
-            // Draw 8 octants
             self.put_pixel_safe(center_x + x, center_y + y, color);
             self.put_pixel_safe(center_x - x, center_y + y, color);
             self.put_pixel_safe(center_x + x, center_y - y, color);
@@ -167,31 +187,29 @@ impl Graphics {
             self.put_pixel_safe(center_x + y, center_y - x, color);
             self.put_pixel_safe(center_x - y, center_y - x, color);
 
-            if d < 0 {
-                d += 2 * x + 3;
-            } else {
-                d += 2 * (x - y) + 5;
-                y -= 1;
-            }
+            if d < 0 { d += 2 * x + 3; }
+            else      { d += 2 * (x - y) + 5; y -= 1; }
             x += 1;
         }
     }
 
-    // Helper function to safely put pixel with bounds checking
+    /// Put a pixel with bounds checking (accepts signed coords).
     pub fn put_pixel_safe(&self, x: i64, y: i64, color: u32) {
         if x >= 0 && y >= 0 && x < self.width as i64 && y < self.height as i64 {
             self.put_pixel(x as u64, y as u64, color);
         }
     }
 
-    // Get screen dimensions
+    // ── Dimensions ─────────────────────────────────────────────────────────────
+
     pub fn get_dimensions(&self) -> (u64, u64) {
         (self.width, self.height)
     }
 
-    /// Draw a simple arrow cursor at the specified position
+    // ── Cursor helpers ─────────────────────────────────────────────────────────
+
+    /// Draw an arrow cursor at (x, y) into the back buffer.
     pub fn draw_cursor(&self, x: i64, y: i64, color: u32) {
-        // Simple arrow cursor (11x19 pixels)
         let cursor_data = [
             "X          ",
             "XX         ",
@@ -218,56 +236,51 @@ impl Graphics {
             for (col, ch) in line.chars().enumerate() {
                 let px = x + col as i64;
                 let py = y + row as i64;
-
                 match ch {
                     'X' => self.put_pixel_safe(px, py, color),
-                    '.' => self.put_pixel_safe(px, py, 0xFF000000), // Black outline
-                    _ => {} // Transparent
+                    '.' => self.put_pixel_safe(px, py, 0xFF000000),
+                    _   => {}
                 }
             }
         }
     }
 
-    /// Clear cursor area (call before redrawing)
-    pub fn clear_cursor(&self, x: i64, y: i64, bg_color: u32) {
-        // Clear a 11x19 area around cursor
-        for dy in 0..19 {
-            for dx in 0..11 {
-                self.put_pixel_safe(x + dx, y + dy, bg_color);
-            }
-        }
-    }
-        /// Save pixels under cursor area and return them
+    /// Save the 11×19 pixel area under the cursor from the back buffer.
     pub fn save_cursor_area(&self, x: i64, y: i64) -> [[u32; 11]; 19] {
         let mut saved = [[0u32; 11]; 19];
-        
-        for dy in 0..19 {
-            for dx in 0..11 {
+        for dy in 0..19i64 {
+            for dx in 0..11i64 {
                 let px = x + dx;
                 let py = y + dy;
-                
                 if px >= 0 && py >= 0 && px < self.width as i64 && py < self.height as i64 {
                     let offset = self.pixel_offset(px as u64, py as u64);
-                    let fb_ptr = self.framebuffer_addr as *mut u32;
                     unsafe {
-                        saved[dy as usize][dx as usize] = *fb_ptr.add(offset);
+                        saved[dy as usize][dx as usize] = *self.back_buffer.add(offset);
                     }
                 }
             }
         }
         saved
     }
-    
-    /// Restore saved pixels
+
+    /// Restore a previously saved 11×19 pixel area into the back buffer.
     pub fn restore_cursor_area(&self, x: i64, y: i64, saved: &[[u32; 11]; 19]) {
-        for dy in 0..19 {
-            for dx in 0..11 {
+        for dy in 0..19i64 {
+            for dx in 0..11i64 {
                 let px = x + dx;
                 let py = y + dy;
-                
                 if px >= 0 && py >= 0 && px < self.width as i64 && py < self.height as i64 {
                     self.put_pixel(px as u64, py as u64, saved[dy as usize][dx as usize]);
                 }
+            }
+        }
+    }
+
+    /// Clear cursor area with a background color (back buffer).
+    pub fn clear_cursor(&self, x: i64, y: i64, bg_color: u32) {
+        for dy in 0..19 {
+            for dx in 0..11 {
+                self.put_pixel_safe(x + dx, y + dy, bg_color);
             }
         }
     }

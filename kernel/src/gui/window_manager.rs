@@ -7,6 +7,23 @@ use crate::kernel::serial::SERIAL_PORT;
 
 const MAX_WINDOWS: usize = 16;
 const TASKBAR_HEIGHT: u64 = 40;
+
+/// Format timer ticks as "HH:MM:SS" into `buf` (exactly 8 bytes).
+/// The timer runs at 100 Hz, so ticks / 100 = seconds since boot.
+fn format_uptime(ticks: u64, buf: &mut [u8; 8]) {
+    let total_secs = ticks / 100;
+    let h = (total_secs / 3600) % 100; // cap hours at 99 to stay 2 digits
+    let m = (total_secs / 60) % 60;
+    let s = total_secs % 60;
+    buf[0] = b'0' + (h / 10) as u8;
+    buf[1] = b'0' + (h % 10) as u8;
+    buf[2] = b':';
+    buf[3] = b'0' + (m / 10) as u8;
+    buf[4] = b'0' + (m % 10) as u8;
+    buf[5] = b':';
+    buf[6] = b'0' + (s / 10) as u8;
+    buf[7] = b'0' + (s % 10) as u8;
+}
 const TASKBAR_ITEM_WIDTH: u64 = 150;
 const TASKBAR_ITEM_SPACING: u64 = 5;
 
@@ -518,15 +535,30 @@ impl WindowManager {
 
         // Draw taskbar items for each window
         let start_x = 100u64;
-        
+
         for i in 0..self.window_count {
             let window_id = self.z_order[i];
             let item_x = start_x + (i as u64) * (TASKBAR_ITEM_WIDTH + TASKBAR_ITEM_SPACING);
-            
+
             if let Some(ref window) = self.windows[window_id] {
                 self.draw_taskbar_item(graphics, window, window_id, item_x);
             }
         }
+
+        // Clock — right-aligned, shows uptime as HH:MM:SS
+        // "HH:MM:SS" = 8 chars × 9 px/char = 72 px wide
+        const CLOCK_CHARS: u64 = 8;
+        const CHAR_W: u64 = 9;
+        const CLOCK_W: u64 = CLOCK_CHARS * CHAR_W; // 72
+        const CLOCK_PAD: u64 = 15;
+        let clock_x = self.screen_width.saturating_sub(CLOCK_W + CLOCK_PAD);
+
+        let mut time_buf = [0u8; 8];
+        let ticks = unsafe { crate::kernel::timer::get_ticks() };
+        format_uptime(ticks, &mut time_buf);
+        let time_str = core::str::from_utf8(&time_buf).unwrap_or("00:00:00");
+
+        fonts::draw_string(graphics, clock_x, 16, time_str, colors::dark_theme::TEXT_PRIMARY);
     }
 
     fn draw_taskbar_item(&self, graphics: &Graphics, window: &Window, window_id: usize, x: u64) {

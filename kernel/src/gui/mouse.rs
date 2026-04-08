@@ -58,15 +58,21 @@ impl MouseCursor {
         }
     }
 
-    pub fn update(&mut self, dx: i8, dy: i8, screen_width: u64, screen_height: u64) {
-        // Scale mouse movement for better control
-        let scale_factor = 1; // Adjust this: 1 = normal, 2 = faster
-        
-        self.x += (dx as i64) * scale_factor;
-        self.y -= (dy as i64) * scale_factor; // PS/2 Y is inverted
-        
+    pub fn update(&mut self, dx: i16, dy: i16, screen_width: u64, screen_height: u64) {
+        // Simple acceleration: boost large deltas so fast swipes cross the screen.
+        let scale = |d: i16| -> i64 {
+            let a = d.abs() as i64;
+            let sign = if d < 0 { -1i64 } else { 1 };
+            // 1× for slow movement, 2× once delta > 5, 3× once > 15
+            let factor = if a > 15 { 3 } else if a > 5 { 2 } else { 1 };
+            sign * a * factor
+        };
+
+        self.x += scale(dx);
+        self.y -= scale(dy); // PS/2 Y-axis is inverted relative to screen
+
         // Clamp to screen bounds
-        self.x = self.x.max(0).min((screen_width - 1) as i64);
+        self.x = self.x.max(0).min((screen_width  - 1) as i64);
         self.y = self.y.max(0).min((screen_height - 1) as i64);
     }
 
@@ -268,13 +274,22 @@ impl PS2Mouse {
     }
 
     fn process_packet(&mut self, cursor: &mut MouseCursor, screen_width: u64, screen_height: u64) {
-        let flags = self.packet_buffer[0];
-        let dx = self.packet_buffer[1] as i8;
-        let dy = self.packet_buffer[2] as i8;
+        let flags  = self.packet_buffer[0];
+        let dx_raw = self.packet_buffer[1];
+        let dy_raw = self.packet_buffer[2];
+
+        // Bits 6-7 are overflow flags — the delta wrapped around and is meaningless.
+        if (flags & 0xC0) != 0 { return; }
+
+        // PS/2 mouse sends 9-bit signed deltas.  The MSB (sign bit) lives in the
+        // flags byte: bit 4 for X, bit 5 for Y.  Reconstruct full i16 values so
+        // large movements (>127 px) are handled with the correct sign.
+        let dx: i16 = if (flags & 0x10) != 0 { dx_raw as i16 - 256 } else { dx_raw as i16 };
+        let dy: i16 = if (flags & 0x20) != 0 { dy_raw as i16 - 256 } else { dy_raw as i16 };
 
         // Update button states
-        self.left_button = (flags & 0x01) != 0;
-        self.right_button = (flags & 0x02) != 0;
+        self.left_button   = (flags & 0x01) != 0;
+        self.right_button  = (flags & 0x02) != 0;
         self.middle_button = (flags & 0x04) != 0;
 
         // Update cursor position
@@ -283,15 +298,17 @@ impl PS2Mouse {
         unsafe {
             if MOUSE_PACKET_DEBUG_LOGGING && (dx != 0 || dy != 0) {
                 SERIAL_PORT.write_str("Mouse: dx=");
-                SERIAL_PORT.write_decimal(dx as u32);
+                SERIAL_PORT.write_decimal(dx.unsigned_abs() as u32);
+                if dx < 0 { SERIAL_PORT.write_str("(-)"); }
                 SERIAL_PORT.write_str(" dy=");
-                SERIAL_PORT.write_decimal(dy as u32);
+                SERIAL_PORT.write_decimal(dy.unsigned_abs() as u32);
+                if dy < 0 { SERIAL_PORT.write_str("(-)"); }
                 SERIAL_PORT.write_str(" pos=(");
                 SERIAL_PORT.write_decimal(cursor.x as u32);
                 SERIAL_PORT.write_str(",");
                 SERIAL_PORT.write_decimal(cursor.y as u32);
                 SERIAL_PORT.write_str(") buttons=");
-                if self.left_button { SERIAL_PORT.write_str("L"); }
+                if self.left_button  { SERIAL_PORT.write_str("L"); }
                 if self.right_button { SERIAL_PORT.write_str("R"); }
                 if self.middle_button { SERIAL_PORT.write_str("M"); }
                 SERIAL_PORT.write_str("\n");

@@ -83,14 +83,11 @@ unsafe extern "C" fn kmain() -> ! {
         crate::kernel::fs::ramfs::RAMFS.init();
         SERIAL_PORT.write_str("✓ RamFS initialized\n");
 
-        test_paging_allocation();
-    }
+        // ATA disk + FAT16 filesystem (optional — no disk is fine)
+        crate::kernel::ata::init();
+        crate::kernel::fat::init();
 
-    unsafe {
-        let exit_code = crate::kernel::user_mode::run_demo();
-        SERIAL_PORT.write_str("User mode demo returned with code: ");
-        SERIAL_PORT.write_decimal(exit_code as u32);
-        SERIAL_PORT.write_str("\n");
+        test_paging_allocation();
     }
 
     // ── Stage 3: Graphics ──────────────────────────────────────────────────
@@ -219,12 +216,20 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize) {
     let mut needs_redraw = true;
     let mut terminal_dirty = false;
     let mut terminal_app = terminal::TerminalApp::new(terminal_window_id);
+    let mut last_clock_sec: u64 = u64::MAX; // force draw on first frame
 
     let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
     terminal::install_input_hooks();
 
     loop {
         interrupts::poll_mouse_data();
+
+        // Trigger a full redraw once per second so the taskbar clock updates.
+        let current_sec = unsafe { timer::get_ticks() } / 100;
+        if current_sec != last_clock_sec {
+            last_clock_sec = current_sec;
+            needs_redraw = true;
+        }
 
         let cursor_pos   = gui::mouse::get_mouse_position();
         let left_button  = gui::mouse::is_mouse_button_pressed(gui::mouse::MouseButton::Left);
@@ -272,6 +277,16 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize) {
         if let Some((mx, my)) = cursor_pos {
             saved_pixels = graphics.save_cursor_area(mx, my);
             graphics.draw_cursor(mx, my, 0xFFFFFFFF);
+        }
+
+        // Blit the completed back buffer to the real framebuffer in one pass.
+        graphics.present();
+
+        // Run the scheduler: give the active task one time slice (~20 ms).
+        // When the task exits, drain its output to the terminal.
+        if let Some(exit_code) = unsafe { kernel::scheduler::tick() } {
+            terminal_app.on_task_exit(exit_code);
+            terminal_dirty = true;
         }
 
         unsafe { core::arch::asm!("hlt"); }

@@ -25,10 +25,15 @@ impl SyscallRuntime for KernelRuntime {
     }
 
     fn write_console(&mut self, bytes: &[u8]) {
+        // Always echo to serial for debugging.
         unsafe {
             for &byte in bytes {
                 SERIAL_PORT.write_byte(byte);
             }
+        }
+        // While a user program is running, also capture output for the GUI terminal.
+        if crate::kernel::user_mode::is_active() {
+            crate::kernel::user_mode::output_write(bytes);
         }
     }
 
@@ -43,17 +48,39 @@ impl SyscallRuntime for KernelRuntime {
     }
 
     fn sleep_until_tick(&mut self, target_tick: u64) {
-        while unsafe { crate::kernel::timer::get_ticks() } < target_tick {
-            unsafe { asm!("hlt"); }
+        unsafe {
+            // If the scheduler is managing the calling task, yield so the
+            // kernel can render GUI frames while the task sleeps.
+            let ctx_opt = core::ptr::replace(
+                &raw mut crate::kernel::user_mode::CURRENT_SYSCALL_CTX,
+                None,
+            );
+            if let Some(ctx) = ctx_opt {
+                if crate::kernel::scheduler::has_task() {
+                    crate::kernel::scheduler::sleep_task(target_tick, ctx);
+                    // ^^^ noreturn — resumes in ring-3 after sleep expires
+                }
+            }
+            // Fallback: busy-wait (used during boot before scheduler is live).
+            while crate::kernel::timer::get_ticks() < target_tick {
+                asm!("hlt");
+            }
+        }
+    }
+
+    fn get_char(&mut self) -> i64 {
+        match crate::kernel::stdin::pop() {
+            Some(ch) => ch as i64,
+            None     => -6, // EAGAIN
         }
     }
 
     fn exit(&mut self, code: i32) -> ! {
         if crate::kernel::user_mode::is_active() {
             unsafe {
-                SERIAL_PORT.write_str("User task exiting with code: ");
+                SERIAL_PORT.write_str("User task exiting (code ");
                 SERIAL_PORT.write_decimal(code as u32);
-                SERIAL_PORT.write_str("\n");
+                SERIAL_PORT.write_str(")\n");
                 crate::kernel::user_mode::exit_to_kernel(code as i64);
             }
         }
@@ -68,6 +95,13 @@ impl SyscallRuntime for KernelRuntime {
     // ── Filesystem ──────────────────────────────────────────────────────────
 
     fn fs_open(&mut self, path: &[u8], flags: u32) -> i64 {
+        // Route /disk/ paths to FAT16; everything else to RamFS.
+        if path.starts_with(b"/disk/") || {
+            // bare name with no leading slash also goes to FAT when disk is present
+            !path.starts_with(b"/") && crate::kernel::ata::is_present()
+        } {
+            return unsafe { crate::kernel::fat::open(path, flags) };
+        }
         let path_str = match core::str::from_utf8(path) {
             Ok(s)  => s,
             Err(_) => return -1,
@@ -81,6 +115,12 @@ impl SyscallRuntime for KernelRuntime {
     }
 
     fn fs_close(&mut self, fd: i32) -> i64 {
+        if crate::kernel::fat::is_fat_fd(fd) {
+            return unsafe { crate::kernel::fat::close(fd) };
+        }
+        if crate::kernel::pipe::is_pipe_fd(fd) {
+            return unsafe { crate::kernel::pipe::close(fd) };
+        }
         unsafe {
             match crate::kernel::fs::ramfs::RAMFS.get() {
                 Some(fs) => fs.close(fd),
@@ -90,6 +130,12 @@ impl SyscallRuntime for KernelRuntime {
     }
 
     fn fs_read(&mut self, fd: i32, buf: &mut [u8]) -> i64 {
+        if crate::kernel::fat::is_fat_fd(fd) {
+            return unsafe { crate::kernel::fat::read_fd(fd, buf) };
+        }
+        if crate::kernel::pipe::is_pipe_fd(fd) {
+            return unsafe { crate::kernel::pipe::read(fd, buf) };
+        }
         unsafe {
             match crate::kernel::fs::ramfs::RAMFS.get() {
                 Some(fs) => fs.read_fd(fd, buf),
@@ -99,10 +145,29 @@ impl SyscallRuntime for KernelRuntime {
     }
 
     fn fs_write_file(&mut self, fd: i32, buf: &[u8]) -> i64 {
+        if crate::kernel::pipe::is_pipe_fd(fd) {
+            return unsafe { crate::kernel::pipe::write(fd, buf) };
+        }
+        if crate::kernel::fat::is_fat_fd(fd) {
+            return -1; // FAT write not yet implemented
+        }
         unsafe {
             match crate::kernel::fs::ramfs::RAMFS.get() {
                 Some(fs) => fs.write_fd(fd, buf),
                 None     => -2,
+            }
+        }
+    }
+
+    fn pipe_alloc(&mut self, read_fd_ptr: u64, write_fd_ptr: u64) -> i64 {
+        unsafe {
+            match crate::kernel::pipe::alloc() {
+                Some((r, w)) => {
+                    core::ptr::write_unaligned(read_fd_ptr  as *mut i32, r);
+                    core::ptr::write_unaligned(write_fd_ptr as *mut i32, w);
+                    0
+                }
+                None => -4, // ENOMEM
             }
         }
     }

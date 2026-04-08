@@ -9,15 +9,28 @@ override USER_VARIABLE = $(if $(filter $(origin $(1)),default undefined),$(eval 
 $(call USER_VARIABLE,KARCH,x86_64)
 
 # Default user QEMU flags. These are appended to the QEMU command calls.
-$(call USER_VARIABLE,QEMUFLAGS,-m 2G)
+# -cpu max: expose all available CPU features so LLVM-vectorised code (fill_rect, etc.) can use SSE/AVX.
+$(call USER_VARIABLE,QEMUFLAGS,-m 2G -cpu max)
 
-override IMAGE_NAME := oxide_os-$(KARCH)
+override IMAGE_NAME  := oxide_os-$(KARCH)
+override DISK_IMAGE  := oxide_disk.img
+# Size of the FAT16 disk image in 512-byte sectors (4 MB = 8192 sectors).
+override DISK_SECTORS := 8192
 
 .PHONY: all
 all: $(IMAGE_NAME).iso
 
 .PHONY: all-hdd
 all-hdd: $(IMAGE_NAME).hdd
+
+# Create a blank FAT16 disk image for persistent storage.
+# Requires dosfstools (mkfs.fat).  Run once; it is not rebuilt automatically.
+.PHONY: disk
+disk: $(DISK_IMAGE)
+
+$(DISK_IMAGE):
+	dd if=/dev/zero bs=512 count=$(DISK_SECTORS) of=$(DISK_IMAGE)
+	mkfs.fat -F 16 -S 512 $(DISK_IMAGE)
 
 .PHONY: run
 run: run-$(KARCH)
@@ -28,6 +41,10 @@ run-gui: run-gui-$(KARCH)
 .PHONY: run-hdd
 run-hdd: run-hdd-$(KARCH)
 
+# Optional ATA disk flag — only passed when the image exists.
+DISK_FLAG := $(if $(wildcard $(DISK_IMAGE)),-drive file=$(DISK_IMAGE)$(comma)format=raw$(comma)if=ide,)
+comma := ,
+
 .PHONY: run-x86_64
 run-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
 	qemu-system-$(KARCH) \
@@ -36,8 +53,12 @@ run-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).
 		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
+		$(DISK_FLAG) \
 		$(QEMUFLAGS)
 
+# run-gui: SDL display gives the best PS/2 mouse experience.
+# Mouse is grabbed on first click inside the window; release with Ctrl+Alt+G.
+# If SDL is unavailable, fall back to: -display gtk,grab-on-hover=on,show-tabs=off
 .PHONY: run-gui-x86_64
 run-gui-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
 	qemu-system-$(KARCH) \
@@ -46,8 +67,23 @@ run-gui-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NA
 		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
-		-display gtk,grab-on-hover=on,show-tabs=off \
+		$(DISK_FLAG) \
+		-display sdl,grab-on-hover=on \
 		$(QEMUFLAGS)
+
+# KVM-accelerated run (much faster; requires nested virtualisation enabled in WSL2).
+# Enable with: echo "[wsl2]" >> ~/.wslconfig && echo "nestedVirtualization=true" >> ~/.wslconfig
+.PHONY: run-kvm-x86_64
+run-kvm-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
+	qemu-system-$(KARCH) \
+		-M q35,accel=kvm \
+		-cpu host \
+		-serial stdio \
+		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
+		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
+		-cdrom $(IMAGE_NAME).iso \
+		-display gtk,grab-on-hover=on,show-tabs=off \
+		-m 2G
 
 .PHONY: run-hdd-x86_64
 run-hdd-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).hdd
@@ -182,8 +218,12 @@ limine/limine:
 	git clone https://github.com/limine-bootloader/limine.git --branch=v9.x-binary --depth=1
 	$(MAKE) -C limine
 
+.PHONY: userspace
+userspace:
+	$(MAKE) -C userspace
+
 .PHONY: kernel
-kernel:
+kernel: userspace
 	$(MAKE) -C kernel
 
 $(IMAGE_NAME).iso: limine/limine kernel
@@ -260,6 +300,10 @@ endif
 clean:
 	$(MAKE) -C kernel clean
 	rm -rf iso_root $(IMAGE_NAME).iso $(IMAGE_NAME).hdd
+
+.PHONY: clean-disk
+clean-disk:
+	rm -f $(DISK_IMAGE)
 
 .PHONY: distclean
 distclean: clean

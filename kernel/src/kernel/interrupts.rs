@@ -5,6 +5,7 @@ use crate::kernel::pic;
 use super::syscall;
 use crate::gui::mouse::{PS2Mouse, MouseCursor};
 use super::keyboard::handle_keyboard_interrupt;
+use crate::kernel::user_mode::TaskContext;
 
 // ============================================================================
 // GLOBAL STATE
@@ -98,7 +99,10 @@ pub extern "C" fn isr_common_handler(frame: *mut InterruptFrame) {
             },
             32 => {
                 // Timer interrupt (IRQ0)
-                handle_timer_interrupt();
+                // Note: handle_timer_interrupt may call scheduler::preempt()
+                // which is noreturn and sends EOI itself. If it returns normally,
+                // we send EOI here.
+                handle_timer_interrupt(frame);
                 pic::send_eoi(0);
             },
             33 => {
@@ -152,25 +156,45 @@ pub extern "C" fn isr_common_handler(frame: *mut InterruptFrame) {
 // SPECIFIC INTERRUPT HANDLERS
 // ============================================================================
 
-/// Handle timer interrupt (IRQ0)
-unsafe fn handle_timer_interrupt() {
+/// Handle timer interrupt (IRQ0).
+///
+/// If a user task is currently running (cs & 3 == 3) and the time slice
+/// has expired, saves context and calls scheduler::preempt() which never
+/// returns.  PIC EOI is sent inside preempt() so it is not skipped.
+unsafe fn handle_timer_interrupt(frame: *mut InterruptFrame) {
     TIMER_TICKS += 1;
 
-    // Periodic output to show system is alive
-    if TIMER_TICKS <= 10 || TIMER_TICKS % 100 == 0 {
-        SERIAL_PORT.write_str("T64:");
+    // Minimal early-boot logging; suppress noisy per-tick serial spam.
+    if TIMER_TICKS <= 5 {
+        SERIAL_PORT.write_str("T:");
         SERIAL_PORT.write_decimal(TIMER_TICKS as u32);
         SERIAL_PORT.write_str(" ");
     }
 
-    // Detailed debug for first few ticks
-    if TIMER_TICKS <= 3 {
-        SERIAL_PORT.write_str("(RSP in timer: ");
-        let rsp: u64;
-        asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags));
-        SERIAL_PORT.write_hex((rsp >> 32) as u32);
-        SERIAL_PORT.write_hex(rsp as u32);
-        SERIAL_PORT.write_str(") ");
+    // Preempt user-mode task when the slice runs out.
+    if ((*frame).cs & 3) == 3 {
+        let sched = &raw mut crate::kernel::scheduler::SCHED;
+        if (*sched).slice_remaining > 0 {
+            (*sched).slice_remaining -= 1;
+        }
+        if (*sched).slice_remaining == 0
+            && (*sched).task.state == crate::kernel::scheduler::TaskState::Running
+        {
+            let ctx = frame_to_ctx(&*frame);
+            crate::kernel::scheduler::preempt(ctx);
+            // ^^^ noreturn — jumps back to scheduler::tick() via RETURN_CONTEXT
+        }
+    }
+}
+
+/// Convert an interrupt frame to a TaskContext for the scheduler.
+fn frame_to_ctx(f: &InterruptFrame) -> TaskContext {
+    TaskContext {
+        r15: f.r15, r14: f.r14, r13: f.r13, r12: f.r12,
+        r11: f.r11, r10: f.r10, r9:  f.r9,  r8:  f.r8,
+        rdi: f.rdi, rsi: f.rsi, rbp: f.rbp, rdx: f.rdx,
+        rcx: f.rcx, rbx: f.rbx, rax: f.rax,
+        rip: f.rip, cs:  f.cs,  rflags: f.rflags, rsp: f.rsp, ss: f.ss,
     }
 }
 
@@ -284,6 +308,10 @@ unsafe fn handle_hardware_irq(int_no: u64) {
 
 /// Handle system call (int 0x80).
 unsafe fn handle_system_call(frame: *mut InterruptFrame) {
+    // Make the caller's full register state available to syscalls that need
+    // to yield (e.g. sleep). Cleared by exit_to_kernel or after dispatch.
+    crate::kernel::user_mode::CURRENT_SYSCALL_CTX = Some(frame_to_ctx(&*frame));
+
     let result = syscall::handle_syscall(
         (*frame).rax,
         (*frame).rdi,
@@ -293,6 +321,8 @@ unsafe fn handle_system_call(frame: *mut InterruptFrame) {
         (*frame).r8,
     );
 
+    // Clear context after normal (non-yielding) dispatch.
+    crate::kernel::user_mode::CURRENT_SYSCALL_CTX = None;
     (*frame).rax = result.value as u64;
 }
 

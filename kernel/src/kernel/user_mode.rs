@@ -1,7 +1,7 @@
-//! Minimal ring-3 bootstrap for OxideOS.
+//! Ring-3 bootstrap and user-program loader for OxideOS.
 //!
-//! This module runs a single hard-coded user program in the current address
-//! space. It is intentionally a first milestone, not a full process loader.
+//! Supports loading flat binaries from the kernel's program registry and
+//! capturing their stdout output so it can be displayed in the GUI terminal.
 
 use core::arch::{asm, global_asm};
 use core::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -9,10 +9,82 @@ use core::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use crate::kernel::paging_allocator;
 use crate::kernel::serial::SERIAL_PORT;
 
+// ── TaskContext ────────────────────────────────────────────────────────────
+// Saved register state for a user task. Offsets must match the assembly in
+// resume_user_context_trampoline exactly.
+//
+//   r15    +0    r14    +8    r13   +16   r12   +24
+//   r11   +32    r10   +40    r9   +48    r8   +56
+//   rdi   +64    rsi   +72   rbp   +80   rdx   +88
+//   rcx   +96    rbx  +104   rax  +112
+//   rip  +120    cs   +128  rflags+136   rsp  +144   ss +152
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TaskContext {
+    pub r15: u64, pub r14: u64, pub r13: u64, pub r12: u64,
+    pub r11: u64, pub r10: u64, pub r9:  u64, pub r8:  u64,
+    pub rdi: u64, pub rsi: u64, pub rbp: u64, pub rdx: u64,
+    pub rcx: u64, pub rbx: u64, pub rax: u64,
+    pub rip: u64, pub cs:  u64, pub rflags: u64, pub rsp: u64, pub ss: u64,
+}
+
+impl TaskContext {
+    pub const fn zeroed() -> Self {
+        Self {
+            r15:0, r14:0, r13:0, r12:0, r11:0, r10:0, r9:0, r8:0,
+            rdi:0, rsi:0, rbp:0, rdx:0, rcx:0, rbx:0, rax:0,
+            rip:0, cs:0, rflags:0, rsp:0, ss:0,
+        }
+    }
+}
+
+/// Saved syscall-entry context for the currently executing syscall.
+/// Set by handle_system_call() before dispatching; used by sleep to yield.
+pub static mut CURRENT_SYSCALL_CTX: Option<TaskContext> = None;
+
 const PAGE_SIZE: usize = 4096;
 const USER_CODE_ADDR: u64 = 0x0040_0000;
 const USER_STACK_TOP: u64 = 0x0080_0000;
 const USER_STACK_PAGES: usize = 4;
+
+// ── Output capture buffer ──────────────────────────────────────────────────
+// write_console() writes here while a user program is running.
+// The terminal drains it after the program exits.
+
+const OUTPUT_BUF_CAP: usize = 4096;
+static mut OUTPUT_BUF: [u8; OUTPUT_BUF_CAP] = [0; OUTPUT_BUF_CAP];
+static mut OUTPUT_BUF_LEN: usize = 0;
+
+/// Append bytes to the capture buffer (called from KernelRuntime::write_console).
+pub fn output_write(bytes: &[u8]) {
+    unsafe {
+        let used = OUTPUT_BUF_LEN;
+        let space = OUTPUT_BUF_CAP - used;
+        let n = bytes.len().min(space);
+        OUTPUT_BUF[used..used + n].copy_from_slice(&bytes[..n]);
+        OUTPUT_BUF_LEN = used + n;
+    }
+}
+
+/// Reset the capture buffer (call before launching a new program).
+pub fn output_clear() {
+    unsafe { OUTPUT_BUF_LEN = 0; }
+}
+
+/// Drain the buffer: call `f` once per '\n'-terminated line, then clear.
+pub fn output_drain_lines(mut f: impl FnMut(&str)) {
+    unsafe {
+        let data = core::str::from_utf8(&OUTPUT_BUF[..OUTPUT_BUF_LEN]).unwrap_or("");
+        for line in data.split('\n') {
+            // skip the trailing empty string after a final newline
+            if !line.is_empty() {
+                f(line);
+            }
+        }
+        OUTPUT_BUF_LEN = 0;
+    }
+}
 const USER_PROGRAM: [u8; 23] = [
     0x48, 0xC7, 0xC0, 0x28, 0x00, 0x00, 0x00,
     0xCD, 0x80,
@@ -56,8 +128,8 @@ global_asm!(
 .section .text.enter_user_mode, "ax", @progbits
 .global enter_user_mode_trampoline
 enter_user_mode_trampoline:
-    mov [rip + RETURN_CONTEXT + 0], rsp
-    mov [rip + RETURN_CONTEXT + 8], rbx
+    mov [rip + RETURN_CONTEXT + 0],  rsp
+    mov [rip + RETURN_CONTEXT + 8],  rbx
     mov [rip + RETURN_CONTEXT + 16], rbp
     mov [rip + RETURN_CONTEXT + 24], r12
     mov [rip + RETURN_CONTEXT + 32], r13
@@ -67,28 +139,97 @@ enter_user_mode_trampoline:
     pop rax
     mov [rip + RETURN_CONTEXT + 56], rax
 
-    push 0x1b
-    push rsi
+    push 0x1b        /* ss  (user data selector) */
+    push rsi         /* rsp (user stack top)     */
     pushfq
     pop rax
-    or rax, 0x200
+    or rax, 0x200    /* enable IF in rflags      */
     push rax
-    push 0x23
-    push rdi
+    push 0x23        /* cs  (user code selector) */
+    push rdi         /* rip (entry point)        */
     iretq
+
+/* ── resume_user_context_trampoline ──────────────────────────────────────
+ * Resumes a previously saved TaskContext (e.g. after preemption or sleep).
+ * rdi = *const TaskContext
+ *
+ * Offsets match TaskContext layout (see user_mode.rs):
+ *   r15+0  r14+8  r13+16 r12+24 r11+32 r10+40 r9+48  r8+56
+ *   rdi+64 rsi+72 rbp+80 rdx+88 rcx+96 rbx+104 rax+112
+ *   rip+120 cs+128 rflags+136 rsp+144 ss+152
+ */
+.global resume_user_context_trampoline
+resume_user_context_trampoline:
+    /* Save kernel callee-saved state so exit_to_kernel can return here. */
+    mov [rip + RETURN_CONTEXT + 0],  rsp
+    mov [rip + RETURN_CONTEXT + 8],  rbx
+    mov [rip + RETURN_CONTEXT + 16], rbp
+    mov [rip + RETURN_CONTEXT + 24], r12
+    mov [rip + RETURN_CONTEXT + 32], r13
+    mov [rip + RETURN_CONTEXT + 40], r14
+    mov [rip + RETURN_CONTEXT + 48], r15
+    pushfq
+    pop rax
+    mov [rip + RETURN_CONTEXT + 56], rax
+
+    /* Push iretq frame: ss rsp rflags cs rip (pushed high→low). */
+    push QWORD PTR [rdi + 152]   /* ss     */
+    push QWORD PTR [rdi + 144]   /* rsp    */
+    push QWORD PTR [rdi + 136]   /* rflags */
+    push QWORD PTR [rdi + 128]   /* cs     */
+    push QWORD PTR [rdi + 120]   /* rip    */
+
+    /* Restore GPRs — rdi is the base pointer so restore it last. */
+    mov r15, [rdi + 0]
+    mov r14, [rdi + 8]
+    mov r13, [rdi + 16]
+    mov r12, [rdi + 24]
+    mov r11, [rdi + 32]
+    mov r10, [rdi + 40]
+    mov r9,  [rdi + 48]
+    mov r8,  [rdi + 56]
+    mov rsi, [rdi + 72]
+    mov rbp, [rdi + 80]
+    mov rdx, [rdi + 88]
+    mov rcx, [rdi + 96]
+    mov rbx, [rdi + 104]
+    mov rax, [rdi + 112]
+    mov rdi, [rdi + 64]   /* must be last */
+    iretq
+
 .att_syntax prefix
 "#
 );
 
 unsafe extern "C" {
     fn enter_user_mode_trampoline(entry: u64, stack_top: u64) -> i64;
+    fn resume_user_context_trampoline(ctx: *const TaskContext) -> i64;
 }
 
 pub fn is_active() -> bool {
     USER_MODE_ACTIVE.load(Ordering::Relaxed)
 }
 
+/// Set USER_MODE_ACTIVE flag (called by scheduler before each task slice).
+pub fn set_active(v: bool) {
+    USER_MODE_ACTIVE.store(v, Ordering::Relaxed);
+}
+
+/// Run a user task for the first time, entering at `entry` with `stack_top`.
+/// Returns when exit_to_kernel is called (by Exit syscall or timer preemption).
+pub unsafe fn launch_at(entry: u64, stack_top: u64) -> i64 {
+    enter_user_mode(entry, stack_top)
+}
+
+/// Resume a previously saved task context (e.g. after preemption or sleep).
+/// Returns when exit_to_kernel is called.
+pub unsafe fn resume_user_context(ctx: &TaskContext) -> i64 {
+    USER_MODE_ACTIVE.store(true, Ordering::Relaxed);
+    resume_user_context_trampoline(ctx as *const TaskContext)
+}
+
 pub unsafe fn exit_to_kernel(code: i64) -> ! {
+    CURRENT_SYSCALL_CTX = None;
     USER_EXIT_CODE.store(code, Ordering::Relaxed);
     USER_MODE_ACTIVE.store(false, Ordering::Relaxed);
 
@@ -122,6 +263,24 @@ unsafe fn enter_user_mode(entry: u64, stack_top: u64) -> i64 {
     USER_EXIT_CODE.store(-1, Ordering::Relaxed);
     USER_MODE_ACTIVE.store(true, Ordering::Relaxed);
     enter_user_mode_trampoline(entry, stack_top)
+}
+
+/// Load a flat binary into the user code region and execute it in ring 3.
+/// Pages are mapped on the first call; subsequent calls reuse the mapping and
+/// overwrite the code in place (safe because there is only one user task).
+pub unsafe fn load_and_run(code: &[u8]) -> i64 {
+    let program_pages = code.len().div_ceil(PAGE_SIZE);
+    let stack_base    = USER_STACK_TOP - (USER_STACK_PAGES * PAGE_SIZE) as u64;
+
+    // Map regions — silently ignore "already mapped" on re-runs.
+    let _ = paging_allocator::map_user_region(USER_CODE_ADDR, program_pages, true, true);
+    let _ = paging_allocator::map_user_region(stack_base, USER_STACK_PAGES, true, false);
+
+    // Overwrite the code region with the new program.
+    paging_allocator::copy_to_region(USER_CODE_ADDR, code);
+
+    SERIAL_PORT.write_str("Launching user program (ring 3)...\n");
+    enter_user_mode(USER_CODE_ADDR, USER_STACK_TOP - 16)
 }
 
 pub unsafe fn run_demo() -> i64 {

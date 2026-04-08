@@ -347,6 +347,7 @@ unsafe fn handle_key_press(scancode: u8, is_extended: bool) {
                 unsafe { SERIAL_PORT.write_str("[BACKSPACE]\n") };
             }
             handle_backspace();
+            crate::kernel::stdin::push(8);
             // Call callback with backspace
             if CALLBACK_ENABLED.load(Ordering::Relaxed) {
                 if let Some(callback) = unsafe { KEY_CALLBACK } {
@@ -359,6 +360,7 @@ unsafe fn handle_key_press(scancode: u8, is_extended: bool) {
             if KEYBOARD_DEBUG_LOGGING {
                 unsafe { SERIAL_PORT.write_str("[TAB]\n") };
             }
+            crate::kernel::stdin::push(b'\t');
             if CALLBACK_ENABLED.load(Ordering::Relaxed) {
                 if let Some(callback) = unsafe { KEY_CALLBACK } {
                     callback(b'\t');
@@ -371,6 +373,7 @@ unsafe fn handle_key_press(scancode: u8, is_extended: bool) {
                 unsafe { SERIAL_PORT.write_str("[ENTER]\n") };
             }
             handle_enter();
+            crate::kernel::stdin::push(b'\n');
             // Call callback with newline
             if CALLBACK_ENABLED.load(Ordering::Relaxed) {
                 if let Some(callback) = unsafe { KEY_CALLBACK } {
@@ -423,11 +426,14 @@ unsafe fn handle_key_press(scancode: u8, is_extended: bool) {
         // Add to input buffer
         let state = unsafe { &mut *core::ptr::addr_of_mut!(KEYBOARD_STATE) };
         state.add_to_buffer(ch);
-        
+
         if KEYBOARD_DEBUG_LOGGING {
             unsafe { SERIAL_PORT.write_byte(ch) };
         }
-        
+
+        // Also push into the global stdin ring so user programs can read it.
+        crate::kernel::stdin::push(ch);
+
         // Call registered callback if any
         if CALLBACK_ENABLED.load(Ordering::Relaxed) {
             if let Some(callback) = unsafe { KEY_CALLBACK } {

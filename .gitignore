@@ -4,3 +4,4 @@
 *.hdd
 *.log
 .idea/*
+userspace/bin

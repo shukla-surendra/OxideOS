@@ -30,6 +30,7 @@ pub enum Syscall {
     GetTime       = 40,
     Sleep         = 41,
     GetSystemInfo = 50,
+    Pipe          = 60,
     Invalid       = u64::MAX,
 }
 
@@ -52,6 +53,7 @@ impl Syscall {
             Self::GetTime       => "gettime",
             Self::Sleep         => "sleep",
             Self::GetSystemInfo => "get_system_info",
+            Self::Pipe          => "pipe",
             Self::Invalid       => "invalid",
         }
     }
@@ -76,6 +78,7 @@ impl From<u64> for Syscall {
             40 => Self::GetTime,
             41 => Self::Sleep,
             50 => Self::GetSystemInfo,
+            60 => Self::Pipe,
             _  => Self::Invalid,
         }
     }
@@ -149,6 +152,10 @@ pub trait SyscallRuntime {
     fn sleep_until_tick(&mut self, target_tick: u64);
     fn exit(&mut self, code: i32) -> !;
 
+    // ── stdin ──────────────────────────────────────────────────────────────
+    /// Pop one byte from the stdin ring. Returns EAGAIN (-6) if empty.
+    fn get_char(&mut self) -> i64 { EAGAIN }
+
     // ── Filesystem hooks (default: not supported) ──────────────────────────
     /// Open a file; `path` is raw bytes from user space.
     fn fs_open(&mut self, path: &[u8], flags: u32) -> i64 { ENOSYS }
@@ -158,6 +165,10 @@ pub trait SyscallRuntime {
     fn fs_read(&mut self, fd: i32, buf: &mut [u8]) -> i64 { ENOSYS }
     /// Write `buf` to a file descriptor ≥ 3 (FD 1/2 go to `write_console`).
     fn fs_write_file(&mut self, fd: i32, buf: &[u8]) -> i64 { ENOSYS }
+
+    // ── IPC ────────────────────────────────────────────────────────────────
+    /// Allocate a pipe; write (read_fd, write_fd) to the two user pointers.
+    fn pipe_alloc(&mut self, read_fd_ptr: u64, write_fd_ptr: u64) -> i64 { ENOSYS }
 }
 
 // ── Validation ─────────────────────────────────────────────────────────────
@@ -198,10 +209,14 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
                                                     request.arg2, request.arg3) },
         Syscall::Close         => sys_close(runtime, request.arg1 as i32),
         Syscall::Print         => unsafe { sys_print(runtime, request.arg1, request.arg2) },
-        Syscall::GetChar       => SyscallResult::err(ENOSYS),
+        Syscall::GetChar       => {
+            let r = runtime.get_char();
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
         Syscall::GetTime       => SyscallResult::ok(runtime.current_ticks() as i64),
         Syscall::Sleep         => sys_sleep(runtime, request.arg1),
         Syscall::GetSystemInfo => unsafe { sys_get_system_info(runtime, request.arg1) },
+        Syscall::Pipe          => unsafe { sys_pipe(runtime, request.arg1, request.arg2) },
         Syscall::Invalid       => SyscallResult::err(ENOSYS),
     }
 }
@@ -227,8 +242,17 @@ fn sys_close<R: SyscallRuntime>(runtime: &mut R, fd: i32) -> SyscallResult {
 unsafe fn sys_read<R: SyscallRuntime>(
     runtime: &mut R, fd: i32, buf_ptr: u64, count: u64,
 ) -> SyscallResult {
-    // stdin (fd 0) not yet implemented
-    if fd == 0 { return SyscallResult::err(ENOSYS); }
+    // stdin: read one byte per call from the global ring buffer
+    if fd == 0 {
+        if count == 0 { return SyscallResult::ok(0); }
+        if let Err(code) = validate_user_range(buf_ptr, 1) {
+            return SyscallResult::err(code);
+        }
+        let r = runtime.get_char();
+        if r < 0 { return SyscallResult::err(r); }
+        unsafe { ptr::write(buf_ptr as *mut u8, r as u8); }
+        return SyscallResult::ok(1);
+    }
     if let Err(code) = validate_user_range(buf_ptr, count) {
         return SyscallResult::err(code);
     }
@@ -288,4 +312,13 @@ unsafe fn sys_get_system_info<R: SyscallRuntime>(
         Ok(())     => SyscallResult::ok(0),
         Err(code)  => SyscallResult::err(code),
     }
+}
+
+unsafe fn sys_pipe<R: SyscallRuntime>(
+    runtime: &mut R, read_fd_ptr: u64, write_fd_ptr: u64,
+) -> SyscallResult {
+    if let Err(code) = validate_user_range(read_fd_ptr, 4) { return SyscallResult::err(code); }
+    if let Err(code) = validate_user_range(write_fd_ptr, 4) { return SyscallResult::err(code); }
+    let r = runtime.pipe_alloc(read_fd_ptr, write_fd_ptr);
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
 }

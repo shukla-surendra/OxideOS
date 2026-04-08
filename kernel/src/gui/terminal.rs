@@ -38,7 +38,7 @@ const EVENT_ARROW_RIGHT: u16 = 0x103;
 const COMMANDS: &[&str] = &[
     "about", "cat", "clear", "cls", "echo",
     "help", "history", "ls", "mkdir", "pid",
-    "pwd", "rm", "sysinfo", "ticks", "touch",
+    "ps", "pwd", "rm", "run", "sysinfo", "ticks", "touch",
     "uptime", "version", "write",
 ];
 
@@ -120,6 +120,17 @@ impl TerminalApp {
     }
 
     pub fn window_id(&self) -> usize { self.window_id }
+
+    /// Called by the main loop when the background task exits.
+    /// Drains captured stdout and shows the exit code.
+    pub fn on_task_exit(&mut self, exit_code: i64) {
+        unsafe {
+            crate::kernel::user_mode::output_drain_lines(|line| {
+                self.push_line(line);
+            });
+        }
+        self.push_line(&format!("exited with code {}", exit_code));
+    }
 
     pub fn process_pending_input(&mut self, focused: bool) -> bool {
         let mut changed = false;
@@ -376,6 +387,10 @@ impl TerminalApp {
                 self.push_line("  sysinfo - memory & uptime");
                 self.push_line("  echo <text>");
                 self.push_line("  clear | cls | history | version | about");
+                self.push_line("Programs:");
+                self.push_line("  run <name>         - spawn user program");
+                self.push_line("  run                - list programs");
+                self.push_line("  ps                 - show running task");
             }
 
             "clear" | "cls" => self.history.clear(),
@@ -438,6 +453,41 @@ impl TerminalApp {
                 self.push_line("Features: RamFS, history, tab-complete");
                 self.push_line("Filesystem: in-memory RamFS");
                 self.push_line("Next: process scheduler, ELF loader");
+            }
+
+            "run" => {
+                let name = parts.next().unwrap_or("");
+                if name.is_empty() {
+                    self.push_line("usage: run <program>");
+                    self.push_line("programs:");
+                    for n in crate::kernel::programs::NAMES {
+                        self.push_line(&format!("  {}", n));
+                    }
+                    return;
+                }
+                match crate::kernel::programs::find(name) {
+                    None => self.push_line(&format!("run: unknown program '{}'", name)),
+                    Some(code) => {
+                        unsafe {
+                            match crate::kernel::scheduler::spawn(code, name) {
+                                Ok(_)  => self.push_line(&format!("spawned '{}'", name)),
+                                Err(e) => self.push_line(&format!("run: {}", e)),
+                            }
+                        }
+                    }
+                }
+            }
+
+            "ps" => {
+                let task = unsafe { &*(&raw const crate::kernel::scheduler::SCHED.task) };
+                use crate::kernel::scheduler::TaskState;
+                match task.state {
+                    TaskState::Empty        => self.push_line("no tasks"),
+                    TaskState::Ready        => self.push_line(&format!("[1] {} (ready)",   task.name_str())),
+                    TaskState::Running      => self.push_line(&format!("[1] {} (running)", task.name_str())),
+                    TaskState::Sleeping(t)  => self.push_line(&format!("[1] {} (sleeping until tick {})", task.name_str(), t)),
+                    TaskState::Dead(code)   => self.push_line(&format!("[1] {} (exited {})", task.name_str(), code)),
+                }
             }
 
             _ => {
@@ -509,7 +559,7 @@ impl TerminalApp {
         }
 
         self.input = String::from(first);
-        if matches!(first, "echo" | "cat" | "mkdir" | "touch" | "write" | "rm" | "ls") {
+        if matches!(first, "echo" | "cat" | "mkdir" | "touch" | "write" | "rm" | "ls" | "run") {
             self.input.push(' ');
         }
         true
