@@ -13,6 +13,9 @@
 //! `/disk/` prefix (e.g., `/disk/README.TXT`) or just a bare `README.TXT`.
 //! Names are matched case-insensitively.
 
+extern crate alloc;
+use alloc::{string::String, vec::Vec};
+
 use crate::kernel::ata;
 use crate::kernel::serial::SERIAL_PORT;
 
@@ -303,4 +306,55 @@ pub unsafe fn close(fd: i32) -> i64 {
     let slot = &raw mut (*fds)[idx];
     (*slot).active = false;
     0
+}
+
+/// Convert an 8.3 FAT name pair (name bytes, ext bytes) into a lowercase String.
+fn fat83_to_string(name: &[u8], ext: &[u8]) -> String {
+    let mut s = String::new();
+    for &b in name {
+        if b == b' ' { break; }
+        s.push(b.to_ascii_lowercase() as char);
+    }
+    let mut ext_len = ext.len();
+    while ext_len > 0 && ext[ext_len - 1] == b' ' { ext_len -= 1; }
+    if ext_len > 0 {
+        s.push('.');
+        for &b in &ext[..ext_len] {
+            s.push(b.to_ascii_lowercase() as char);
+        }
+    }
+    s
+}
+
+/// List all entries in the FAT16 root directory.
+///
+/// Returns a `Vec` of `(name, is_directory)` pairs.  Volume-label and deleted
+/// entries are skipped.  Returns an empty Vec if the filesystem is not ready.
+pub unsafe fn list_root() -> Vec<(String, bool)> {
+    let mut entries: Vec<(String, bool)> = Vec::new();
+    let fs = &raw const FAT_FS;
+    if !(*fs).ready { return entries; }
+
+    let bpb = &(*fs).bpb;
+    let root_sectors = (bpb.root_entry_count as u32 * 32 + 511) / 512;
+    let mut buf = [0u8; 512];
+
+    'outer: for s in 0..root_sectors {
+        let lba = bpb.root_dir_lba + s;
+        if !unsafe { read_sector_buf(lba, &mut buf) } { break; }
+
+        for e in 0..16u32 {
+            let off = (e * 32) as usize;
+            if buf[off] == 0x00 { break 'outer; }  // end of directory
+            if buf[off] == 0xE5 { continue; }       // deleted entry
+            let attr = buf[off + 11];
+            if attr & 0x08 != 0 { continue; }       // volume label
+
+            let is_dir = attr & 0x10 != 0;
+            let name = fat83_to_string(&buf[off..off + 8], &buf[off + 8..off + 11]);
+            if name == "." || name == ".." { continue; }
+            entries.push((name, is_dir));
+        }
+    }
+    entries
 }

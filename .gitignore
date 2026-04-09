@@ -3,5 +3,6 @@
 *.iso
 *.hdd
 *.log
+*.img
 .idea/*
 userspace/bin

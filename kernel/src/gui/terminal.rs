@@ -36,7 +36,7 @@ const EVENT_ARROW_RIGHT: u16 = 0x103;
 
 // ── Tab-completion word list ───────────────────────────────────────────────
 const COMMANDS: &[&str] = &[
-    "about", "cat", "clear", "cls", "echo",
+    "about", "cat", "cd", "clear", "cls", "echo",
     "help", "history", "ls", "mkdir", "pid",
     "ps", "pwd", "rm", "run", "sysinfo", "ticks", "touch",
     "uptime", "version", "write",
@@ -130,6 +130,7 @@ pub struct TerminalApp {
     input:           String,
     command_history: Vec<String>,
     history_cursor:  Option<usize>,
+    cwd:             String,
 }
 
 impl TerminalApp {
@@ -140,9 +141,76 @@ impl TerminalApp {
             input:           String::new(),
             command_history: Vec::new(),
             history_cursor:  None,
+            cwd:             String::from("/"),
         };
         t.print_banner();
         t
+    }
+
+    /// Resolve a path relative to cwd.  Handles `..` and leading `/`.
+    fn resolve_path(&self, input: &str) -> String {
+        let base = if input.starts_with('/') {
+            String::from(input)
+        } else if self.cwd == "/" {
+            format!("/{}", input)
+        } else {
+            format!("{}/{}", self.cwd.trim_end_matches('/'), input)
+        };
+
+        // Normalise `.` and `..` segments
+        let mut parts: Vec<&str> = Vec::new();
+        for seg in base.split('/') {
+            match seg {
+                "" | "." => {}
+                ".." => { parts.pop(); }
+                s    => parts.push(s),
+            }
+        }
+        if parts.is_empty() {
+            String::from("/")
+        } else {
+            format!("/{}", parts.join("/"))
+        }
+    }
+
+    /// Returns `true` when path lives on the FAT disk (`/disk` or `/disk/…`).
+    fn is_disk_path(path: &str) -> bool {
+        path == "/disk" || path.starts_with("/disk/")
+    }
+
+    /// Read a FAT file and push its lines into the history buffer.
+    fn cat_fat(&mut self, path: &str) {
+        // fat::open expects raw bytes; strip "/disk" prefix for the driver
+        let fat_path = if path.starts_with("/disk/") { &path[6..] }
+                       else if path == "/disk"        { "" }
+                       else                           { path };
+        let fat_path_bytes = fat_path.as_bytes();
+
+        let fd = unsafe { crate::kernel::fat::open(fat_path_bytes, 0) };
+        if fd < 0 {
+            self.push_line(&format!("cat: {}: no such file", path));
+            return;
+        }
+        let fd = fd as i32;
+
+        let mut all_data: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 512];
+        loop {
+            let n = unsafe { crate::kernel::fat::read_fd(fd, &mut chunk) };
+            if n <= 0 { break; }
+            all_data.extend_from_slice(&chunk[..n as usize]);
+            if all_data.len() > 65536 { self.push_line("(truncated at 64 KB)"); break; }
+        }
+        unsafe { crate::kernel::fat::close(fd); }
+
+        if all_data.is_empty() {
+            self.push_line("(empty file)");
+        } else {
+            match core::str::from_utf8(&all_data) {
+                Ok(text) => { for line in text.lines() { self.push_line(line); } }
+                Err(_)   => { self.push_line(&format!("(binary, {} bytes)", all_data.len())); }
+            }
+        }
     }
 
     pub fn window_id(&self) -> usize { self.window_id }
@@ -277,57 +345,110 @@ impl TerminalApp {
 
         match name {
             // ── Filesystem commands ──────────────────────────────────────────
+
+            "cd" => {
+                let target = parts.next().unwrap_or("/");
+                let resolved = self.resolve_path(target);
+
+                if resolved == "/" {
+                    self.cwd = String::from("/");
+                } else if Self::is_disk_path(&resolved) {
+                    // /disk itself — treat as a virtual directory rooted on FAT
+                    if crate::kernel::ata::is_present() {
+                        self.cwd = String::from("/disk/");
+                    } else {
+                        self.push_line("cd: /disk: no disk attached");
+                    }
+                } else {
+                    // RamFS directory check
+                    let found = unsafe {
+                        RAMFS.get().and_then(|fs| fs.list_dir(&resolved)).is_some()
+                    };
+                    if found {
+                        self.cwd = resolved;
+                    } else {
+                        self.push_line(&format!("cd: {}: no such directory", target));
+                    }
+                }
+            }
+
             "ls" => {
-                let path = parts.next().unwrap_or("/");
-                unsafe {
-                    match RAMFS.get() {
-                        Some(fs) => match fs.list_dir(path) {
-                            Some(entries) => {
-                                if entries.is_empty() {
-                                    self.push_line("(empty directory)");
-                                } else {
-                                    for (name, kind) in &entries {
-                                        let suffix = if *kind == NodeKind::Directory { "/" } else { "" };
-                                        self.push_line(&format!("  {}{}", name, suffix));
-                                    }
-                                    self.push_line(&format!("  ({} entries)", entries.len()));
-                                }
+                let arg = parts.next();
+                let path = match arg {
+                    Some(p) => self.resolve_path(p),
+                    None    => self.cwd.clone(),
+                };
+
+                if Self::is_disk_path(&path) {
+                    // List FAT root directory
+                    if !crate::kernel::ata::is_present() {
+                        self.push_line("ls: no disk attached");
+                    } else {
+                        let entries = unsafe { crate::kernel::fat::list_root() };
+                        if entries.is_empty() {
+                            self.push_line("(empty disk directory)");
+                        } else {
+                            for (name, is_dir) in &entries {
+                                let suffix = if *is_dir { "/" } else { "" };
+                                self.push_line(&format!("  {}{}", name, suffix));
                             }
-                            None => self.push_line("ls: no such directory"),
-                        },
-                        None => self.push_line("ls: filesystem not ready"),
+                            self.push_line(&format!("  ({} entries)", entries.len()));
+                        }
+                    }
+                } else {
+                    // RamFS directory listing
+                    unsafe {
+                        match RAMFS.get() {
+                            Some(fs) => match fs.list_dir(&path) {
+                                Some(entries) => {
+                                    if entries.is_empty() {
+                                        self.push_line("(empty directory)");
+                                    } else {
+                                        for (name, kind) in &entries {
+                                            let suffix = if *kind == NodeKind::Directory { "/" } else { "" };
+                                            self.push_line(&format!("  {}{}", name, suffix));
+                                        }
+                                        self.push_line(&format!("  ({} entries)", entries.len()));
+                                    }
+                                }
+                                None => self.push_line("ls: no such directory"),
+                            },
+                            None => self.push_line("ls: filesystem not ready"),
+                        }
                     }
                 }
             }
 
             "cat" => {
                 match parts.next() {
-                    None       => self.push_line("usage: cat <path>"),
-                    Some(path) => unsafe {
-                        match RAMFS.get() {
-                            Some(fs) => match fs.read_file(path) {
+                    None => self.push_line("usage: cat <path>"),
+                    Some(arg) => {
+                        let path = self.resolve_path(arg);
+
+                        if Self::is_disk_path(&path) {
+                            self.cat_fat(&path);
+                        } else {
+                            // RamFS read
+                            let result = unsafe {
+                                RAMFS.get().and_then(|fs| {
+                                    fs.read_file(&path).map(|d| d.to_vec())
+                                })
+                            };
+                            match result {
+                                None => self.push_line("cat: no such file"),
                                 Some(data) => {
                                     if data.is_empty() {
                                         self.push_line("(empty file)");
                                     } else {
-                                        match core::str::from_utf8(data) {
-                                            Ok(text) => {
-                                                for line in text.lines() {
-                                                    self.push_line(line);
-                                                }
-                                            }
-                                            Err(_) => {
-                                                self.push_line(&format!(
-                                                    "(binary, {} bytes)", data.len()));
-                                            }
+                                        match core::str::from_utf8(&data) {
+                                            Ok(text) => { for line in text.lines() { self.push_line(line); } }
+                                            Err(_)   => { self.push_line(&format!("(binary, {} bytes)", data.len())); }
                                         }
                                     }
                                 }
-                                None => self.push_line("cat: no such file"),
-                            },
-                            None => self.push_line("cat: filesystem not ready"),
+                            }
                         }
-                    },
+                    }
                 }
             }
 
@@ -407,18 +528,23 @@ impl TerminalApp {
                 }
             }
 
-            "pwd" => self.push_line("/"),
+            "pwd" => self.push_line(&self.cwd.clone()),
 
             // ── System commands ──────────────────────────────────────────────
             "help" => {
                 self.push_line("Filesystem:");
                 self.push_line("  ls [path]          - list directory");
+                self.push_line("  cd <path>          - change directory");
                 self.push_line("  cat <path>         - print file");
                 self.push_line("  mkdir <path>       - create directory");
                 self.push_line("  touch <path>       - create empty file");
                 self.push_line("  write <path> <txt> - write text to file");
                 self.push_line("  rm <path>          - remove file");
                 self.push_line("  pwd                - print working dir");
+                self.push_line("Disk (FAT16):");
+                self.push_line("  ls /disk/          - list disk contents");
+                self.push_line("  cd /disk/          - enter disk directory");
+                self.push_line("  cat /disk/FILE     - read file from disk");
                 self.push_line("System:");
                 self.push_line("  ticks   - timer ticks");
                 self.push_line("  uptime  - uptime in ms");
@@ -598,7 +724,7 @@ impl TerminalApp {
         }
 
         self.input = String::from(first);
-        if matches!(first, "echo" | "cat" | "mkdir" | "touch" | "write" | "rm" | "ls" | "run") {
+        if matches!(first, "echo" | "cat" | "cd" | "mkdir" | "touch" | "write" | "rm" | "ls" | "run") {
             self.input.push(' ');
         }
         true
