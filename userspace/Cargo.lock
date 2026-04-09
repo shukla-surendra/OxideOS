@@ -12,3 +12,10 @@ dependencies = [
 [[package]]
 name = "oxide-rt"
 version = "0.1.0"
+
+[[package]]
+name = "sh"
+version = "0.1.0"
+dependencies = [
+ "oxide-rt",
+]

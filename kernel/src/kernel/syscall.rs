@@ -94,8 +94,137 @@ impl SyscallRuntime for KernelRuntime {
 
     // ── Filesystem ──────────────────────────────────────────────────────────
 
+    fn current_pid(&self) -> u64 {
+        unsafe {
+            let sched = &raw const crate::kernel::scheduler::SCHED;
+            let idx   = crate::kernel::scheduler::CURRENT_TASK_IDX;
+            (*sched).tasks[idx].pid as u64
+        }
+    }
+
     fn exec_program(&mut self, path: &[u8]) -> i64 {
         self.exec_resolve(path)
+    }
+
+    fn fork_child(&mut self) -> i64 {
+        unsafe {
+            use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+            use crate::kernel::user_mode::CURRENT_SYSCALL_CTX;
+
+            let parent_idx = CURRENT_TASK_IDX;
+
+            // Capture the parent's context — child will resume at the same RIP
+            // (instruction after int 0x80) but with rax = 0.
+            let mut child_ctx = match CURRENT_SYSCALL_CTX {
+                Some(ctx) => ctx,
+                None      => return -1,
+            };
+            child_ctx.rax = 0; // child returns 0 from fork
+
+            match crate::kernel::scheduler::fork_task(parent_idx, child_ctx) {
+                Ok(child_pid) => child_pid as i64,
+                Err(_)        => -4, // ENOMEM
+            }
+        }
+    }
+
+    fn waitpid_impl(&mut self, pid: u64) -> i64 {
+        unsafe {
+            use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX, MAX_TASKS, TaskState};
+            use crate::kernel::user_mode::CURRENT_SYSCALL_CTX;
+
+            let target_pid = pid as u8;
+            let parent_idx = CURRENT_TASK_IDX;
+            let parent_pid = (*(&raw const SCHED)).tasks[parent_idx].pid;
+
+            // Check if the child is already dead.
+            let sched = &raw mut SCHED;
+            for i in 0..MAX_TASKS {
+                if (*sched).tasks[i].pid        == target_pid
+                && (*sched).tasks[i].parent_pid == parent_pid
+                {
+                    if let TaskState::Dead(code) = (*sched).tasks[i].state {
+                        (*sched).tasks[i].state   = TaskState::Empty;
+                        (*sched).tasks[i].pid     = 0;
+                        (*sched).tasks[i].parent_pid = 0;
+                        return code;
+                    }
+                    // Child exists but still alive — fall through to block.
+                    let ctx_opt = core::ptr::replace(&raw mut CURRENT_SYSCALL_CTX, None);
+                    if let Some(ctx) = ctx_opt {
+                        crate::kernel::scheduler::wait_for_pid(parent_idx, target_pid, ctx);
+                        // ^^^ diverges — resumes in ring-3 when child dies
+                    }
+                    return -6; // EAGAIN (only if context was not available)
+                }
+            }
+            -3 // EACCES — no such child of this process
+        }
+    }
+
+    fn brk_program(&mut self, new_end: u64) -> i64 {
+        unsafe {
+            use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+            use crate::kernel::paging_allocator as pa;
+
+            const USER_HEAP_BASE: u64 = 0x0100_0000; // 16 MB — well above code+stack
+            const PAGE_SIZE:      u64 = 4096;
+
+            let sched   = &raw mut SCHED;
+            let idx     = CURRENT_TASK_IDX;
+            let cr3     = (*sched).tasks[idx].cr3;
+            let cur_end = {
+                let h = (*sched).tasks[idx].heap_end;
+                if h == 0 { USER_HEAP_BASE } else { h }
+            };
+
+            // brk(0) — query current break.
+            if new_end == 0 {
+                return cur_end as i64;
+            }
+            // Refuse to shrink below heap base or to move backwards (keep it simple).
+            if new_end < USER_HEAP_BASE || new_end <= cur_end {
+                return cur_end as i64;
+            }
+
+            // Map new pages from cur_end up to new_end.
+            let first_page = (cur_end + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+            let last_page  = (new_end + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+            if last_page > first_page {
+                let npages = ((last_page - first_page) / PAGE_SIZE) as usize;
+                if pa::map_user_region_in(cr3, first_page, npages, true, false).is_err() {
+                    return -4; // ENOMEM
+                }
+            }
+
+            (*sched).tasks[idx].heap_end = new_end;
+            new_end as i64
+        }
+    }
+
+    fn kill_pid(&mut self, pid: u64) -> i64 {
+        let ok = unsafe { crate::kernel::scheduler::kill(pid as u8) };
+        if ok { 0 } else { -3 }
+    }
+
+    fn readdir_impl(&mut self, path: &[u8], buf: &mut [u8]) -> i64 {
+        let path_str = match core::str::from_utf8(path) {
+            Ok(s)  => s,
+            Err(_) => return -1,
+        };
+        // Try RamFS first; FAT16 directory listing not yet supported
+        match unsafe { crate::kernel::fs::ramfs::RAMFS.get() } {
+            Some(fs) => fs.read_dir_raw(path_str, buf),
+            None     => -2,
+        }
+    }
+
+    fn dup2_impl(&mut self, old_fd: i32, new_fd: i32) -> i64 {
+        unsafe {
+            let sched = &raw mut crate::kernel::scheduler::SCHED;
+            let idx   = crate::kernel::scheduler::CURRENT_TASK_IDX;
+            (*sched).tasks[idx].fd_table.dup2(old_fd, new_fd)
+        }
     }
 
     fn fs_open(&mut self, path: &[u8], flags: u32) -> i64 {

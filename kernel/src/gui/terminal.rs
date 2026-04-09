@@ -33,12 +33,16 @@ const EVENT_ARROW_UP:    u16 = 0x100;
 const EVENT_ARROW_DOWN:  u16 = 0x101;
 const EVENT_ARROW_LEFT:  u16 = 0x102;
 const EVENT_ARROW_RIGHT: u16 = 0x103;
+const EVENT_PAGE_UP:     u16 = 0x104;
+const EVENT_PAGE_DOWN:   u16 = 0x105;
+
+const SCROLL_AMOUNT: usize = 5;
 
 // ── Tab-completion word list ───────────────────────────────────────────────
 const COMMANDS: &[&str] = &[
     "about", "cat", "cd", "clear", "cls", "echo",
     "help", "history", "kill", "ls", "mkdir", "pid",
-    "ps", "pwd", "rm", "run", "sysinfo", "ticks", "touch",
+    "ps", "pwd", "rm", "run", "sh", "sysinfo", "ticks", "touch",
     "uptime", "version", "write",
 ];
 
@@ -107,10 +111,12 @@ unsafe fn terminal_key_callback(ch: u8) { unsafe { queue_event(ch as u16); } }
 
 unsafe fn terminal_arrow_callback(key: keyboard::ArrowKey) {
     let event = match key {
-        keyboard::ArrowKey::Up    => EVENT_ARROW_UP,
-        keyboard::ArrowKey::Down  => EVENT_ARROW_DOWN,
-        keyboard::ArrowKey::Left  => EVENT_ARROW_LEFT,
-        keyboard::ArrowKey::Right => EVENT_ARROW_RIGHT,
+        keyboard::ArrowKey::Up       => EVENT_ARROW_UP,
+        keyboard::ArrowKey::Down     => EVENT_ARROW_DOWN,
+        keyboard::ArrowKey::Left     => EVENT_ARROW_LEFT,
+        keyboard::ArrowKey::Right    => EVENT_ARROW_RIGHT,
+        keyboard::ArrowKey::PageUp   => EVENT_PAGE_UP,
+        keyboard::ArrowKey::PageDown => EVENT_PAGE_DOWN,
     };
     unsafe { queue_event(event); }
 }
@@ -125,23 +131,32 @@ pub unsafe fn install_input_hooks() {
 // ============================================================================
 
 pub struct TerminalApp {
-    window_id:       usize,
-    history:         Vec<String>,
-    input:           String,
-    command_history: Vec<String>,
-    history_cursor:  Option<usize>,
-    cwd:             String,
+    window_id:        usize,
+    history:          Vec<String>,
+    input:            String,
+    command_history:  Vec<String>,
+    history_cursor:   Option<usize>,
+    cwd:              String,
+    /// True while a user program owns the terminal (fork/exec).
+    passthrough_mode: bool,
+    /// PID of the currently-running foreground program, if any.
+    fg_pid:           Option<u8>,
+    /// Lines scrolled back from the bottom (0 = follow tail).
+    scroll_offset:    usize,
 }
 
 impl TerminalApp {
     pub fn new(window_id: usize) -> Self {
         let mut t = Self {
             window_id,
-            history:         Vec::new(),
-            input:           String::new(),
-            command_history: Vec::new(),
-            history_cursor:  None,
-            cwd:             String::from("/"),
+            history:          Vec::new(),
+            input:            String::new(),
+            command_history:  Vec::new(),
+            history_cursor:   None,
+            cwd:              String::from("/"),
+            passthrough_mode: false,
+            fg_pid:           None,
+            scroll_offset:    0,
         };
         t.print_banner();
         t
@@ -216,19 +231,63 @@ impl TerminalApp {
     pub fn window_id(&self) -> usize { self.window_id }
 
     /// Called by the main loop when a task exits.
-    /// Drains captured stdout and shows the exit status.
+    /// Drains any remaining stdout and shows the exit status.
     pub fn on_task_exit(&mut self, pid: u8, exit_code: i64) {
+        // Final drain of any buffered output
+        let mut lines: Vec<String> = Vec::new();
         crate::kernel::scheduler::output_drain_task(
             (pid as usize).saturating_sub(1),
-            |line| self.push_line(line),
+            |line| lines.push(String::from(line)),
         );
+        for line in &lines { self.push_line(line); }
+
+        if self.fg_pid == Some(pid) {
+            self.exit_passthrough();
+        }
         self.push_line(&format!("[pid {}] exited with code {}", pid, exit_code));
+    }
+
+    /// Drain stdout from all running tasks into history. Returns true if any
+    /// new output was flushed (so the caller can trigger a redraw).
+    pub fn poll_task_outputs(&mut self) -> bool {
+        let mut lines: Vec<String> = Vec::new();
+        for idx in 0..crate::kernel::scheduler::MAX_TASKS {
+            crate::kernel::scheduler::output_drain_task(idx, |line| {
+                lines.push(String::from(line));
+            });
+        }
+        let any = !lines.is_empty();
+        for line in &lines { self.push_line(line); }
+        any
+    }
+
+    fn enter_passthrough(&mut self, pid: u8) {
+        self.passthrough_mode = true;
+        self.fg_pid           = Some(pid);
+    }
+
+    fn exit_passthrough(&mut self) {
+        self.passthrough_mode = false;
+        self.fg_pid           = None;
     }
 
     pub fn process_pending_input(&mut self, focused: bool) -> bool {
         let mut changed = false;
         while let Some(event) = dequeue_event() {
-            if focused { changed |= self.handle_event(event); }
+            if self.passthrough_mode {
+                // Ctrl+C (ASCII 3) kills the foreground process
+                if event == 3 {
+                    if let Some(pid) = self.fg_pid {
+                        unsafe { crate::kernel::scheduler::kill(pid); }
+                        self.push_line(&format!("[pid {}] killed (Ctrl+C)", pid));
+                        self.exit_passthrough();
+                        changed = true;
+                    }
+                }
+                // All other keystrokes are already delivered to stdin ring by keyboard.rs
+            } else if focused {
+                changed |= self.handle_event(event);
+            }
         }
         changed
     }
@@ -261,31 +320,53 @@ impl TerminalApp {
         graphics.draw_rect(content_x, input_y, content_width, INPUT_HEIGHT,
                            if is_focused { 0xFF1A5F9A } else { 0xFF151E2E }, 1);
 
-        // History lines — colour-coded
-        let start_line = self.history.len().saturating_sub(visible_lines);
-        for (i, line) in self.history.iter().skip(start_line).enumerate() {
+        // History lines — colour-coded, with scroll support
+        let end_line   = self.history.len().saturating_sub(self.scroll_offset);
+        let start_line = end_line.saturating_sub(visible_lines);
+        for (i, line) in self.history.iter().skip(start_line).take(visible_lines).enumerate() {
             let color = line_color(line);
             fonts::draw_string(graphics, content_x + 6,
                                content_y + 2 + i as u64 * LINE_HEIGHT,
                                line, color);
         }
 
-        // Prompt: coloured ">" then input text
-        let prompt_sym = ">";
-        let input_display: alloc::string::String = if self.input.len() > max_chars.saturating_sub(3) {
-            alloc::string::String::from(&self.input[self.input.len().saturating_sub(max_chars.saturating_sub(3))..])
-        } else {
-            self.input.clone()
-        };
-        fonts::draw_string(graphics, content_x + 6, input_y + 8,
-                           prompt_sym, 0xFF00D060);           // bright green >
-        fonts::draw_string(graphics, content_x + 6 + CHAR_WIDTH * 2, input_y + 8,
-                           &input_display, 0xFFD8E8FF);       // light blue input text
+        // Scroll indicator when viewing history
+        if self.scroll_offset > 0 {
+            let above = self.history.len().saturating_sub(visible_lines + self.scroll_offset);
+            let msg = format!("^ {} lines above (PgDn to return)", above + self.scroll_offset);
+            fonts::draw_string(graphics, content_x + 6, content_y + 2, &msg, 0xFF888888);
+        }
 
-        if is_focused {
-            let cx = content_x + 6 + CHAR_WIDTH * 2 + input_display.len() as u64 * CHAR_WIDTH;
-            // Blinking-style cursor block
-            graphics.fill_rect(cx, input_y + 5, 2, LINE_HEIGHT - 2, 0xFF00AAFF);
+        if self.passthrough_mode {
+            // Show running indicator instead of normal input box
+            let indicator = match self.fg_pid {
+                Some(pid) => format!("  Running [pid {}]  (Ctrl+C to kill)", pid),
+                None      => String::from("  Running..."),
+            };
+            graphics.fill_rect(content_x, input_y, content_width, INPUT_HEIGHT, 0xFF0D1520);
+            graphics.fill_rect(content_x, input_y, content_width, 1, 0xFFFF8C00); // amber top border
+            fonts::draw_string(graphics, content_x + 6, input_y + 8,
+                               &indicator, 0xFFFFAA00);  // amber text
+        } else {
+            // Normal prompt + input + cursor
+            let prompt_sym = ">";
+            let input_display: alloc::string::String =
+                if self.input.len() > max_chars.saturating_sub(3) {
+                    alloc::string::String::from(
+                        &self.input[self.input.len().saturating_sub(max_chars.saturating_sub(3))..])
+                } else {
+                    self.input.clone()
+                };
+            fonts::draw_string(graphics, content_x + 6, input_y + 8,
+                               prompt_sym, 0xFF00D060);           // bright green >
+            fonts::draw_string(graphics, content_x + 6 + CHAR_WIDTH * 2, input_y + 8,
+                               &input_display, 0xFFD8E8FF);       // light blue input text
+
+            if is_focused {
+                let cx = content_x + 6 + CHAR_WIDTH * 2
+                       + input_display.len() as u64 * CHAR_WIDTH;
+                graphics.fill_rect(cx, input_y + 5, 2, LINE_HEIGHT - 2, 0xFF00AAFF);
+            }
         }
     }
 
@@ -293,11 +374,20 @@ impl TerminalApp {
 
     fn handle_event(&mut self, event: u16) -> bool {
         match event {
-            EVENT_ARROW_UP              => self.history_up(),
-            EVENT_ARROW_DOWN            => self.history_down(),
+            EVENT_ARROW_UP    => self.history_up(),
+            EVENT_ARROW_DOWN  => self.history_down(),
             EVENT_ARROW_LEFT |
-            EVENT_ARROW_RIGHT           => false,
-            _                           => self.handle_key(event as u8),
+            EVENT_ARROW_RIGHT => false,
+            EVENT_PAGE_UP     => {
+                let max_scroll = self.history.len().saturating_sub(1);
+                self.scroll_offset = (self.scroll_offset + SCROLL_AMOUNT).min(max_scroll);
+                true
+            }
+            EVENT_PAGE_DOWN   => {
+                self.scroll_offset = self.scroll_offset.saturating_sub(SCROLL_AMOUNT);
+                true
+            }
+            _                 => self.handle_key(event as u8),
         }
     }
 
@@ -663,6 +753,7 @@ impl TerminalApp {
                         TaskState::Ready        => "ready",
                         TaskState::Running      => "running",
                         TaskState::Sleeping(_)  => "sleeping",
+                        TaskState::Waiting(_)   => "waiting",
                         TaskState::Dead(_)      => "dead",
                     };
                     self.push_line(&format!("  [{}] {} ({})", info.pid, name, state_str));
@@ -761,13 +852,49 @@ impl TerminalApp {
 
     // ── Line buffer ───────────────────────────────────────────────────────────
 
-    fn push_line(&mut self, text: &str) {
+    /// Strip ANSI escape sequences (e.g. `\x1b[31m`) from `text`.
+    fn strip_ansi(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let bytes   = text.as_bytes();
+        let mut i   = 0;
+        while i < bytes.len() {
+            if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+                // Skip CSI sequence: ESC [ ... <letter>
+                i += 2;
+                while i < bytes.len() && !bytes[i].is_ascii_alphabetic() { i += 1; }
+                if i < bytes.len() { i += 1; }
+            } else {
+                out.push(bytes[i] as char);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    fn push_line(&mut self, raw: &str) {
         const MAX_CHARS: usize = 72;
+
+        // 1. Strip ANSI escape codes
+        let cleaned = Self::strip_ansi(raw);
+
+        // 2. Handle carriage return: keep only the last segment after \r
+        //    e.g. "Loading...\rDone!" → "Done!"
+        let text = if let Some(pos) = cleaned.rfind('\r') {
+            &cleaned[pos + 1..]
+        } else {
+            cleaned.as_str()
+        };
+
+        // 3. Auto-scroll to bottom on new output
+        self.scroll_offset = 0;
+
         if text.is_empty() {
             self.history.push(String::new());
             self.trim_history();
             return;
         }
+
+        // 4. Word-wrap at MAX_CHARS
         let bytes = text.as_bytes();
         let mut start = 0;
         while start < bytes.len() {

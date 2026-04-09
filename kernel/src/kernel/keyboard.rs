@@ -170,6 +170,8 @@ const SC_UP: u8           = 0x48;
 const SC_DOWN: u8         = 0x50;
 const SC_LEFT: u8         = 0x4B;
 const SC_RIGHT: u8        = 0x4D;
+const SC_PAGE_UP: u8      = 0x49;
+const SC_PAGE_DOWN: u8    = 0x51;
 
 // ============================================================================
 // CALLBACK SYSTEM
@@ -183,6 +185,8 @@ pub enum ArrowKey {
     Down,
     Left,
     Right,
+    PageUp,
+    PageDown,
 }
 
 static mut KEY_CALLBACK: Option<KeyCallback> = None;
@@ -413,6 +417,12 @@ unsafe fn handle_key_press(scancode: u8, is_extended: bool) {
                             unsafe { SERIAL_PORT.write_str("[RIGHT]\n") };
                         }
                         callback(ArrowKey::Right);
+                    }
+                    SC_PAGE_UP => {
+                        callback(ArrowKey::PageUp);
+                    }
+                    SC_PAGE_DOWN => {
+                        callback(ArrowKey::PageDown);
                     }
                     _ => {}
                 }

@@ -32,6 +32,9 @@ pub enum Syscall {
     Sleep         = 41,
     GetSystemInfo = 50,
     Pipe          = 60,
+    ReadDir       = 70,
+    Dup2          = 81,
+    Kill          = 91,
     Invalid       = u64::MAX,
 }
 
@@ -56,6 +59,9 @@ impl Syscall {
             Self::Sleep         => "sleep",
             Self::GetSystemInfo => "get_system_info",
             Self::Pipe          => "pipe",
+            Self::ReadDir       => "readdir",
+            Self::Dup2          => "dup2",
+            Self::Kill          => "kill",
             Self::Invalid       => "invalid",
         }
     }
@@ -82,6 +88,9 @@ impl From<u64> for Syscall {
             41 => Self::Sleep,
             50 => Self::GetSystemInfo,
             60 => Self::Pipe,
+            70 => Self::ReadDir,
+            81 => Self::Dup2,
+            91 => Self::Kill,
             _  => Self::Invalid,
         }
     }
@@ -159,11 +168,32 @@ pub trait SyscallRuntime {
     /// Pop one byte from the stdin ring. Returns EAGAIN (-6) if empty.
     fn get_char(&mut self) -> i64 { EAGAIN }
 
-    // ── Process image replacement ──────────────────────────────────────────
+    // ── Process model ──────────────────────────────────────────────────────
     /// Replace the current process image with the ELF at `path`.
     /// On success this never returns (jumps directly into the new image).
     /// On failure it returns a negative error code.
     fn exec_program(&mut self, _path: &[u8]) -> i64 { ENOSYS }
+
+    /// Fork the current process.  Returns child PID to parent, 0 to child.
+    fn fork_child(&mut self) -> i64 { ENOSYS }
+
+    /// Block until the child with `pid` exits; return its exit code.
+    /// May never return if it blocks (calls exit_to_kernel internally).
+    fn waitpid_impl(&mut self, _pid: u64) -> i64 { ENOSYS }
+
+    /// Set/query the userspace heap break.  `new_end == 0` returns current end.
+    fn brk_program(&mut self, _new_end: u64) -> i64 { ENOSYS }
+
+    /// Terminate the process with the given PID.  Returns 0 on success.
+    fn kill_pid(&mut self, _pid: u64) -> i64 { ENOSYS }
+
+    /// Fill `buf` with newline-separated directory entries under `path`.
+    /// Each entry is `<name>\n` for files, `<name>/\n` for directories.
+    /// Returns bytes written, or negative on error.
+    fn readdir_impl(&mut self, _path: &[u8], _buf: &mut [u8]) -> i64 { ENOSYS }
+
+    /// Duplicate `old_fd` to `new_fd`.  Returns `new_fd` on success.
+    fn dup2_impl(&mut self, _old_fd: i32, _new_fd: i32) -> i64 { ENOSYS }
 
     // ── Filesystem hooks (default: not supported) ──────────────────────────
     /// Open a file; `path` is raw bytes from user space.
@@ -204,13 +234,13 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
 
     match syscall {
         Syscall::Exit          => runtime.exit(request.arg1 as i32),
-        Syscall::Fork          => SyscallResult::err(ENOSYS),
-        Syscall::Wait          => SyscallResult::err(ENOSYS),
+        Syscall::Fork          => sys_fork(runtime),
+        Syscall::Wait          => sys_waitpid(runtime, request.arg1),
         Syscall::Exec          => unsafe { sys_exec(runtime, request.arg1, request.arg2) },
         Syscall::GetPid        => SyscallResult::ok(runtime.current_pid() as i64),
         Syscall::Mmap          => SyscallResult::err(ENOSYS),
         Syscall::Munmap        => SyscallResult::err(ENOSYS),
-        Syscall::Brk           => SyscallResult::err(ENOSYS),
+        Syscall::Brk           => sys_brk(runtime, request.arg1),
         Syscall::Read          => unsafe { sys_read(runtime, request.arg1 as i32,
                                                     request.arg2, request.arg3) },
         Syscall::Write         => unsafe { sys_write(runtime, request.arg1 as i32,
@@ -227,6 +257,10 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
         Syscall::Sleep         => sys_sleep(runtime, request.arg1),
         Syscall::GetSystemInfo => unsafe { sys_get_system_info(runtime, request.arg1) },
         Syscall::Pipe          => unsafe { sys_pipe(runtime, request.arg1, request.arg2) },
+        Syscall::ReadDir       => unsafe { sys_readdir(runtime, request.arg1, request.arg2,
+                                                        request.arg3, request.arg4) },
+        Syscall::Dup2          => sys_dup2(runtime, request.arg1 as i32, request.arg2 as i32),
+        Syscall::Kill          => sys_kill(runtime, request.arg1),
         Syscall::Invalid       => SyscallResult::err(ENOSYS),
     }
 }
@@ -344,5 +378,43 @@ unsafe fn sys_pipe<R: SyscallRuntime>(
     if let Err(code) = validate_user_range(read_fd_ptr, 4) { return SyscallResult::err(code); }
     if let Err(code) = validate_user_range(write_fd_ptr, 4) { return SyscallResult::err(code); }
     let r = runtime.pipe_alloc(read_fd_ptr, write_fd_ptr);
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+fn sys_fork<R: SyscallRuntime>(runtime: &mut R) -> SyscallResult {
+    let r = runtime.fork_child();
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+fn sys_waitpid<R: SyscallRuntime>(runtime: &mut R, pid: u64) -> SyscallResult {
+    // waitpid_impl either returns immediately (child already dead) or
+    // diverges via exit_to_kernel (blocks the calling task).
+    let r = runtime.waitpid_impl(pid);
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+fn sys_brk<R: SyscallRuntime>(runtime: &mut R, new_end: u64) -> SyscallResult {
+    let r = runtime.brk_program(new_end);
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+fn sys_kill<R: SyscallRuntime>(runtime: &mut R, pid: u64) -> SyscallResult {
+    let r = runtime.kill_pid(pid);
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+unsafe fn sys_readdir<R: SyscallRuntime>(
+    runtime: &mut R, path_ptr: u64, path_len: u64, buf_ptr: u64, buf_len: u64,
+) -> SyscallResult {
+    if let Err(e) = validate_user_range(path_ptr, path_len) { return SyscallResult::err(e); }
+    if let Err(e) = validate_user_range(buf_ptr,  buf_len)  { return SyscallResult::err(e); }
+    let path = unsafe { slice::from_raw_parts(path_ptr as *const u8, path_len as usize) };
+    let buf  = unsafe { slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize) };
+    let r = runtime.readdir_impl(path, buf);
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+fn sys_dup2<R: SyscallRuntime>(runtime: &mut R, old_fd: i32, new_fd: i32) -> SyscallResult {
+    let r = runtime.dup2_impl(old_fd, new_fd);
     if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
 }

@@ -611,6 +611,82 @@ pub unsafe fn free_user_page_table(cr3_phys: u64) {
     fa.free_frame(cr3_phys); // free the L4 frame
 }
 
+/// Make a full physical copy of the user-space half (L4 indices 0–255) of the
+/// page table at `src_cr3`.  Every mapped leaf frame is duplicated into a
+/// freshly-allocated frame; new L3/L2/L1 table frames are allocated as well.
+/// The kernel half (indices 256–511) is copied as shared pointers (same as
+/// `create_user_page_table`).  Returns the new L4 physical address, or `None`
+/// if physical memory is exhausted.
+pub unsafe fn copy_user_page_table(src_cr3: u64) -> Option<u64> {
+    let inner = unsafe { &mut *ALLOCATOR.inner.get() };
+    if !inner.initialized.load(Ordering::Relaxed) { return None; }
+    let hho        = inner.page_table_manager.as_ref()?.higher_half_offset;
+    let kernel_l4  = inner.page_table_manager.as_ref()?.l4_table_phys;
+    let fa         = &mut inner.frame_allocator;
+
+    let dst_l4_pa  = fa.allocate_frame()?;
+    let src_l4     = (src_cr3   + hho) as *const u64;
+    let dst_l4     = (dst_l4_pa + hho) as *mut   u64;
+    let kern_l4    = (kernel_l4 + hho) as *const u64;
+
+    unsafe {
+        for i in 0..256usize  { *dst_l4.add(i) = 0; }
+        for i in 256..512usize { *dst_l4.add(i) = *kern_l4.add(i); }
+    }
+
+    for l4i in 0..256usize {
+        let l4e = unsafe { *src_l4.add(l4i) };
+        if l4e & 1 == 0 { continue; }
+        let src_l3 = (l4e & 0x000F_FFFF_FFFF_F000 + hho) as *const u64;
+        let dst_l3_pa = fa.allocate_frame()?;
+        let dst_l3    = (dst_l3_pa + hho) as *mut u64;
+        unsafe {
+            core::ptr::write_bytes(dst_l3 as *mut u8, 0, 4096);
+            *dst_l4.add(l4i) = dst_l3_pa | (l4e & 0xFFF);
+        }
+
+        for l3i in 0..512usize {
+            let l3e = unsafe { *src_l3.add(l3i) };
+            if l3e & 1 == 0 { continue; }
+            let src_l2 = ((l3e & 0x000F_FFFF_FFFF_F000) + hho) as *const u64;
+            let dst_l2_pa = fa.allocate_frame()?;
+            let dst_l2    = (dst_l2_pa + hho) as *mut u64;
+            unsafe {
+                core::ptr::write_bytes(dst_l2 as *mut u8, 0, 4096);
+                *dst_l3.add(l3i) = dst_l2_pa | (l3e & 0xFFF);
+            }
+
+            for l2i in 0..512usize {
+                let l2e = unsafe { *src_l2.add(l2i) };
+                if l2e & 1 == 0 { continue; }
+                let src_l1 = ((l2e & 0x000F_FFFF_FFFF_F000) + hho) as *const u64;
+                let dst_l1_pa = fa.allocate_frame()?;
+                let dst_l1    = (dst_l1_pa + hho) as *mut u64;
+                unsafe {
+                    core::ptr::write_bytes(dst_l1 as *mut u8, 0, 4096);
+                    *dst_l2.add(l2i) = dst_l1_pa | (l2e & 0xFFF);
+                }
+
+                for l1i in 0..512usize {
+                    let l1e = unsafe { *src_l1.add(l1i) };
+                    if l1e & 1 == 0 { continue; }
+                    let src_frame = (l1e & 0x000F_FFFF_FFFF_F000) + hho;
+                    let dst_frame_pa = fa.allocate_frame()?;
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            src_frame as *const u8,
+                            (dst_frame_pa + hho) as *mut u8,
+                            4096,
+                        );
+                        *dst_l1.add(l1i) = dst_frame_pa | (l1e & 0xFFF);
+                    }
+                }
+            }
+        }
+    }
+    Some(dst_l4_pa)
+}
+
 /// Copy bytes into virtual address `dest` inside the page table `cr3_phys`.
 ///
 /// Temporarily switches the CPU's CR3 to `cr3_phys`, performs the copy, then

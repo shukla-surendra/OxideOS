@@ -38,7 +38,8 @@ pub enum TaskState {
     Ready,
     Running,
     Sleeping(u64), // wake at this tick
-    Dead(i64),     // exit code
+    Waiting(u8),   // waiting for child with this PID to die
+    Dead(i64),     // exit code (pages already freed)
 }
 
 pub struct Task {
@@ -50,6 +51,10 @@ pub struct Task {
     pub entry:      u64,
     pub cr3:        u64,
     pub pid:        u8,
+    /// PID of the parent that fork'd this task; 0 = no parent.
+    pub parent_pid: u8,
+    /// Current userspace heap break (virtual address).  0 = unset (use USER_HEAP_BASE).
+    pub heap_end:   u64,
     pub output:     [u8; TASK_OUTPUT_CAP],
     pub output_len: usize,
     /// Per-process open file-descriptor table.
@@ -68,6 +73,8 @@ impl Task {
             entry:      USER_CODE_ADDR,
             cr3:        0,
             pid:        0,
+            parent_pid: 0,
+            heap_end:   0,
             output:     [0u8; TASK_OUTPUT_CAP],
             output_len: 0,
             fd_table:   FdTable::new(),
@@ -213,6 +220,8 @@ pub unsafe fn spawn(code: &[u8], name: &str) -> Result<u8, &'static str> {
     (*task).entry      = entry;
     (*task).cr3        = cr3;
     (*task).pid        = pid;
+    (*task).parent_pid = 0;
+    (*task).heap_end   = 0;
     (*task).output_len = 0;
     (*task).fd_table   = FdTable::new();
 
@@ -250,6 +259,24 @@ pub unsafe fn tick() -> Option<(u8, i64)> {
     for i in 0..MAX_TASKS {
         if let TaskState::Sleeping(wake) = (*sched).tasks[i].state {
             if now >= wake { (*sched).tasks[i].state = TaskState::Ready; }
+        }
+    }
+
+    // Wake tasks waiting for a child that has died, and reap the child.
+    for i in 0..MAX_TASKS {
+        if let TaskState::Waiting(child_pid) = (*sched).tasks[i].state {
+            for j in 0..MAX_TASKS {
+                if (*sched).tasks[j].pid == child_pid {
+                    if let TaskState::Dead(code) = (*sched).tasks[j].state {
+                        (*sched).tasks[i].ctx.rax = code as u64;
+                        (*sched).tasks[i].state   = TaskState::Ready;
+                        (*sched).tasks[j].state   = TaskState::Empty;
+                        (*sched).tasks[j].pid     = 0;
+                        (*sched).tasks[j].parent_pid = 0;
+                    }
+                    break;
+                }
+            }
         }
     }
 
@@ -291,6 +318,14 @@ pub unsafe fn tick() -> Option<(u8, i64)> {
         code => {
             let pid = (*sched).tasks[idx].pid;
             (*sched).tasks[idx].state = TaskState::Dead(code);
+
+            // Free user-space physical frames immediately — waitpid only needs the
+            // exit code which is stored in the Dead variant.
+            let cr3 = (*sched).tasks[idx].cr3;
+            if cr3 != 0 {
+                paging_allocator::free_user_page_table(cr3);
+                (*sched).tasks[idx].cr3 = 0;
+            }
             unsafe {
                 SERIAL_PORT.write_str("scheduler: pid=");
                 SERIAL_PORT.write_decimal(pid as u32);
@@ -344,6 +379,82 @@ pub unsafe fn kill(pid: u8) -> bool {
     false
 }
 
+/// Create a child process that is a full copy of the task at `parent_idx`.
+///
+/// `child_ctx` is the register snapshot to use for the child (caller sets
+/// `rax = 0` so the child returns 0 from `fork`).  Returns the child's PID
+/// on success.
+pub unsafe fn fork_task(
+    parent_idx: usize,
+    child_ctx:  crate::kernel::user_mode::TaskContext,
+) -> Result<u8, &'static str> {
+    let sched = &raw mut SCHED;
+
+    // Find a free slot (any slot other than the parent's).
+    let child_slot = (0..MAX_TASKS)
+        .find(|&i| i != parent_idx
+            && matches!((*sched).tasks[i].state, TaskState::Empty | TaskState::Dead(_)))
+        .ok_or("max tasks reached")?;
+
+    let parent_cr3 = (*sched).tasks[parent_idx].cr3;
+
+    // Deep-copy the parent's address space.
+    let child_cr3 = unsafe { paging_allocator::copy_user_page_table(parent_cr3) }
+        .ok_or("OOM: fork page table")?;
+
+    let child_pid  = (child_slot + 1) as u8;
+    let parent_pid = (*sched).tasks[parent_idx].pid;
+
+    // Copy all task fields from parent; override the child-specific ones.
+    let parent_fd    = (*sched).tasks[parent_idx].fd_table;
+    let parent_heap  = (*sched).tasks[parent_idx].heap_end;
+    let parent_entry = (*sched).tasks[parent_idx].entry;
+    let parent_name  = (*sched).tasks[parent_idx].name;
+    let parent_nlen  = (*sched).tasks[parent_idx].name_len;
+
+    let child = &raw mut (*sched).tasks[child_slot];
+    (*child).state      = TaskState::Ready;
+    (*child).ctx        = child_ctx;
+    (*child).first_run  = false;   // resume via context restore
+    (*child).entry      = parent_entry;
+    (*child).cr3        = child_cr3;
+    (*child).pid        = child_pid;
+    (*child).parent_pid = parent_pid;
+    (*child).heap_end   = parent_heap;
+    (*child).output_len = 0;
+    (*child).fd_table   = parent_fd;
+    (*child).name       = parent_name;
+    (*child).name_len   = parent_nlen;
+
+    unsafe {
+        SERIAL_PORT.write_str("scheduler: fork parent=");
+        SERIAL_PORT.write_decimal(parent_pid as u32);
+        SERIAL_PORT.write_str(" child=");
+        SERIAL_PORT.write_decimal(child_pid as u32);
+        SERIAL_PORT.write_str(" slot=");
+        SERIAL_PORT.write_decimal(child_slot as u32);
+        SERIAL_PORT.write_str("\n");
+    }
+
+    Ok(child_pid)
+}
+
+/// Block the task at `parent_idx` until the child with `child_pid` dies.
+///
+/// Sets the parent's state to `Waiting(child_pid)`, saves its context, then
+/// jumps back to the scheduler via `exit_to_kernel(EXIT_SLEEPING)`.
+pub unsafe fn wait_for_pid(
+    parent_idx: usize,
+    child_pid:  u8,
+    mut ctx:    crate::kernel::user_mode::TaskContext,
+) -> ! {
+    ctx.rax = 0; // will be overwritten with the exit code on wakeup
+    let sched = &raw mut SCHED;
+    (*sched).tasks[parent_idx].ctx   = ctx;
+    (*sched).tasks[parent_idx].state = TaskState::Waiting(child_pid);
+    unsafe { crate::kernel::user_mode::exit_to_kernel(EXIT_SLEEPING) }
+}
+
 /// Returns `true` when at least one non-finished task exists.
 pub fn has_task() -> bool {
     unsafe {
@@ -353,11 +464,12 @@ pub fn has_task() -> bool {
     }
 }
 
-/// Count of tasks currently Ready, Running, or Sleeping.
+/// Count of tasks currently Ready, Running, Sleeping, or Waiting.
 pub fn task_count() -> usize {
     unsafe {
         let sched = &raw const SCHED;
         (0..MAX_TASKS).filter(|&i| matches!((*sched).tasks[i].state,
-            TaskState::Ready | TaskState::Running | TaskState::Sleeping(_))).count()
+            TaskState::Ready | TaskState::Running
+            | TaskState::Sleeping(_) | TaskState::Waiting(_))).count()
     }
 }

@@ -44,6 +44,10 @@ pub static FILETEST: &[u8] =
 pub static HELLO_RUST: &[u8] =
     include_bytes!("../../../userspace/bin/hello_rust.elf");
 
+/// sh — minimal userspace shell (fork/exec/waitpid, built-in ls/cat/echo).
+pub static SH: &[u8] =
+    include_bytes!("../../../userspace/bin/sh.elf");
+
 /// Look up a built-in program by name.
 pub fn find(name: &str) -> Option<&'static [u8]> {
     match name {
@@ -57,6 +61,7 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
         "spinner"   => Some(SPINNER),
         "filetest"   => Some(FILETEST),
         "hello_rust" => Some(HELLO_RUST),
+        "sh"         => Some(SH),
         _            => None,
     }
 }
@@ -65,5 +70,5 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
 pub const NAMES: &[&str] = &[
     "hello", "counter", "sysinfo", "input",
     "fib", "primes", "countdown", "spinner", "filetest",
-    "hello_rust",
+    "hello_rust", "sh",
 ];

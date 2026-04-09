@@ -166,6 +166,19 @@ impl FdTable {
         buf.len() as i64
     }
 
+    /// Duplicate `old_fd` to `new_fd`.  Returns `new_fd` or negative error.
+    pub fn dup2(&mut self, old_fd: i32, new_fd: i32) -> i64 {
+        if old_fd < 3 || old_fd as usize >= MAX_FD { return -5; } // EBADF
+        if new_fd < 3 || new_fd as usize >= MAX_FD { return -5; }
+        match self.entries[old_fd as usize] {
+            None    => -5, // EBADF
+            Some(e) => {
+                self.entries[new_fd as usize] = Some(e);
+                new_fd as i64
+            }
+        }
+    }
+
     /// After `RamFs::remove_file` removes the inode at `removed_idx`, fix up
     /// all open FD entries so that indices above the gap are decremented by 1.
     /// FDs that pointed directly to the removed inode are closed (set to None).
@@ -266,6 +279,28 @@ impl RamFs {
             data:       Vec::new(),
         });
         Ok(idx)
+    }
+
+    /// Write directory entries for `path` into `buf` as `<name>\n` (file)
+    /// or `<name>/\n` (directory).  Returns bytes written, or negative error.
+    pub fn read_dir_raw(&self, path: &str, buf: &mut [u8]) -> i64 {
+        let dir_idx = match self.resolve(path) {
+            Some(i) => i,
+            None    => return -7, // ENOENT
+        };
+        if self.inodes[dir_idx].kind != NodeKind::Directory { return -1; } // EINVAL
+        let mut pos = 0usize;
+        for node in self.inodes.iter().filter(|n| n.parent_idx == dir_idx) {
+            let name  = node.name.as_bytes();
+            let trail = if node.kind == NodeKind::Directory { b"/" as &[u8] } else { b"" };
+            let need  = name.len() + trail.len() + 1; // +1 for '\n'
+            if pos + need > buf.len() { break; }
+            buf[pos..pos + name.len()].copy_from_slice(name);
+            pos += name.len();
+            if !trail.is_empty() { buf[pos] = b'/'; pos += 1; }
+            buf[pos] = b'\n'; pos += 1;
+        }
+        pos as i64
     }
 
     /// List a directory.  Returns `None` if path does not exist or is a file.

@@ -368,6 +368,39 @@ pub unsafe fn init_mouse_system(screen_width: u64, screen_height: u64) {
 /// Handle CPU exceptions with detailed 64-bit information
 fn handle_cpu_exception_64(int_no: u64, err_code: u64, frame: *mut InterruptFrame) -> ! {
     unsafe {
+        // ── User-space exception: kill the offending task, resume scheduler ──
+        if (*frame).cs & 3 == 3 && crate::kernel::user_mode::is_active() {
+            use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+
+            let fault_addr: u64 = if int_no == 14 {
+                let a; asm!("mov {}, cr2", out(reg) a, options(nomem, nostack)); a
+            } else { 0 };
+
+            let sched = &raw mut SCHED;
+            let idx   = CURRENT_TASK_IDX;
+            let pid   = (*sched).tasks[idx].pid;
+
+            SERIAL_PORT.write_str("user fault #");
+            SERIAL_PORT.write_decimal(int_no as u32);
+            SERIAL_PORT.write_str(" pid=");
+            SERIAL_PORT.write_decimal(pid as u32);
+            if fault_addr != 0 {
+                SERIAL_PORT.write_str(" cr2=0x");
+                SERIAL_PORT.write_hex((fault_addr >> 32) as u32);
+                SERIAL_PORT.write_hex(fault_addr as u32);
+            }
+            SERIAL_PORT.write_str(" — killed\n");
+
+            // exit_to_kernel(-signal) triggers the normal Dead path in tick()
+            let sig: i64 = match int_no {
+                0 | 16 | 19 => -8,  // SIGFPE
+                11 | 12     => -11, // SIGSEGV (stack fault)
+                _           => -11, // SIGSEGV (default)
+            };
+            crate::kernel::user_mode::CURRENT_SYSCALL_CTX = None;
+            crate::kernel::user_mode::exit_to_kernel(sig);
+        }
+
         SERIAL_PORT.write_str("\n=== 64-BIT CPU EXCEPTION ===\n");
         SERIAL_PORT.write_str("Exception #");
         SERIAL_PORT.write_decimal(int_no as u32);

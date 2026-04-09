@@ -82,6 +82,23 @@ pub mod raw {
     }
 
     #[inline(always)]
+    pub unsafe fn syscall4(nr: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> i64 {
+        let ret: i64;
+        unsafe {
+            core::arch::asm!(
+                "int 0x80",
+                inlateout("rax") nr => ret,
+                in("rdi") a1,
+                in("rsi") a2,
+                in("rdx") a3,
+                in("r10") a4,
+                options(nostack)
+            );
+        }
+        ret
+    }
+
+    #[inline(always)]
     pub unsafe fn syscall3(nr: u64, a1: u64, a2: u64, a3: u64) -> i64 {
         let ret: i64;
         unsafe {
@@ -101,6 +118,11 @@ pub mod raw {
 // ── Syscall numbers ──────────────────────────────────────────────────────────
 pub mod sys {
     pub const EXIT:    u64 = 0;
+    pub const FORK:    u64 = 1;
+    pub const WAIT:    u64 = 2;
+    pub const GETPID:  u64 = 3;
+    pub const EXEC:    u64 = 5;
+    pub const BRK:     u64 = 11;
     pub const READ:    u64 = 20;
     pub const WRITE:   u64 = 21;
     pub const OPEN:    u64 = 22;
@@ -109,6 +131,9 @@ pub mod sys {
     pub const GETCHAR: u64 = 31;
     pub const GETTIME: u64 = 40;
     pub const SLEEP:   u64 = 41;
+    pub const READDIR: u64 = 70;
+    pub const DUP2:    u64 = 81;
+    pub const KILL:    u64 = 91;
 }
 
 // ── High-level wrappers ──────────────────────────────────────────────────────
@@ -149,6 +174,63 @@ pub fn getchar() -> Option<u8> {
 #[inline]
 pub fn get_time() -> u64 {
     unsafe { raw::syscall0(sys::GETTIME) as u64 }
+}
+
+/// Return the current process PID.
+#[inline]
+pub fn getpid() -> u32 {
+    unsafe { raw::syscall0(sys::GETPID) as u32 }
+}
+
+/// Fork the current process.  Returns child PID to parent, 0 to child.
+/// Returns negative on error.
+#[inline]
+pub fn fork() -> i64 {
+    unsafe { raw::syscall0(sys::FORK) }
+}
+
+/// Wait for child `pid` to exit.  Returns child's exit code.
+#[inline]
+pub fn waitpid(pid: u32) -> i64 {
+    unsafe { raw::syscall1(sys::WAIT, pid as u64) }
+}
+
+/// Set the heap break to `new_end`.  Pass 0 to query current break.
+/// Returns new (or current) break on success, negative on error.
+#[inline]
+pub fn brk(new_end: u64) -> i64 {
+    unsafe { raw::syscall1(sys::BRK, new_end) }
+}
+
+/// Send SIGKILL to `pid`.  Returns 0 on success.
+#[inline]
+pub fn kill(pid: u32) -> i64 {
+    unsafe { raw::syscall1(sys::KILL, pid as u64) }
+}
+
+/// Duplicate `old_fd` to `new_fd`.  Returns `new_fd` on success.
+#[inline]
+pub fn dup2(old_fd: i32, new_fd: i32) -> i64 {
+    unsafe { raw::syscall2(sys::DUP2, old_fd as u64, new_fd as u64) }
+}
+
+/// Read directory entries from `path` into `buf`.
+/// Each entry is `<name>\n` for files, `<name>/\n` for directories.
+/// Returns bytes written, or negative on error.
+#[inline]
+pub fn readdir(path: &str, buf: &mut [u8]) -> i64 {
+    unsafe {
+        raw::syscall4(sys::READDIR,
+            path.as_ptr() as u64, path.len() as u64,
+            buf.as_mut_ptr() as u64, buf.len() as u64)
+    }
+}
+
+/// Execute the program at `path`, replacing the current process image.
+/// On success this never returns.
+#[inline]
+pub fn exec(path: &str) -> i64 {
+    unsafe { raw::syscall2(sys::EXEC, path.as_ptr() as u64, path.len() as u64) }
 }
 
 /// Open a file. `flags`: 1 = read, 2 = write/create.

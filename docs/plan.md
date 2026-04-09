@@ -67,17 +67,17 @@ This is the single most important gap — everything else depends on real proces
   Next scheduler tick calls `launch_at(new_entry, stack, new_cr3)`.
 - Supports: built-in registry (`hello`, `counter`, …), `/path` in RamFS, `/disk/` on FAT16.
 
-### 1.2 `fork` syscall
+### 1.2 `fork` syscall ✅ DONE
 
-- Add `Fork = 1` to the syscall table.
-- Allocate a new task slot; call `create_user_page_table()` for the child.
-- Copy-on-write is complex — for a first pass, do a **full copy**: walk the parent's
-  user page table (entries 0–255 of L4), allocate fresh physical frames for each mapped
-  page, and copy the content. Stack and code pages are both duplicated.
-- Child inherits open FD table (copy the RamFS FD array).
-- Return 0 to child, child PID to parent.
-- Prerequisite: per-task FD table (currently RamFS uses a global FD table — move it
-  into `Task`).
+- `Fork = 1` wired in syscall table and dispatch.
+- `paging_allocator::copy_user_page_table(src_cr3)` added: walks L4 indices 0–255,
+  deep-copies every L3/L2/L1 table frame and every leaf data frame into fresh physical
+  frames; kernel half (256–511) kept as shared pointers.
+- `scheduler::fork_task(parent_idx, child_ctx)`: finds free slot, copies cr3/FD table/
+  heap_end/name from parent, sets child rax=0 so it returns 0 from fork.
+- `KernelRuntime::fork_child()`: reads `CURRENT_SYSCALL_CTX`, sets rax=0 for child,
+  calls `fork_task`; parent returns child PID normally via SyscallResult.
+- `Task` extended: `parent_pid: u8`, `heap_end: u64`.
 
 ### 1.3 Per-task FD table ✅ DONE
 
@@ -89,19 +89,23 @@ This is the single most important gap — everything else depends on real proces
 - `FdTable::on_inode_removed(idx)` fixup helper added for callers of `remove_file`.
 - Stdin/stdout/stderr (FDs 0/1/2) are reserved; real files start at FD 3.
 
-### 1.4 `waitpid` syscall
+### 1.4 `waitpid` syscall ✅ DONE
 
-- Add `Waitpid = 2`.
-- Parent blocks (state → `Sleeping`) until child state becomes `Dead`.
-- On wakeup, return child's exit code; mark child slot `Empty`.
-- Implement as a poll loop in `tick()`: each tick check if the waited-on child is Dead.
+- `Wait = 2` wired in dispatch.
+- New `TaskState::Waiting(child_pid)` variant.
+- `scheduler::wait_for_pid(parent_idx, child_pid, ctx)`: saves parent ctx, sets state
+  to `Waiting(child_pid)`, calls `exit_to_kernel(EXIT_SLEEPING)` — diverges back to tick.
+- In `tick()`: each tick scans for `Waiting` tasks whose child is `Dead`; when found,
+  writes exit code into `ctx.rax`, sets parent Ready, reaps child (Empty).
+- `KernelRuntime::waitpid_impl`: checks if child already Dead (immediate return), else
+  consumes `CURRENT_SYSCALL_CTX` and calls `wait_for_pid`.
 
-### 1.5 Exit cleanup
+### 1.5 Exit cleanup ✅ DONE
 
-- When a task exits, free its user-space physical frames (walk L4 indices 0–255,
-  free every present leaf frame, then free intermediate table frames).
-- Free the CR3 frame itself.
-- This prevents physical memory exhaustion on long-running systems.
+- In `tick()`, immediately after marking a task `Dead`, calls
+  `paging_allocator::free_user_page_table(cr3)` and zeros `task.cr3`.
+- Frees all user leaf frames, L1/L2/L3 table frames, and the L4 frame itself.
+- Kernel half untouched. waitpid only needs the exit code stored in `Dead(code)`.
 
 ### Deliverable
 ```
@@ -261,7 +265,11 @@ $ edit /disk/notes.txt
 
 **Goal:** Processes can be interrupted, killed, and managed the way POSIX programs expect.
 
-### 4.1 Signal infrastructure
+### 4.1 Signal infrastructure (partial) ✅ kill syscall DONE
+
+- `Kill = 91` wired in dispatch; `KernelRuntime::kill_pid` calls `scheduler::kill(pid)`
+  which marks the target task `Dead(-1)` immediately.
+- Full signal infrastructure (pending_signals bitmask, sigaction, delivery trampoline) pending.
 
 - Add a `pending_signals: u32` bitmask to `Task` (one bit per signal 1–31).
 - Add `signal_handlers: [u64; 32]` — user-space handler addresses (0 = default, 1 = ignore).
@@ -317,12 +325,13 @@ $ Ctrl+C               # sends SIGINT to foreground
 **Goal:** User programs can call `malloc`/`free` (or Rust's allocator) without the kernel
 pre-mapping a fixed region.
 
-### 5.1 `brk` / `sbrk` syscall
+### 5.1 `brk` / `sbrk` syscall ✅ DONE
 
-- Add `Brk = 9`.
-- Each task tracks `heap_end: u64` starting just above the last loaded ELF segment.
-- `brk(new_end)`: if `new_end > heap_end`, map additional pages; update `heap_end`.
-- Userspace `malloc` (a tiny bump allocator) calls `sbrk` when it needs more space.
+- `Brk = 11` wired in dispatch.
+- Each `Task` carries `heap_end: u64`; initial value 0 means use `USER_HEAP_BASE = 0x0100_0000`.
+- `brk(0)` returns current break; `brk(new_end)` maps pages from current break to `new_end`
+  via `map_user_region_in` on the running task's CR3; updates `task.heap_end`.
+- `oxide-rt::brk(new_end)` and no-arg query wrapped for Rust user programs.
 
 ### 5.2 `mmap` (anonymous)
 
@@ -562,19 +571,22 @@ addition has maximum visible impact:
 ```
 Phase 1.3  Per-task FD table             ✅ DONE
 Phase 1.1  exec syscall                  ✅ DONE
-Phase 3.1  Toolchain (libc + build)      ← compile real programs    ← NEXT
-Phase 3.1  Toolchain (libc + build)      ← compile real programs
-Phase 2.1  VFS layer                     ← unified file access
+Phase 3.1  Toolchain (libc + build)      ✅ DONE  (oxide-rt, hello_rust.elf)
+Phase 1.2  fork syscall                  ✅ DONE  (full page copy)
+Phase 1.4  waitpid                       ✅ DONE  (Waiting state + tick reap)
+Phase 1.5  Exit cleanup                  ✅ DONE  (free_user_page_table on death)
+Phase 5.1  brk / sbrk                    ✅ DONE  (USER_HEAP_BASE + map on demand)
+Phase 4.1  kill syscall                  ✅ DONE  (Kill=91, scheduler::kill)
+Phase 4.2  Page fault → SIGSEGV         ✅ DONE  (user #PF/#GP → exit_to_kernel(-11))
+Phase 3.5  dup2 syscall                  ✅ DONE  (Dup2=81, FdTable::dup2)
+Phase 3.3  ReadDir syscall               ✅ DONE  (ReadDir=70, RamFs::read_dir_raw)
+Phase 3.2  Shell (/bin/sh)               ✅ DONE  (Rust shell: echo/cat/ls + fork/exec/waitpid)
+Phase 2.1  VFS layer                     ← unified file access              ← NEXT
 Phase 2.2  FAT16 write                   ← persistent storage
-Phase 1.2  fork syscall                  ← real process creation
-Phase 1.4  waitpid                       ← process lifecycle
-Phase 3.2  Shell (/bin/sh)               ← real command interpreter
-Phase 5.1  brk / sbrk                    ← malloc in userspace
-Phase 4.1  Signals (SIGKILL, SIGINT)     ← Ctrl+C, kill
+Phase 4.1  Signals full                  ← Ctrl+C, signal handlers
 Phase 4.4  TTY (canonical/raw mode)      ← proper line editing
-Phase 3.3  Core utilities                ← ls, cat, cp, rm, …
+Phase 3.3  Core utilities (standalone)   ← /bin/cat, /bin/ls as programs
 Phase 3.4  Text editor                   ← edit files interactively
-Phase 4.2  Page fault → SIGSEGV         ← survive bad programs
 Phase 6.1  ext2 driver (read-only)       ← better filesystem
 Phase 6.2  Partition table               ← real disk layout
 Phase 5.2  mmap (anonymous)              ← richer allocator
