@@ -454,52 +454,59 @@ impl TerminalApp {
 
             "mkdir" => {
                 match parts.next() {
-                    None       => self.push_line("usage: mkdir <path>"),
-                    Some(path) => unsafe {
-                        match RAMFS.get() {
-                            Some(fs) => match fs.create_dir(path) {
-                                Ok(_)    => self.push_line("directory created"),
-                                Err(-17) => self.push_line("mkdir: already exists"),
-                                Err(_)   => self.push_line("mkdir: failed (bad path?)"),
-                            },
-                            None => self.push_line("mkdir: filesystem not ready"),
+                    None     => self.push_line("usage: mkdir <path>"),
+                    Some(arg) => {
+                        let path = self.resolve_path(arg);
+                        unsafe {
+                            match RAMFS.get() {
+                                Some(fs) => match fs.create_dir(&path) {
+                                    Ok(_)    => self.push_line("directory created"),
+                                    Err(-17) => self.push_line("mkdir: already exists"),
+                                    Err(_)   => self.push_line("mkdir: failed (bad path?)"),
+                                },
+                                None => self.push_line("mkdir: filesystem not ready"),
+                            }
                         }
-                    },
+                    }
                 }
             }
 
             "touch" => {
                 match parts.next() {
-                    None       => self.push_line("usage: touch <path>"),
-                    Some(path) => unsafe {
-                        match RAMFS.get() {
-                            Some(fs) => match fs.create_file(path) {
-                                Ok(_)  => self.push_line("file created"),
-                                Err(_) => self.push_line("touch: failed (bad path?)"),
-                            },
-                            None => self.push_line("touch: filesystem not ready"),
+                    None      => self.push_line("usage: touch <path>"),
+                    Some(arg) => {
+                        let path = self.resolve_path(arg);
+                        unsafe {
+                            match RAMFS.get() {
+                                Some(fs) => match fs.create_file(&path) {
+                                    Ok(_)  => self.push_line("file created"),
+                                    Err(_) => self.push_line("touch: failed (bad path?)"),
+                                },
+                                None => self.push_line("touch: filesystem not ready"),
+                            }
                         }
-                    },
+                    }
                 }
             }
 
             "write" => {
                 // write <path> <content...>
                 let rest = command.strip_prefix("write").unwrap_or("").trim_start();
-                let (path, content) = if let Some(sp) = rest.find(' ') {
+                let (raw_path, content) = if let Some(sp) = rest.find(' ') {
                     (&rest[..sp], rest[sp + 1..].trim_start())
                 } else {
                     (rest, "")
                 };
-                if path.is_empty() {
+                if raw_path.is_empty() {
                     self.push_line("usage: write <path> <content>");
                 } else {
+                    let path = self.resolve_path(raw_path);
                     unsafe {
                         match RAMFS.get() {
                             Some(fs) => {
                                 let mut data: Vec<u8> = Vec::from(content.as_bytes());
                                 data.push(b'\n');
-                                match fs.write_file(path, &data) {
+                                match fs.write_file(&path, &data) {
                                     Ok(_)  => self.push_line(&format!(
                                         "wrote {} bytes to {}", data.len(), path)),
                                     Err(_) => self.push_line("write: failed"),
@@ -513,18 +520,21 @@ impl TerminalApp {
 
             "rm" => {
                 match parts.next() {
-                    None       => self.push_line("usage: rm <path>"),
-                    Some(path) => unsafe {
-                        match RAMFS.get() {
-                            Some(fs) => match fs.remove_file(path) {
-                                Ok(_)    => self.push_line("removed"),
-                                Err(-21) => self.push_line("rm: is a directory"),
-                                Err(-2)  => self.push_line("rm: no such file"),
-                                Err(_)   => self.push_line("rm: failed"),
-                            },
-                            None => self.push_line("rm: filesystem not ready"),
+                    None      => self.push_line("usage: rm <path>"),
+                    Some(arg) => {
+                        let path = self.resolve_path(arg);
+                        unsafe {
+                            match RAMFS.get() {
+                                Some(fs) => match fs.remove_file(&path) {
+                                    Ok(_)    => self.push_line("removed"),
+                                    Err(-21) => self.push_line("rm: is a directory"),
+                                    Err(-2)  => self.push_line("rm: no such file"),
+                                    Err(_)   => self.push_line("rm: failed"),
+                                },
+                                None => self.push_line("rm: filesystem not ready"),
+                            }
                         }
-                    },
+                    }
                 }
             }
 
