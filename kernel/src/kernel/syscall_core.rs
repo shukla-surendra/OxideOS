@@ -18,6 +18,7 @@ pub enum Syscall {
     Fork          = 1,
     Wait          = 2,
     GetPid        = 3,
+    Exec          = 5,
     Mmap          = 9,
     Munmap        = 10,
     Brk           = 11,
@@ -41,6 +42,7 @@ impl Syscall {
             Self::Fork          => "fork",
             Self::Wait          => "wait",
             Self::GetPid        => "getpid",
+            Self::Exec          => "exec",
             Self::Mmap          => "mmap",
             Self::Munmap        => "munmap",
             Self::Brk           => "brk",
@@ -66,6 +68,7 @@ impl From<u64> for Syscall {
             1  => Self::Fork,
             2  => Self::Wait,
             3  => Self::GetPid,
+            5  => Self::Exec,
             9  => Self::Mmap,
             10 => Self::Munmap,
             11 => Self::Brk,
@@ -156,6 +159,12 @@ pub trait SyscallRuntime {
     /// Pop one byte from the stdin ring. Returns EAGAIN (-6) if empty.
     fn get_char(&mut self) -> i64 { EAGAIN }
 
+    // ── Process image replacement ──────────────────────────────────────────
+    /// Replace the current process image with the ELF at `path`.
+    /// On success this never returns (jumps directly into the new image).
+    /// On failure it returns a negative error code.
+    fn exec_program(&mut self, _path: &[u8]) -> i64 { ENOSYS }
+
     // ── Filesystem hooks (default: not supported) ──────────────────────────
     /// Open a file; `path` is raw bytes from user space.
     fn fs_open(&mut self, path: &[u8], flags: u32) -> i64 { ENOSYS }
@@ -197,6 +206,7 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
         Syscall::Exit          => runtime.exit(request.arg1 as i32),
         Syscall::Fork          => SyscallResult::err(ENOSYS),
         Syscall::Wait          => SyscallResult::err(ENOSYS),
+        Syscall::Exec          => unsafe { sys_exec(runtime, request.arg1, request.arg2) },
         Syscall::GetPid        => SyscallResult::ok(runtime.current_pid() as i64),
         Syscall::Mmap          => SyscallResult::err(ENOSYS),
         Syscall::Munmap        => SyscallResult::err(ENOSYS),
@@ -312,6 +322,20 @@ unsafe fn sys_get_system_info<R: SyscallRuntime>(
         Ok(())     => SyscallResult::ok(0),
         Err(code)  => SyscallResult::err(code),
     }
+}
+
+unsafe fn sys_exec<R: SyscallRuntime>(
+    runtime: &mut R, path_ptr: u64, path_len: u64,
+) -> SyscallResult {
+    if let Err(code) = validate_user_range(path_ptr, path_len) {
+        return SyscallResult::err(code);
+    }
+    if path_len == 0 { return SyscallResult::err(EINVAL); }
+    let path = unsafe { slice::from_raw_parts(path_ptr as *const u8, path_len as usize) };
+    // On success exec_program diverges (never returns).
+    // On failure it returns a negative error code.
+    let err = runtime.exec_program(path);
+    SyscallResult::err(err)
 }
 
 unsafe fn sys_pipe<R: SyscallRuntime>(

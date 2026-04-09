@@ -13,6 +13,7 @@
 use crate::kernel::paging_allocator;
 use crate::kernel::serial::SERIAL_PORT;
 use crate::kernel::user_mode::TaskContext;
+use crate::kernel::fs::ramfs::FdTable;
 
 pub const MAX_TASKS:       usize = 8;
 const  PAGE_SIZE:          usize = 4096;
@@ -51,6 +52,9 @@ pub struct Task {
     pub pid:        u8,
     pub output:     [u8; TASK_OUTPUT_CAP],
     pub output_len: usize,
+    /// Per-process open file-descriptor table.
+    /// FDs 0/1/2 (stdin/stdout/stderr) are reserved; real files start at FD 3.
+    pub fd_table:   FdTable,
 }
 
 impl Task {
@@ -66,6 +70,7 @@ impl Task {
             pid:        0,
             output:     [0u8; TASK_OUTPUT_CAP],
             output_len: 0,
+            fd_table:   FdTable::new(),
         }
     }
 
@@ -209,6 +214,7 @@ pub unsafe fn spawn(code: &[u8], name: &str) -> Result<u8, &'static str> {
     (*task).cr3        = cr3;
     (*task).pid        = pid;
     (*task).output_len = 0;
+    (*task).fd_table   = FdTable::new();
 
     let bytes = name.as_bytes();
     let len   = bytes.len().min(16);

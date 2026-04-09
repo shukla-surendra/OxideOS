@@ -94,10 +94,13 @@ impl SyscallRuntime for KernelRuntime {
 
     // ── Filesystem ──────────────────────────────────────────────────────────
 
+    fn exec_program(&mut self, path: &[u8]) -> i64 {
+        self.exec_resolve(path)
+    }
+
     fn fs_open(&mut self, path: &[u8], flags: u32) -> i64 {
         // Route /disk/ paths to FAT16; everything else to RamFS.
         if path.starts_with(b"/disk/") || {
-            // bare name with no leading slash also goes to FAT when disk is present
             !path.starts_with(b"/") && crate::kernel::ata::is_present()
         } {
             return unsafe { crate::kernel::fat::open(path, flags) };
@@ -107,8 +110,11 @@ impl SyscallRuntime for KernelRuntime {
             Err(_) => return -1,
         };
         unsafe {
+            let sched = &raw mut crate::kernel::scheduler::SCHED;
+            let idx   = crate::kernel::scheduler::CURRENT_TASK_IDX;
+            let fdt   = &raw mut (*sched).tasks[idx].fd_table;
             match crate::kernel::fs::ramfs::RAMFS.get() {
-                Some(fs) => fs.open(path_str, flags),
+                Some(fs) => (*fdt).open(fs, path_str, flags),
                 None     => -2,
             }
         }
@@ -122,10 +128,9 @@ impl SyscallRuntime for KernelRuntime {
             return unsafe { crate::kernel::pipe::close(fd) };
         }
         unsafe {
-            match crate::kernel::fs::ramfs::RAMFS.get() {
-                Some(fs) => fs.close(fd),
-                None     => -2,
-            }
+            let sched = &raw mut crate::kernel::scheduler::SCHED;
+            let idx   = crate::kernel::scheduler::CURRENT_TASK_IDX;
+            (*sched).tasks[idx].fd_table.close(fd)
         }
     }
 
@@ -137,8 +142,11 @@ impl SyscallRuntime for KernelRuntime {
             return unsafe { crate::kernel::pipe::read(fd, buf) };
         }
         unsafe {
+            let sched = &raw mut crate::kernel::scheduler::SCHED;
+            let idx   = crate::kernel::scheduler::CURRENT_TASK_IDX;
+            let fdt   = &raw mut (*sched).tasks[idx].fd_table;
             match crate::kernel::fs::ramfs::RAMFS.get() {
-                Some(fs) => fs.read_fd(fd, buf),
+                Some(fs) => (*fdt).read_fd(fs, fd, buf),
                 None     => -2,
             }
         }
@@ -152,8 +160,11 @@ impl SyscallRuntime for KernelRuntime {
             return -1; // FAT write not yet implemented
         }
         unsafe {
+            let sched = &raw mut crate::kernel::scheduler::SCHED;
+            let idx   = crate::kernel::scheduler::CURRENT_TASK_IDX;
+            let fdt   = &raw mut (*sched).tasks[idx].fd_table;
             match crate::kernel::fs::ramfs::RAMFS.get() {
-                Some(fs) => fs.write_fd(fd, buf),
+                Some(fs) => (*fdt).write_fd(fs, fd, buf),
                 None     => -2,
             }
         }
@@ -169,6 +180,131 @@ impl SyscallRuntime for KernelRuntime {
                 }
                 None => -4, // ENOMEM
             }
+        }
+    }
+}
+
+// ── exec helpers (not part of the trait; called via exec_program) ─────────
+
+impl KernelRuntime {
+    /// Resolve path → binary bytes, then hand off to `exec_binary`.
+    fn exec_resolve(&mut self, path: &[u8]) -> i64 {
+        extern crate alloc;
+        use alloc::vec::Vec;
+
+        let path_str = match core::str::from_utf8(path) {
+            Ok(s)  => s,
+            Err(_) => return -1,
+        };
+
+        // 1. Built-in registry (embedded binaries — no disk needed).
+        let short = path_str.trim_start_matches('/').trim_start_matches("bin/");
+        if let Some(b) = crate::kernel::programs::find(short) {
+            return self.exec_binary(b);
+        }
+
+        // 2. RamFS
+        if let Some(data) = unsafe { crate::kernel::fs::ramfs::RAMFS.get() }
+            .and_then(|fs| fs.read_file(path_str))
+        {
+            if !data.is_empty() {
+                let owned: Vec<u8> = data.to_vec();
+                return self.exec_binary(&owned);
+            }
+        }
+
+        // 3. FAT16
+        if path.starts_with(b"/disk/") {
+            return self.exec_fat(path);
+        }
+
+        -2 // ENOENT
+    }
+
+    fn exec_fat(&mut self, path: &[u8]) -> i64 {
+        extern crate alloc;
+        use alloc::vec::Vec;
+        let fd = unsafe { crate::kernel::fat::open(path, 0) };
+        if fd < 0 { return -2; }
+        let mut buf: Vec<u8> = Vec::new();
+        let mut tmp = [0u8; 512];
+        loop {
+            let n = unsafe { crate::kernel::fat::read_fd(fd as i32, &mut tmp) };
+            if n <= 0 { break; }
+            buf.extend_from_slice(&tmp[..n as usize]);
+        }
+        let _ = unsafe { crate::kernel::fat::close(fd as i32) };
+        if buf.is_empty() { return -2; }
+        self.exec_binary(&buf)
+    }
+
+    /// Load `binary` into a fresh address space and replace the current task.
+    /// On success this never returns; on failure returns a negative error code.
+    fn exec_binary(&mut self, binary: &[u8]) -> i64 {
+        use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX, EXIT_PREEMPTED};
+        use crate::kernel::paging_allocator as pa;
+        use crate::kernel::fs::ramfs::FdTable;
+
+        const PAGE_SIZE:        usize = 4096;
+        const USER_STACK_TOP:   u64   = 0x0080_0000;
+        const USER_STACK_PAGES: usize = 4;
+        const USER_CODE_ADDR:   u64   = 0x0040_0000;
+        let stack_base = USER_STACK_TOP - (USER_STACK_PAGES * PAGE_SIZE) as u64;
+
+        // Create a fresh page table.
+        let new_cr3 = match unsafe { pa::create_user_page_table() } {
+            Some(cr3) => cr3,
+            None      => return -4,
+        };
+
+        // Map user stack.
+        if unsafe { pa::map_user_region_in(new_cr3, stack_base, USER_STACK_PAGES, true, false) }.is_err() {
+            return -4;
+        }
+
+        // Load ELF or flat binary into the new CR3.
+        let entry = if crate::kernel::elf_loader::is_elf(binary) {
+            match unsafe { crate::kernel::elf_loader::load_in(binary, new_cr3) } {
+                Ok(e)  => e,
+                Err(_) => return -1,
+            }
+        } else {
+            let npages = binary.len().div_ceil(PAGE_SIZE);
+            if unsafe { pa::map_user_region_in(new_cr3, USER_CODE_ADDR, npages, true, true) }.is_err() {
+                return -4;
+            }
+            unsafe { pa::copy_to_region_in(new_cr3, USER_CODE_ADDR, binary); }
+            USER_CODE_ADDR
+        };
+
+        // Capture old CR3 before overwriting.
+        let old_cr3 = unsafe {
+            let s = &raw const SCHED;
+            (*s).tasks[CURRENT_TASK_IDX].cr3
+        };
+
+        // Update current task: new image, reset FD table.
+        unsafe {
+            let s    = &raw mut SCHED;
+            let idx  = CURRENT_TASK_IDX;
+            let task = &raw mut (*s).tasks[idx];
+            (*task).cr3        = new_cr3;
+            (*task).entry      = entry;
+            (*task).first_run  = true;
+            (*task).fd_table   = FdTable::new();
+            (*task).output_len = 0;
+        }
+
+        // Free old page table (user half only; kernel half is shared).
+        if old_cr3 != 0 {
+            unsafe { pa::free_user_page_table(old_cr3); }
+        }
+
+        // Non-local goto back to tick().  tick() will see EXIT_PREEMPTED,
+        // mark the task Ready, and on the next tick launch_at(entry, stack, new_cr3).
+        unsafe {
+            crate::kernel::user_mode::CURRENT_SYSCALL_CTX = None;
+            crate::kernel::user_mode::exit_to_kernel(EXIT_PREEMPTED);
         }
     }
 }

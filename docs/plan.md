@@ -37,7 +37,7 @@ milestone.
 
 | Subsystem | Gap |
 |-----------|-----|
-| Process model | No `fork`, `exec`, `waitpid` — can only `spawn` built-in binaries |
+| Process model | No `fork`, `exec`, `waitpid` — can only `spawn` built-in binaries; per-task FD table ✅ |
 | Memory | No `mmap`/`brk` — user programs cannot allocate heap dynamically |
 | Filesystem | FAT16 write not implemented; no subdirectory traversal; no VFS layer |
 | Signals | No signal delivery, no `Ctrl+C` interrupt to process |
@@ -56,14 +56,16 @@ milestone.
 **Goal:** Any ELF binary from disk can be loaded, forked, exec'd, and waited on.
 This is the single most important gap — everything else depends on real processes.
 
-### 1.1 `exec` syscall (replace current task image)
+### 1.1 `exec` syscall ✅ DONE
 
-- Add `Exec = 5` to the syscall table.
-- Implementation: validate path, open file via VFS (see phase 2), load ELF into the
-  current task's page table (unmap old user pages first), reset stack, update entry.
-- Required first: the VFS `open`/`read`/`close` path that can read from FAT or RamFS
-  (see phase 2.1) so arbitrary binaries can be loaded, not just the built-in registry.
-- Terminal `run` command becomes `exec /bin/hello` instead of the hardcoded `find()`.
+- `Exec = 5` added to syscall table and dispatch.
+- `KernelRuntime::exec_program` resolves the path (built-in registry → RamFS → FAT16),
+  creates a fresh CR3, maps stack, loads ELF or flat binary via `load_in`.
+- Old CR3's user pages freed via new `paging_allocator::free_user_page_table`.
+- Replaces current task by updating `task.{cr3, entry, first_run, fd_table}` then
+  calling `exit_to_kernel(EXIT_PREEMPTED)` — non-local goto back to `tick()`.
+  Next scheduler tick calls `launch_at(new_entry, stack, new_cr3)`.
+- Supports: built-in registry (`hello`, `counter`, …), `/path` in RamFS, `/disk/` on FAT16.
 
 ### 1.2 `fork` syscall
 
@@ -77,12 +79,15 @@ This is the single most important gap — everything else depends on real proces
 - Prerequisite: per-task FD table (currently RamFS uses a global FD table — move it
   into `Task`).
 
-### 1.3 Per-task FD table
+### 1.3 Per-task FD table ✅ DONE
 
-- Move the `RamFsFdTable` out of the global `RAMFS` static and into `Task` (or a
-  heap-allocated `FdTable` pointed to by `Task`).
-- `fork` clones the table; `exec` resets it (close all `O_CLOEXEC` FDs).
-- Stdin/stdout/stderr (FDs 0/1/2) are pre-populated for every new task.
+- `FdTable` (`Copy`, `const`-constructible) extracted from `RamFs` and moved into `Task`.
+- `RamFs` now owns only inodes; all FD state lives in `Task.fd_table`.
+- `FdTable::open/close/read_fd/write_fd` take `&mut RamFs` / `&RamFs` as needed.
+- Syscall `KernelRuntime` routes all FD ops to `SCHED.tasks[CURRENT_TASK_IDX].fd_table`.
+- `spawn()` resets the table with `FdTable::new()` on each task launch.
+- `FdTable::on_inode_removed(idx)` fixup helper added for callers of `remove_file`.
+- Stdin/stdout/stderr (FDs 0/1/2) are reserved; real files start at FD 3.
 
 ### 1.4 `waitpid` syscall
 
@@ -555,8 +560,9 @@ The following is the recommended sequence to work through these phases, ordered 
 addition has maximum visible impact:
 
 ```
-Phase 1.3  Per-task FD table             ← unblocks fork
-Phase 1.1  exec syscall                  ← load binaries from disk
+Phase 1.3  Per-task FD table             ✅ DONE
+Phase 1.1  exec syscall                  ✅ DONE
+Phase 3.1  Toolchain (libc + build)      ← compile real programs    ← NEXT
 Phase 3.1  Toolchain (libc + build)      ← compile real programs
 Phase 2.1  VFS layer                     ← unified file access
 Phase 2.2  FAT16 write                   ← persistent storage

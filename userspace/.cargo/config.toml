@@ -1,0 +1,14 @@
+[build]
+target = "x86_64-unknown-none"
+
+[target.x86_64-unknown-none]
+rustflags = [
+    "-C", "link-arg=-T/home/surendra/projects/OxideOS/userspace/oxide-rt/link.ld",
+    "-C", "link-arg=--gc-sections",
+    "-C", "relocation-model=static",
+    "-C", "code-model=kernel",
+]
+
+[unstable]
+build-std = ["core"]
+build-std-features = ["compiler-builtins-mem"]

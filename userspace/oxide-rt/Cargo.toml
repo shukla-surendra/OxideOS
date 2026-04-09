@@ -1,0 +1,8 @@
+[package]
+name = "oxide-rt"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "oxide_rt"
+crate-type = ["rlib"]

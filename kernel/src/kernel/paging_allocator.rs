@@ -559,6 +559,58 @@ pub unsafe fn map_user_region_in(
     result
 }
 
+/// Walk the user-space half (L4 indices 0–255) of the page table at
+/// `cr3_phys`, free every mapped leaf frame and every intermediate
+/// page-table frame, then free the L4 frame itself.
+///
+/// The kernel higher-half (indices 256–511) is **not** touched — those
+/// entries are shared pointers into the kernel's own page table.
+///
+/// Call this after switching away from the task's CR3; the function is safe
+/// because all physical frames are accessed via the higher-half identity
+/// window, not through the task's own virtual mappings.
+pub unsafe fn free_user_page_table(cr3_phys: u64) {
+    let inner = unsafe { &mut *ALLOCATOR.inner.get() };
+    if !inner.initialized.load(Ordering::Relaxed) { return; }
+    let hho = match inner.page_table_manager.as_ref() {
+        Some(ptm) => ptm.higher_half_offset,
+        None => return,
+    };
+    let fa = &mut inner.frame_allocator;
+
+    let l4 = (cr3_phys + hho) as *const u64;
+    for l4i in 0..256usize {
+        let l4e = unsafe { *l4.add(l4i) };
+        if l4e & 1 == 0 { continue; }
+        let l3_phys = l4e & 0x000F_FFFF_FFFF_F000;
+
+        let l3 = (l3_phys + hho) as *const u64;
+        for l3i in 0..512usize {
+            let l3e = unsafe { *l3.add(l3i) };
+            if l3e & 1 == 0 { continue; }
+            let l2_phys = l3e & 0x000F_FFFF_FFFF_F000;
+
+            let l2 = (l2_phys + hho) as *const u64;
+            for l2i in 0..512usize {
+                let l2e = unsafe { *l2.add(l2i) };
+                if l2e & 1 == 0 { continue; }
+                let l1_phys = l2e & 0x000F_FFFF_FFFF_F000;
+
+                let l1 = (l1_phys + hho) as *const u64;
+                for l1i in 0..512usize {
+                    let l1e = unsafe { *l1.add(l1i) };
+                    if l1e & 1 == 0 { continue; }
+                    fa.free_frame(l1e & 0x000F_FFFF_FFFF_F000);
+                }
+                fa.free_frame(l1_phys); // free the L1 table frame
+            }
+            fa.free_frame(l2_phys); // free the L2 table frame
+        }
+        fa.free_frame(l3_phys); // free the L3 table frame
+    }
+    fa.free_frame(cr3_phys); // free the L4 frame
+}
+
 /// Copy bytes into virtual address `dest` inside the page table `cr3_phys`.
 ///
 /// Temporarily switches the CPU's CR3 to `cr3_phys`, performs the copy, then

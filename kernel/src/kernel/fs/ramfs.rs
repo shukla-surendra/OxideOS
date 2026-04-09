@@ -6,6 +6,11 @@
 //!
 //! The global singleton `RAMFS` is an `UnsafeCell<Option<RamFs>>` that is
 //! initialised once by `RAMFS.init()` after the heap allocator is ready.
+//!
+//! # Per-task FD table
+//! `FdTable` is a Copy-able, const-constructible struct that each `Task` owns.
+//! It holds up to `MAX_FD` open file descriptors for one process.
+//! `RamFs` itself no longer owns any FD state.
 
 extern crate alloc;
 
@@ -19,7 +24,7 @@ use super::{
 };
 
 // ── Constants ──────────────────────────────────────────────────────────────
-/// Maximum simultaneously open file descriptors (0–2 are stdin/stdout/stderr).
+/// Maximum simultaneously open file descriptors per task (FDs 0–2 = stdin/stdout/stderr).
 pub const MAX_FD: usize = 32;
 /// Sentinel: parent_idx of the root directory.
 pub const ROOT_PARENT: usize = usize::MAX;
@@ -42,28 +47,152 @@ pub struct INode {
     pub data: Vec<u8>,
 }
 
-// ── File-descriptor entry ─────────────────────────────────────────────────
+// ── Per-task file-descriptor entry ────────────────────────────────────────
+/// A single open-file record stored inside a task's `FdTable`.
 #[derive(Clone, Copy)]
-struct FdEntry {
-    inode_idx: usize,
-    offset:    usize,
-    writable:  bool,
-    append:    bool,
+pub struct FdEntry {
+    pub inode_idx: usize,
+    pub offset:    usize,
+    pub writable:  bool,
+    pub append:    bool,
+}
+
+// ── Per-task FD table ──────────────────────────────────────────────────────
+/// Owned by each `Task`.  Holds up to `MAX_FD` open RamFS file descriptors.
+///
+/// FDs 0/1/2 (stdin/stdout/stderr) are reserved — `alloc_fd` never returns
+/// them.  Their semantics are handled in `syscall_core.rs`.
+#[derive(Clone, Copy)]
+pub struct FdTable {
+    pub entries: [Option<FdEntry>; MAX_FD],
+}
+
+impl FdTable {
+    /// Create an empty FD table (all slots vacant).
+    pub const fn new() -> Self {
+        Self { entries: [None; MAX_FD] }
+    }
+
+    /// Find the lowest free FD slot >= 3.
+    fn alloc_fd(&self) -> Option<usize> {
+        (3..MAX_FD).find(|&i| self.entries[i].is_none())
+    }
+
+    /// Open `path` on `fs`, returning the new FD number or a negative error.
+    pub fn open(&mut self, fs: &mut RamFs, path: &str, flags: u32) -> i64 {
+        let writable = (flags & O_WRONLY != 0) || (flags & O_RDWR != 0);
+        let create   = flags & O_CREAT  != 0;
+        let truncate = flags & O_TRUNC  != 0;
+        let append   = flags & O_APPEND != 0;
+
+        let inode_idx = if let Some(idx) = fs.resolve(path) {
+            if truncate && fs.inodes[idx].kind == NodeKind::File {
+                fs.inodes[idx].data.clear();
+            }
+            idx
+        } else if create {
+            match fs.create_file(path) {
+                Ok(idx) => idx,
+                Err(_)  => return ENOENT,
+            }
+        } else {
+            return ENOENT;
+        };
+
+        let fd = match self.alloc_fd() {
+            Some(fd) => fd,
+            None     => return EMFILE,
+        };
+
+        let initial_offset = if append { fs.inodes[inode_idx].data.len() } else { 0 };
+        self.entries[fd] = Some(FdEntry {
+            inode_idx,
+            offset:   initial_offset,
+            writable,
+            append,
+        });
+        fd as i64
+    }
+
+    /// Close `fd`.
+    pub fn close(&mut self, fd: i32) -> i64 {
+        if fd < 0 || fd as usize >= MAX_FD { return EBADF; }
+        if self.entries[fd as usize].take().is_none() { return EBADF; }
+        0
+    }
+
+    /// Read up to `buf.len()` bytes from `fd`.
+    pub fn read_fd(&mut self, fs: &RamFs, fd: i32, buf: &mut [u8]) -> i64 {
+        if fd < 0 || fd as usize >= MAX_FD { return EBADF; }
+        let entry = match self.entries[fd as usize] {
+            Some(e) => e,
+            None    => return EBADF,
+        };
+        if entry.inode_idx >= fs.inodes.len() { return EBADF; }
+        let inode = &fs.inodes[entry.inode_idx];
+        if inode.kind != NodeKind::File { return EISDIR; }
+
+        let available = inode.data.len().saturating_sub(entry.offset);
+        if available == 0 { return 0; } // EOF
+
+        let n = available.min(buf.len());
+        buf[..n].copy_from_slice(&inode.data[entry.offset..entry.offset + n]);
+        if let Some(e) = &mut self.entries[fd as usize] { e.offset += n; }
+        n as i64
+    }
+
+    /// Write `buf` to `fd`.
+    pub fn write_fd(&mut self, fs: &mut RamFs, fd: i32, buf: &[u8]) -> i64 {
+        if fd < 0 || fd as usize >= MAX_FD { return EBADF; }
+        let entry = match self.entries[fd as usize] {
+            Some(e) => e,
+            None    => return EBADF,
+        };
+        if !entry.writable { return EACCES; }
+        if entry.inode_idx >= fs.inodes.len() { return EBADF; }
+
+        let inode = &mut fs.inodes[entry.inode_idx];
+        if inode.kind != NodeKind::File { return EISDIR; }
+
+        let offset = entry.offset;
+        if offset >= inode.data.len() {
+            inode.data.extend_from_slice(buf);
+        } else {
+            let end = offset + buf.len();
+            if end > inode.data.len() { inode.data.resize(end, 0); }
+            inode.data[offset..end].copy_from_slice(buf);
+        }
+        if let Some(e) = &mut self.entries[fd as usize] { e.offset += buf.len(); }
+        buf.len() as i64
+    }
+
+    /// After `RamFs::remove_file` removes the inode at `removed_idx`, fix up
+    /// all open FD entries so that indices above the gap are decremented by 1.
+    /// FDs that pointed directly to the removed inode are closed (set to None).
+    pub fn on_inode_removed(&mut self, removed_idx: usize) {
+        for slot in self.entries.iter_mut() {
+            if let Some(e) = slot {
+                if e.inode_idx == removed_idx {
+                    *slot = None; // was pointing at the deleted file
+                } else if e.inode_idx > removed_idx {
+                    e.inode_idx -= 1;
+                }
+            }
+        }
+    }
 }
 
 // ── RamFs ─────────────────────────────────────────────────────────────────
+/// The filesystem tree.  Owns only inodes — FD state lives in each task's
+/// `FdTable` so it is naturally per-process.
 pub struct RamFs {
     pub inodes: Vec<INode>,
-    fd_table:   [Option<FdEntry>; MAX_FD],
 }
 
 impl RamFs {
     /// Build an empty filesystem and pre-populate standard directories/files.
     pub fn new() -> Self {
-        let mut fs = Self {
-            inodes:   Vec::new(),
-            fd_table: [None; MAX_FD],
-        };
+        let mut fs = Self { inodes: Vec::new() };
 
         // inode 0 = root directory
         fs.inodes.push(INode {
@@ -204,25 +333,20 @@ impl RamFs {
     }
 
     /// Remove a file.  Directories must be removed with `remove_dir`.
-    pub fn remove_file(&mut self, path: &str) -> Result<(), i64> {
+    /// Returns the inode index of the removed entry so callers can call
+    /// `FdTable::on_inode_removed(idx)` on all live tasks.
+    pub fn remove_file(&mut self, path: &str) -> Result<usize, i64> {
         let idx = self.resolve(path).ok_or(ENOENT)?;
         if self.inodes[idx].kind == NodeKind::Directory { return Err(EISDIR); }
 
-        // Close any FDs that point to this inode
-        for fd in self.fd_table.iter_mut() {
-            if let Some(e) = fd { if e.inode_idx == idx { *fd = None; } }
-        }
-        // Adjust all inode references > idx
+        // Shift all inode parent references that are above the removed index.
         for inode in self.inodes.iter_mut() {
             if inode.parent_idx != ROOT_PARENT && inode.parent_idx > idx {
                 inode.parent_idx -= 1;
             }
         }
-        for fd in self.fd_table.iter_mut() {
-            if let Some(e) = fd { if e.inode_idx > idx { e.inode_idx -= 1; } }
-        }
         self.inodes.remove(idx);
-        Ok(())
+        Ok(idx)
     }
 
     /// Returns `true` if the path exists.
@@ -231,99 +355,6 @@ impl RamFs {
     /// Returns `true` if the path exists and is a directory.
     pub fn is_dir(&self, path: &str) -> bool {
         self.resolve(path).map(|i| self.inodes[i].kind == NodeKind::Directory).unwrap_or(false)
-    }
-
-    // ── File-descriptor API (used by syscalls) ────────────────────────────
-
-    fn alloc_fd(&self) -> Option<usize> {
-        // Reserve 0=stdin, 1=stdout, 2=stderr
-        (3..MAX_FD).find(|&i| self.fd_table[i].is_none())
-    }
-
-    /// Open a path and return a file descriptor.
-    pub fn open(&mut self, path: &str, flags: u32) -> i64 {
-        let writable = (flags & O_WRONLY != 0) || (flags & O_RDWR != 0);
-        let create   = flags & O_CREAT  != 0;
-        let truncate = flags & O_TRUNC  != 0;
-        let append   = flags & O_APPEND != 0;
-
-        let inode_idx = if let Some(idx) = self.resolve(path) {
-            if truncate && self.inodes[idx].kind == NodeKind::File {
-                self.inodes[idx].data.clear();
-            }
-            idx
-        } else if create {
-            match self.create_file(path) {
-                Ok(idx) => idx,
-                Err(_)  => return ENOENT,
-            }
-        } else {
-            return ENOENT;
-        };
-
-        let fd = match self.alloc_fd() {
-            Some(fd) => fd,
-            None     => return EMFILE,
-        };
-
-        self.fd_table[fd] = Some(FdEntry {
-            inode_idx,
-            offset:   if append { self.inodes[inode_idx].data.len() } else { 0 },
-            writable,
-            append,
-        });
-
-        fd as i64
-    }
-
-    /// Close a file descriptor.
-    pub fn close(&mut self, fd: i32) -> i64 {
-        if fd < 0 || fd as usize >= MAX_FD { return EBADF; }
-        if self.fd_table[fd as usize].take().is_none() { return EBADF; }
-        0
-    }
-
-    /// Read up to `buf.len()` bytes from `fd`.
-    pub fn read_fd(&mut self, fd: i32, buf: &mut [u8]) -> i64 {
-        if fd < 0 || fd as usize >= MAX_FD { return EBADF; }
-        let entry = match self.fd_table[fd as usize] {
-            Some(e) => e,
-            None    => return EBADF,
-        };
-        let inode = &self.inodes[entry.inode_idx];
-        if inode.kind != NodeKind::File { return EISDIR; }
-
-        let available = inode.data.len().saturating_sub(entry.offset);
-        if available == 0 { return 0; } // EOF
-
-        let n = available.min(buf.len());
-        buf[..n].copy_from_slice(&inode.data[entry.offset..entry.offset + n]);
-        if let Some(e) = &mut self.fd_table[fd as usize] { e.offset += n; }
-        n as i64
-    }
-
-    /// Write `buf` to `fd`.
-    pub fn write_fd(&mut self, fd: i32, buf: &[u8]) -> i64 {
-        if fd < 0 || fd as usize >= MAX_FD { return EBADF; }
-        let entry = match self.fd_table[fd as usize] {
-            Some(e) => e,
-            None    => return EBADF,
-        };
-        if !entry.writable { return EACCES; }
-
-        let inode = &mut self.inodes[entry.inode_idx];
-        if inode.kind != NodeKind::File { return EISDIR; }
-
-        let offset = entry.offset;
-        if offset >= inode.data.len() {
-            inode.data.extend_from_slice(buf);
-        } else {
-            let end = offset + buf.len();
-            if end > inode.data.len() { inode.data.resize(end, 0); }
-            inode.data[offset..end].copy_from_slice(buf);
-        }
-        if let Some(e) = &mut self.fd_table[fd as usize] { e.offset += buf.len(); }
-        buf.len() as i64
     }
 }
 

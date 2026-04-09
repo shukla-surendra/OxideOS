@@ -1,12 +1,17 @@
 NASM   := nasm
 BINDIR := bin
+CARGO  := cargo
 
-SRCS := hello.asm counter.asm sysinfo.asm input.asm
+SRCS := hello.asm counter.asm sysinfo.asm input.asm \
+        fib.asm primes.asm countdown.asm spinner.asm filetest.asm
 BINS := $(SRCS:%.asm=$(BINDIR)/%.bin)
 
-.PHONY: all clean
+# Rust programs (output = bin/<name>.elf)
+RUST_BINS := $(BINDIR)/hello_rust.elf
 
-all: $(BINDIR) $(BINS)
+.PHONY: all clean rust-programs
+
+all: $(BINDIR) $(BINS) rust-programs
 
 $(BINDIR):
 	mkdir -p $(BINDIR)
@@ -14,5 +19,10 @@ $(BINDIR):
 $(BINDIR)/%.bin: %.asm
 	$(NASM) -f bin -o $@ $<
 
+rust-programs: $(BINDIR)
+	$(CARGO) +nightly build --release -p hello-rust 2>&1
+	cp target/x86_64-unknown-none/release/hello_rust $(BINDIR)/hello_rust.elf
+
 clean:
 	rm -rf $(BINDIR)
+	$(CARGO) clean
