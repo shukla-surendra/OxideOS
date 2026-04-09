@@ -13,6 +13,7 @@
 mod panic;
 mod kernel;
 mod gui;
+mod wallpaper;
 
 // ============================================================================
 // IMPORTS
@@ -196,7 +197,7 @@ unsafe fn create_boot_screen(graphics: &Graphics) -> (usize, usize) {
     let (width, height) = graphics.get_dimensions();
     SERIAL_PORT.write_str("Creating boot screen...\n");
 
-    graphics.draw_desktop_background();
+    graphics.draw_background(gui::graphics::BackgroundStyle::Default);
 
     let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
     unsafe { (*wm).set_screen_dimensions(width, height); }
@@ -212,7 +213,8 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
 
     let mut last_cursor_pos = (-1i64, -1i64);
     let mut saved_pixels = [[0u32; 11]; 19];
-    let mut last_left_button = false;
+    let mut last_left_button  = false;
+    let mut last_right_button = false;
     let mut needs_redraw = true;
     let mut terminal_dirty = false;
     let mut terminal_app = terminal::TerminalApp::new(terminal_window_id);
@@ -231,8 +233,9 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             needs_redraw = true;
         }
 
-        let cursor_pos   = gui::mouse::get_mouse_position();
-        let left_button  = gui::mouse::is_mouse_button_pressed(gui::mouse::MouseButton::Left);
+        let cursor_pos    = gui::mouse::get_mouse_position();
+        let left_button   = gui::mouse::is_mouse_button_pressed(gui::mouse::MouseButton::Left);
+        let right_button  = gui::mouse::is_mouse_button_pressed(gui::mouse::MouseButton::Right);
         let terminal_focused = unsafe { (*wm).get_focused() == Some(terminal_app.window_id()) };
 
         if terminal_app.process_pending_input(terminal_focused) {
@@ -252,21 +255,32 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                 last_cursor_pos = (mx, my);
             }
             if left_button && !last_left_button {
-                unsafe { (*wm).handle_click(mx as u64, my as u64); }
+                // Check context menu first; only pass to window manager if not consumed.
+                let consumed = unsafe { (*wm).handle_context_menu_click(mx as u64, my as u64) };
+                if !consumed {
+                    unsafe { (*wm).handle_click(mx as u64, my as u64); }
+                }
                 needs_redraw = true;
             }
             if !left_button && last_left_button {
                 unsafe { (*wm).release_drag(); }
             }
-            last_left_button = left_button;
+            if right_button && !last_right_button {
+                unsafe { (*wm).handle_right_click(mx as u64, my as u64); }
+                needs_redraw = true;
+            }
+            last_left_button  = left_button;
+            last_right_button = right_button;
         }
 
         if needs_redraw {
-            graphics.draw_desktop_background();
+            let bg = unsafe { (*wm).get_background_style() };
+            graphics.draw_background(bg);
             unsafe { (*wm).draw_taskbar(graphics); }
             unsafe { (*wm).draw_all(graphics); }
             terminal_app.draw(graphics, unsafe { &*wm });
             draw_sysinfo_panel(graphics, unsafe { &*wm }, sysinfo_window_id);
+            unsafe { (*wm).draw_context_menu(graphics); }
             needs_redraw   = false;
             terminal_dirty = false;
         } else if terminal_dirty {

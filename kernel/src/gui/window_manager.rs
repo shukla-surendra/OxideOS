@@ -1,6 +1,6 @@
 // src/gui/window_manager.rs - Enhanced with minimize/maximize and taskbar
 use super::widgets::Window;
-use super::graphics::Graphics;
+use super::graphics::{Graphics, BackgroundStyle};
 use super::colors;
 use super::fonts;
 use crate::kernel::serial::SERIAL_PORT;
@@ -46,6 +46,11 @@ pub struct WindowManager {
     drag_offset_y: i64,
     screen_width: u64,
     screen_height: u64,
+    // Desktop context menu
+    context_menu_visible: bool,
+    context_menu_x: u64,
+    context_menu_y: u64,
+    background_style: BackgroundStyle,
 }
 
 impl WindowManager {
@@ -62,6 +67,10 @@ impl WindowManager {
             drag_offset_y: 0,
             screen_width: 1280,
             screen_height: 800,
+            context_menu_visible: false,
+            context_menu_x: 0,
+            context_menu_y: 0,
+            background_style: BackgroundStyle::Default,
         }
     }
 
@@ -591,6 +600,147 @@ impl WindowManager {
                          else                           { 0xFFB0C0D8 };
 
         fonts::draw_string(graphics, x + 8, 16, window.title, text_color);
+    }
+
+    // ── Context menu ───────────────────────────────────────────────────────────
+
+    /// Show the desktop context menu at (mouse_x, mouse_y).
+    /// If the click lands on any visible window, the menu is dismissed instead.
+    pub fn handle_right_click(&mut self, mouse_x: u64, mouse_y: u64) {
+        // Clicked on a window? Dismiss any open menu and bail.
+        for i in (0..self.window_count).rev() {
+            let wid = self.z_order[i];
+            if self.window_states[wid] == WindowState::Minimized { continue; }
+            if let Some(ref w) = self.windows[wid] {
+                if w.visible
+                    && mouse_x >= w.x && mouse_x < w.x + w.width
+                    && mouse_y >= w.y && mouse_y < w.y + w.height
+                {
+                    self.context_menu_visible = false;
+                    return;
+                }
+            }
+        }
+
+        const MENU_W: u64 = 170;
+        const MENU_H: u64 = 22 + 6 * 22;
+        let mx = if mouse_x + MENU_W > self.screen_width {
+            self.screen_width.saturating_sub(MENU_W)
+        } else {
+            mouse_x
+        };
+        let my = if mouse_y + MENU_H > self.screen_height {
+            self.screen_height.saturating_sub(MENU_H)
+        } else {
+            mouse_y
+        };
+        self.context_menu_x       = mx;
+        self.context_menu_y       = my;
+        self.context_menu_visible = true;
+    }
+
+    /// Handle a left-click, checking the context menu first.
+    /// Returns `true` if the click was consumed by the context menu.
+    pub fn handle_context_menu_click(&mut self, mouse_x: u64, mouse_y: u64) -> bool {
+        if !self.context_menu_visible { return false; }
+
+        const MENU_W:   u64   = 170;
+        const ITEM_H:   u64   = 22;
+        const HEADER_H: u64   = 22;
+        const N:        usize = 6;
+        let menu_h = HEADER_H + N as u64 * ITEM_H;
+        let mx = self.context_menu_x;
+        let my = self.context_menu_y;
+
+        // Click outside → dismiss
+        if mouse_x < mx || mouse_x >= mx + MENU_W
+            || mouse_y < my || mouse_y >= my + menu_h
+        {
+            self.context_menu_visible = false;
+            return false;
+        }
+
+        self.context_menu_visible = false; // always close on any click inside
+
+        if mouse_y >= my + HEADER_H {
+            let idx = ((mouse_y - my - HEADER_H) / ITEM_H) as usize;
+            let styles = [
+                BackgroundStyle::Default,
+                BackgroundStyle::Sunset,
+                BackgroundStyle::Space,
+                BackgroundStyle::Aurora,
+                BackgroundStyle::Geometric,
+                BackgroundStyle::Image,
+            ];
+            if idx < styles.len() {
+                self.background_style = styles[idx];
+            }
+        }
+        true
+    }
+
+    /// Draw the context menu on top of everything else.
+    pub fn draw_context_menu(&self, graphics: &Graphics) {
+        if !self.context_menu_visible { return; }
+
+        const MENU_W:   u64   = 170;
+        const ITEM_H:   u64   = 22;
+        const HEADER_H: u64   = 22;
+        const N:        usize = 6;
+        let menu_h = HEADER_H + N as u64 * ITEM_H;
+        let mx = self.context_menu_x;
+        let my = self.context_menu_y;
+
+        // Drop shadow
+        graphics.fill_rect(mx + 3, my + 3, MENU_W, menu_h, 0xFF060810);
+
+        // Background
+        graphics.fill_rect(mx, my, MENU_W, menu_h, 0xFF14192A);
+
+        // Header gradient + accent line
+        graphics.fill_rect_gradient_h(mx, my, MENU_W, HEADER_H, 0xFF0D5FA0, 0xFF072C50);
+        graphics.fill_rect(mx, my + HEADER_H - 1, MENU_W, 1, 0xFF00AAFF);
+        fonts::draw_string(graphics, mx + 8, my + 7, "Wallpaper", 0xFFE8F0FE);
+
+        // Border
+        graphics.draw_rect(mx, my, MENU_W, menu_h, 0xFF1A5F9A, 1);
+
+        let names  = ["Default", "Sunset", "Space", "Aurora", "Geometric", "Image"];
+        let styles = [
+            BackgroundStyle::Default,
+            BackgroundStyle::Sunset,
+            BackgroundStyle::Space,
+            BackgroundStyle::Aurora,
+            BackgroundStyle::Geometric,
+            BackgroundStyle::Image,
+        ];
+
+        for i in 0..N {
+            let iy = my + HEADER_H + i as u64 * ITEM_H;
+            let selected = self.background_style == styles[i];
+
+            // Row background
+            if selected {
+                graphics.fill_rect(mx + 1, iy, MENU_W - 2, ITEM_H, 0xFF0D3A5A);
+            } else if i % 2 == 1 {
+                graphics.fill_rect(mx + 1, iy, MENU_W - 2, ITEM_H, 0xFF0E1220);
+            }
+
+            // Thin separator (skip first)
+            if i > 0 {
+                graphics.fill_rect(mx + 8, iy, MENU_W - 16, 1, 0xFF202840);
+            }
+
+            let text_col = if selected { 0xFF00D4FF } else { 0xFFB0C8E8 };
+            let marker   = if selected { "*" } else { " " };
+            fonts::draw_string(graphics, mx + 8,  iy + 7, marker,   text_col);
+            fonts::draw_string(graphics, mx + 22, iy + 7, names[i], text_col);
+        }
+    }
+
+    /// Return the currently selected background style.
+    pub fn get_background_style(&self) -> BackgroundStyle {
+        self.background_style
     }
 
     pub fn get_window(&self, window_id: usize) -> Option<&Window> {

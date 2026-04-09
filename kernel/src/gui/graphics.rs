@@ -4,6 +4,19 @@ extern crate alloc;
 use limine::framebuffer::Framebuffer;
 use crate::kernel::serial::SERIAL_PORT;
 
+/// Selects which procedural wallpaper to render on the desktop.
+#[derive(Clone, Copy, PartialEq)]
+pub enum BackgroundStyle {
+    Default,
+    Sunset,
+    Space,
+    Aurora,
+    Geometric,
+    /// Uses the PNG embedded from `assets/wallpaper.png` at build time.
+    /// Falls back to Default if the file was absent when building.
+    Image,
+}
+
 pub struct Graphics {
     framebuffer_addr: *mut u8,
     /// Back buffer in plain RAM — all drawing targets this.
@@ -332,6 +345,178 @@ impl Graphics {
                 gx += 40;
             }
             gy += 40;
+        }
+    }
+
+    /// Dispatch to the selected background style.
+    pub fn draw_background(&self, style: BackgroundStyle) {
+        match style {
+            BackgroundStyle::Default   => self.draw_desktop_background(),
+            BackgroundStyle::Sunset    => self.draw_background_sunset(),
+            BackgroundStyle::Space     => self.draw_background_space(),
+            BackgroundStyle::Aurora    => self.draw_background_aurora(),
+            BackgroundStyle::Geometric => self.draw_background_geometric(),
+            BackgroundStyle::Image     => self.draw_background_image(),
+        }
+    }
+
+    /// Warm sunset: deep purple at top fading to burnt orange at bottom.
+    fn draw_background_sunset(&self) {
+        let h = self.height;
+        let w = self.width;
+        // Sky: purple → magenta-red
+        self.fill_rect_gradient_v(0, 0, w, h * 55 / 100, 0xFF180A38, 0xFF8B1A50);
+        // Horizon band: red → orange
+        self.fill_rect_gradient_v(0, h * 55 / 100, w, h * 20 / 100, 0xFF8B1A50, 0xFFE05820);
+        // Ground: dark orange → near black
+        self.fill_rect_gradient_v(0, h * 75 / 100, w, h * 25 / 100, 0xFF501000, 0xFF140400);
+        // Horizon glow line
+        self.fill_rect(0, h * 55 / 100 - 1, w, 3, 0xFFFF8830);
+        // A few faint star dots in the upper sky
+        let mut seed: u64 = 0xCAFEBABE;
+        for _ in 0..60u32 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let sx = (seed >> 18) % w;
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let sy = (seed >> 18) % (h * 45 / 100);
+            self.put_pixel(sx, sy, 0xFFFFCCAA);
+        }
+    }
+
+    /// Deep space: near-black with procedural stars.
+    fn draw_background_space(&self) {
+        let h = self.height;
+        let w = self.width;
+        // Base: very dark blue-black gradient
+        self.fill_rect_gradient_v(0, 0, w, h, 0xFF04060E, 0xFF020408);
+        // Subtle nebula haze in the middle band
+        self.fill_rect_gradient_v(0, h / 4, w, h / 2, 0xFF04060E, 0xFF060A18);
+        self.fill_rect_gradient_v(0, h * 3 / 4, w, h / 4, 0xFF060A18, 0xFF020408);
+        // Stars: use LCG to scatter bright pixels
+        let mut seed: u64 = 0xDEADBEEF1234ABCD;
+        for _ in 0..400u32 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let sx = (seed >> 16) % w;
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let sy = (seed >> 16) % h;
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let bright = 0xA0u32 + ((seed >> 24) & 0x5F) as u32;
+            let color = 0xFF000000 | (bright << 16) | (bright << 8) | bright;
+            self.put_pixel(sx, sy, color);
+            // 1-in-16 chance of a brighter 2×2 star
+            if seed & 0xF == 0 {
+                self.put_pixel_safe(sx as i64 + 1, sy as i64,     color);
+                self.put_pixel_safe(sx as i64,     sy as i64 + 1, color);
+                self.put_pixel_safe(sx as i64 + 1, sy as i64 + 1, color);
+            }
+        }
+    }
+
+    /// Aurora borealis: dark teal base with green and blue-violet glow bands.
+    fn draw_background_aurora(&self) {
+        let h = self.height;
+        let w = self.width;
+        // Dark teal base
+        self.fill_rect_gradient_v(0, 0, w, h, 0xFF030E12, 0xFF020810);
+        // Green aurora band (upper third)
+        let g1_top = h / 5;
+        for row in 0..100u64 {
+            if g1_top + row >= h { break; }
+            let t = if row < 50 { row * 2 } else { (100 - row) * 2 };
+            let g = (t * 45 / 100) as u32;
+            let b = (t * 20 / 100) as u32;
+            self.fill_rect(0, g1_top + row, w, 1, 0xFF000000 | (g << 8) | b);
+        }
+        // Blue-violet aurora band (middle)
+        let g2_top = h * 2 / 5;
+        for row in 0..80u64 {
+            if g2_top + row >= h { break; }
+            let t = if row < 40 { row * 2 } else { (80 - row) * 2 };
+            let r = (t * 18 / 100) as u32;
+            let b = (t * 50 / 100) as u32;
+            let g = (t * 10 / 100) as u32;
+            self.fill_rect(0, g2_top + row, w, 1, 0xFF000000 | (r << 16) | (g << 8) | b);
+        }
+        // Faint star field
+        let mut seed: u64 = 0x1234567890ABCDEF;
+        for _ in 0..120u32 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let sx = (seed >> 16) % w;
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let sy = (seed >> 16) % h;
+            self.put_pixel(sx, sy, 0xFF6090A0);
+        }
+    }
+
+    /// Geometric: dark grid with subtle diagonal accent lines.
+    fn draw_background_geometric(&self) {
+        let h = self.height;
+        let w = self.width;
+        // Dark gradient base
+        self.fill_rect_gradient_v(0, 0, w, h, 0xFF06080F, 0xFF030408);
+        // Vertical grid lines
+        let grid_col = 0xFF0C1220;
+        let mut x = 0u64;
+        while x < w { self.fill_rect(x, 0, 1, h, grid_col); x += 80; }
+        // Horizontal grid lines
+        let mut y = 0u64;
+        while y < h { self.fill_rect(0, y, w, 1, grid_col); y += 80; }
+        // Diagonal accent lines (top-left to bottom-right)
+        let accent = 0xFF0A1428;
+        let step = 160i64;
+        let mut s: i64 = -(h as i64);
+        while s < w as i64 {
+            self.draw_line(s, 0, s + h as i64, h as i64, accent);
+            s += step;
+        }
+        // Bright dot at each grid intersection
+        let dot_col = 0xFF141E30;
+        let mut gy = 0u64;
+        while gy < h {
+            let mut gx = 0u64;
+            while gx < w {
+                self.put_pixel(gx, gy, dot_col);
+                gx += 80;
+            }
+            gy += 80;
+        }
+    }
+
+    /// Blit the PNG embedded from `assets/wallpaper.png` (decoded to RGBA at
+    /// build time) onto the whole screen using nearest-neighbour scaling.
+    /// Falls back to the Default gradient when no image was embedded.
+    fn draw_background_image(&self) {
+        let w_img = crate::wallpaper::WALLPAPER_W as u64;
+        let h_img = crate::wallpaper::WALLPAPER_H as u64;
+        if w_img == 0 || h_img == 0 {
+            self.draw_desktop_background();
+            return;
+        }
+
+        let pixels  = crate::wallpaper::PIXELS;
+        let sw      = self.width;
+        let sh      = self.height;
+        let w_total = self.width as usize;
+
+        unsafe {
+            for sy in 0..sh {
+                // Map screen row → source row
+                let py = (sy * h_img / sh) as usize;
+                for sx in 0..sw {
+                    // Map screen col → source col
+                    let px  = (sx * w_img / sw) as usize;
+                    let idx = (py * w_img as usize + px) * 4;
+                    // Bounds check — pixels.len() is known at compile time so
+                    // this branch is almost always eliminated by the optimizer.
+                    if idx + 2 < pixels.len() {
+                        let r = pixels[idx    ] as u32;
+                        let g = pixels[idx + 1] as u32;
+                        let b = pixels[idx + 2] as u32;
+                        let offset = sy as usize * w_total + sx as usize;
+                        *self.back_buffer.add(offset) = 0xFF00_0000 | (r << 16) | (g << 8) | b;
+                    }
+                }
+            }
         }
     }
 

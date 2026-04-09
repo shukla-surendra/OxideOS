@@ -2,6 +2,8 @@
 
 Oxide OS is a operating system written in Rust. This repository demonstrates how to set up a basic kernel using Rust and the Limine bootloader.
 
+![OxideOS Screenshot](./oxideos.png)
+
 ## Overview
 
 This project is intended for learning and experimentation with OS development in Rust. You are free to use, modify, and improve Oxide OS. For full licensing terms, see the [LICENSE](./LICENSE) file.
