@@ -37,7 +37,7 @@ const EVENT_ARROW_RIGHT: u16 = 0x103;
 // ── Tab-completion word list ───────────────────────────────────────────────
 const COMMANDS: &[&str] = &[
     "about", "cat", "cd", "clear", "cls", "echo",
-    "help", "history", "ls", "mkdir", "pid",
+    "help", "history", "kill", "ls", "mkdir", "pid",
     "ps", "pwd", "rm", "run", "sysinfo", "ticks", "touch",
     "uptime", "version", "write",
 ];
@@ -215,15 +215,14 @@ impl TerminalApp {
 
     pub fn window_id(&self) -> usize { self.window_id }
 
-    /// Called by the main loop when the background task exits.
-    /// Drains captured stdout and shows the exit code.
-    pub fn on_task_exit(&mut self, exit_code: i64) {
-        unsafe {
-            crate::kernel::user_mode::output_drain_lines(|line| {
-                self.push_line(line);
-            });
-        }
-        self.push_line(&format!("exited with code {}", exit_code));
+    /// Called by the main loop when a task exits.
+    /// Drains captured stdout and shows the exit status.
+    pub fn on_task_exit(&mut self, pid: u8, exit_code: i64) {
+        crate::kernel::scheduler::output_drain_task(
+            (pid as usize).saturating_sub(1),
+            |line| self.push_line(line),
+        );
+        self.push_line(&format!("[pid {}] exited with code {}", pid, exit_code));
     }
 
     pub fn process_pending_input(&mut self, focused: bool) -> bool {
@@ -565,7 +564,8 @@ impl TerminalApp {
                 self.push_line("Programs:");
                 self.push_line("  run <name>         - spawn user program");
                 self.push_line("  run                - list programs");
-                self.push_line("  ps                 - show running task");
+                self.push_line("  ps                 - show all tasks");
+                self.push_line("  kill <pid>         - terminate a task");
             }
 
             "clear" | "cls" => self.history.clear(),
@@ -643,25 +643,44 @@ impl TerminalApp {
                 match crate::kernel::programs::find(name) {
                     None => self.push_line(&format!("run: unknown program '{}'", name)),
                     Some(code) => {
-                        unsafe {
-                            match crate::kernel::scheduler::spawn(code, name) {
-                                Ok(_)  => self.push_line(&format!("spawned '{}'", name)),
-                                Err(e) => self.push_line(&format!("run: {}", e)),
-                            }
+                        match unsafe { crate::kernel::scheduler::spawn(code, name) } {
+                            Ok(pid) => self.push_line(&format!("spawned '{}' (pid {})", name, pid)),
+                            Err(e)  => self.push_line(&format!("run: {}", e)),
                         }
                     }
                 }
             }
 
             "ps" => {
-                let task = unsafe { &*(&raw const crate::kernel::scheduler::SCHED.task) };
                 use crate::kernel::scheduler::TaskState;
-                match task.state {
-                    TaskState::Empty        => self.push_line("no tasks"),
-                    TaskState::Ready        => self.push_line(&format!("[1] {} (ready)",   task.name_str())),
-                    TaskState::Running      => self.push_line(&format!("[1] {} (running)", task.name_str())),
-                    TaskState::Sleeping(t)  => self.push_line(&format!("[1] {} (sleeping until tick {})", task.name_str(), t)),
-                    TaskState::Dead(code)   => self.push_line(&format!("[1] {} (exited {})", task.name_str(), code)),
+                let infos = crate::kernel::scheduler::task_infos();
+                let mut any = false;
+                for info in &infos {
+                    if matches!(info.state, TaskState::Empty) { continue; }
+                    let name = core::str::from_utf8(&info.name[..info.name_len]).unwrap_or("?");
+                    let state_str = match info.state {
+                        TaskState::Empty        => continue,
+                        TaskState::Ready        => "ready",
+                        TaskState::Running      => "running",
+                        TaskState::Sleeping(_)  => "sleeping",
+                        TaskState::Dead(_)      => "dead",
+                    };
+                    self.push_line(&format!("  [{}] {} ({})", info.pid, name, state_str));
+                    any = true;
+                }
+                if !any { self.push_line("no tasks"); }
+            }
+
+            "kill" => {
+                match parts.next().and_then(|s| s.parse::<u8>().ok()) {
+                    None      => self.push_line("usage: kill <pid>"),
+                    Some(pid) => {
+                        if unsafe { crate::kernel::scheduler::kill(pid) } {
+                            self.push_line(&format!("killed pid {}", pid));
+                        } else {
+                            self.push_line(&format!("kill: no such task (pid {})", pid));
+                        }
+                    }
                 }
             }
 

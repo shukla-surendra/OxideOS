@@ -482,3 +482,94 @@ pub unsafe fn map_user_region(
 pub unsafe fn copy_to_region(dest: u64, bytes: &[u8]) {
     unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), dest as *mut u8, bytes.len()) };
 }
+
+// ── Per-process page-table helpers ───────────────────────────────────────────
+
+/// Create a new user page table.
+///
+/// Allocates a fresh L4 table, zeroes the lower half (user space, indices
+/// 0–255) and copies the kernel higher-half entries (indices 256–511) from
+/// the current kernel L4 so that kernel code and interrupt handlers remain
+/// accessible while the task runs.  Returns the physical address of the new
+/// L4 table (to be loaded into CR3).
+pub unsafe fn create_user_page_table() -> Option<u64> {
+    let inner = unsafe { &mut *ALLOCATOR.inner.get() };
+    if !inner.initialized.load(Ordering::Relaxed) { return None; }
+
+    // Capture what we need before borrowing frame_allocator (field split).
+    let hho          = inner.page_table_manager.as_ref()?.higher_half_offset;
+    let kernel_l4_pa = inner.page_table_manager.as_ref()?.l4_table_phys;
+
+    let new_l4_pa = inner.frame_allocator.allocate_frame()?;
+
+    let new_l4    = (new_l4_pa    + hho) as *mut u64;
+    let kernel_l4 = (kernel_l4_pa + hho) as *const u64;
+
+    unsafe {
+        // Zero user half
+        for i in 0..256usize   { *new_l4.add(i) = 0; }
+        // Clone kernel half
+        for i in 256..512usize { *new_l4.add(i) = *kernel_l4.add(i); }
+    }
+    Some(new_l4_pa)
+}
+
+/// Map user-space pages into the page table identified by `cr3_phys` WITHOUT
+/// switching the CPU's CR3.
+///
+/// Physical frames are zeroed via the higher-half physical window (always
+/// accessible in all page tables).  Intermediate page-table nodes (L3/L2/L1)
+/// are allocated from the global frame allocator and installed in `cr3_phys`.
+pub unsafe fn map_user_region_in(
+    cr3_phys:   u64,
+    virt_addr:  u64,
+    num_pages:  usize,
+    writable:   bool,
+    executable: bool,
+) -> Result<(), &'static str> {
+    let inner = unsafe { &mut *ALLOCATOR.inner.get() };
+    if !inner.initialized.load(Ordering::Relaxed) {
+        return Err("Paging allocator not initialized");
+    }
+
+    let flags  = PageTableFlags::user_flags(writable, executable);
+    let ptm    = inner.page_table_manager.as_mut().ok_or("PTM unavailable")?;
+    let hho    = ptm.higher_half_offset;
+    let saved  = ptm.l4_table_phys;
+    ptm.l4_table_phys = cr3_phys;
+
+    let mut result: Result<(), &'static str> = Ok(());
+    for page in 0..num_pages {
+        let page_virt = virt_addr + (page * 4096) as u64;
+        let phys = match inner.frame_allocator.allocate_frame() {
+            Some(p) => p,
+            None    => { result = Err("Out of frames"); break; }
+        };
+        // Zero the physical frame via the higher-half identity window.
+        unsafe { core::ptr::write_bytes((phys + hho) as *mut u8, 0, 4096); }
+        if let Err(e) = unsafe {
+            ptm.map(page_virt, phys, flags, &mut inner.frame_allocator)
+        } {
+            result = Err(e); break;
+        }
+    }
+
+    // Always restore the kernel L4 pointer.
+    inner.page_table_manager.as_mut().unwrap().l4_table_phys = saved;
+    result
+}
+
+/// Copy bytes into virtual address `dest` inside the page table `cr3_phys`.
+///
+/// Temporarily switches the CPU's CR3 to `cr3_phys`, performs the copy, then
+/// restores the original CR3.  Safe because the kernel higher-half is mapped
+/// identically in every page table.
+pub unsafe fn copy_to_region_in(cr3_phys: u64, dest: u64, bytes: &[u8]) {
+    let saved: u64;
+    unsafe {
+        core::arch::asm!("mov {}, cr3", out(reg) saved, options(nostack, nomem));
+        core::arch::asm!("mov cr3, {}", in(reg) cr3_phys, options(nostack, nomem));
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), dest as *mut u8, bytes.len());
+        core::arch::asm!("mov cr3, {}", in(reg) saved, options(nostack, nomem));
+    }
+}

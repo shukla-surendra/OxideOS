@@ -283,10 +283,10 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
         // Blit the completed back buffer to the real framebuffer in one pass.
         graphics.present();
 
-        // Run the scheduler: give the active task one time slice (~20 ms).
-        // When the task exits, drain its output to the terminal.
-        if let Some(exit_code) = unsafe { kernel::scheduler::tick() } {
-            terminal_app.on_task_exit(exit_code);
+        // Run the scheduler: give the next ready task one time slice (~20 ms).
+        // Returns Some((pid, exit_code)) when a task permanently exits.
+        if let Some((pid, exit_code)) = unsafe { kernel::scheduler::tick() } {
+            terminal_app.on_task_exit(pid, exit_code);
             terminal_dirty = true;
         }
 
@@ -392,8 +392,18 @@ unsafe fn draw_sysinfo_panel(
 
     // ── Tasks ─────────────────────────────────────────────────────────────
     fonts::draw_string(graphics, cx, cy, "TASKS", 0xFF007ACC);
-    let task_str = if kernel::scheduler::has_task() { "1 running" } else { "idle" };
-    let task_col = if kernel::scheduler::has_task() { 0xFF40C040u32 } else { 0xFF4A6080u32 };
+    let n = kernel::scheduler::task_count();
+    let (task_str, task_col): (&str, u32) = match n {
+        0 => ("idle",       0xFF4A6080),
+        1 => ("1 running",  0xFF40C040),
+        2 => ("2 running",  0xFF40C040),
+        3 => ("3 running",  0xFF40C040),
+        4 => ("4 running",  0xFF40C040),
+        5 => ("5 running",  0xFF40C040),
+        6 => ("6 running",  0xFF40C040),
+        7 => ("7 running",  0xFF40C040),
+        _ => ("8 running",  0xFF40C040),
+    };
     fonts::draw_string(graphics, cx + 63, cy, task_str, task_col);
     cy += row;
 

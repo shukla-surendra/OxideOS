@@ -48,42 +48,13 @@ const USER_CODE_ADDR: u64 = 0x0040_0000;
 const USER_STACK_TOP: u64 = 0x0080_0000;
 const USER_STACK_PAGES: usize = 4;
 
-// ── Output capture buffer ──────────────────────────────────────────────────
-// write_console() writes here while a user program is running.
-// The terminal drains it after the program exits.
+// ── Output capture ─────────────────────────────────────────────────────────
+// Routed to per-task buffers in the scheduler.
 
-const OUTPUT_BUF_CAP: usize = 4096;
-static mut OUTPUT_BUF: [u8; OUTPUT_BUF_CAP] = [0; OUTPUT_BUF_CAP];
-static mut OUTPUT_BUF_LEN: usize = 0;
-
-/// Append bytes to the capture buffer (called from KernelRuntime::write_console).
+/// Append bytes to the currently-running task's output buffer.
 pub fn output_write(bytes: &[u8]) {
-    unsafe {
-        let used = OUTPUT_BUF_LEN;
-        let space = OUTPUT_BUF_CAP - used;
-        let n = bytes.len().min(space);
-        OUTPUT_BUF[used..used + n].copy_from_slice(&bytes[..n]);
-        OUTPUT_BUF_LEN = used + n;
-    }
-}
-
-/// Reset the capture buffer (call before launching a new program).
-pub fn output_clear() {
-    unsafe { OUTPUT_BUF_LEN = 0; }
-}
-
-/// Drain the buffer: call `f` once per '\n'-terminated line, then clear.
-pub fn output_drain_lines(mut f: impl FnMut(&str)) {
-    unsafe {
-        let data = core::str::from_utf8(&OUTPUT_BUF[..OUTPUT_BUF_LEN]).unwrap_or("");
-        for line in data.split('\n') {
-            // skip the trailing empty string after a final newline
-            if !line.is_empty() {
-                f(line);
-            }
-        }
-        OUTPUT_BUF_LEN = 0;
-    }
+    let idx = unsafe { crate::kernel::scheduler::CURRENT_TASK_IDX };
+    crate::kernel::scheduler::output_write_for_task(idx, bytes);
 }
 const USER_PROGRAM: [u8; 23] = [
     0x48, 0xC7, 0xC0, 0x28, 0x00, 0x00, 0x00,
@@ -216,14 +187,16 @@ pub fn set_active(v: bool) {
 }
 
 /// Run a user task for the first time, entering at `entry` with `stack_top`.
-/// Returns when exit_to_kernel is called (by Exit syscall or timer preemption).
-pub unsafe fn launch_at(entry: u64, stack_top: u64) -> i64 {
+/// Switches to `cr3` (per-process page table) before entering ring 3.
+pub unsafe fn launch_at(entry: u64, stack_top: u64, cr3: u64) -> i64 {
+    unsafe { core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, nomem)); }
     enter_user_mode(entry, stack_top)
 }
 
 /// Resume a previously saved task context (e.g. after preemption or sleep).
-/// Returns when exit_to_kernel is called.
-pub unsafe fn resume_user_context(ctx: &TaskContext) -> i64 {
+/// Switches to `cr3` before returning to ring 3.
+pub unsafe fn resume_user_context(ctx: &TaskContext, cr3: u64) -> i64 {
+    unsafe { core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, nomem)); }
     USER_MODE_ACTIVE.store(true, Ordering::Relaxed);
     resume_user_context_trampoline(ctx as *const TaskContext)
 }

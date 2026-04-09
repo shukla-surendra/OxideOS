@@ -1,6 +1,6 @@
-# Oxide OS – Hobby Operating System in Rust
+# Oxide OS – Operating System in Rust
 
-Oxide OS is a hobby operating system written in Rust. This repository demonstrates how to set up a basic kernel using Rust and the Limine bootloader.
+Oxide OS is a operating system written in Rust. This repository demonstrates how to set up a basic kernel using Rust and the Limine bootloader.
 
 ## Overview
 

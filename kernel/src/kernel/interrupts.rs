@@ -177,8 +177,9 @@ unsafe fn handle_timer_interrupt(frame: *mut InterruptFrame) {
         if (*sched).slice_remaining > 0 {
             (*sched).slice_remaining -= 1;
         }
+        let cur = (*sched).current;
         if (*sched).slice_remaining == 0
-            && (*sched).task.state == crate::kernel::scheduler::TaskState::Running
+            && (*sched).tasks[cur].state == crate::kernel::scheduler::TaskState::Running
         {
             let ctx = frame_to_ctx(&*frame);
             crate::kernel::scheduler::preempt(ctx);

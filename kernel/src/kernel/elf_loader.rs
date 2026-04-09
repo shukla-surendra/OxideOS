@@ -4,6 +4,7 @@
 //! Maps every PT_LOAD segment, copies file data, zeros BSS, returns e_entry.
 
 use crate::kernel::paging_allocator;
+use core::arch::asm;
 
 const PAGE_SIZE: usize = 4096;
 const ELFMAG: [u8; 4] = [0x7F, b'E', b'L', b'F'];
@@ -108,5 +109,85 @@ pub unsafe fn load(data: &[u8]) -> Result<u64, &'static str> {
         }
     }
 
+    Ok(ehdr.e_entry)
+}
+
+/// Load an ELF64 binary into the address space identified by `cr3`.
+///
+/// Pass 1 maps segments into `cr3` via `map_user_region_in` (no CR3 switch).
+/// Pass 2 switches to `cr3`, zeroes+copies each segment, then restores CR3.
+/// `map_user_region_in` pre-zeros every physical frame, so BSS is implicitly
+/// cleared during pass 1.
+pub unsafe fn load_in(data: &[u8], cr3: u64) -> Result<u64, &'static str> {
+    let ehdr_size = core::mem::size_of::<Elf64Ehdr>();
+    if data.len() < ehdr_size { return Err("file too small"); }
+
+    let ehdr = unsafe { &*(data.as_ptr() as *const Elf64Ehdr) };
+    if ehdr.e_ident[..4] != ELFMAG    { return Err("bad ELF magic"); }
+    if ehdr.e_ident[4] != ELFCLASS64  { return Err("not ELF64"); }
+    if ehdr.e_ident[5] != ELFDATA2LSB { return Err("not little-endian"); }
+    if ehdr.e_type    != ET_EXEC      { return Err("not an executable"); }
+    if ehdr.e_machine != EM_X86_64    { return Err("not x86-64"); }
+
+    let ph_size = ehdr.e_phentsize as usize;
+    if ph_size < core::mem::size_of::<Elf64Phdr>() { return Err("phdr too small"); }
+
+    let phoff = ehdr.e_phoff as usize;
+    let phnum = ehdr.e_phnum as usize;
+
+    // ── Pass 1: map segments into `cr3` ──────────────────────────────────────
+    for i in 0..phnum {
+        let ph_off = phoff + i * ph_size;
+        if ph_off + core::mem::size_of::<Elf64Phdr>() > data.len() {
+            return Err("phdr out of bounds");
+        }
+        let ph = unsafe { &*(data[ph_off..].as_ptr() as *const Elf64Phdr) };
+        if ph.p_type != PT_LOAD || ph.p_memsz == 0 { continue; }
+
+        let va_start = ph.p_vaddr & !0xFFF;
+        let va_end   = (ph.p_vaddr + ph.p_memsz + 0xFFF) & !0xFFF;
+        let npages   = ((va_end - va_start) / PAGE_SIZE as u64) as usize;
+        let writable = (ph.p_flags & PF_W) != 0;
+
+        let _ = paging_allocator::map_user_region_in(cr3, va_start, npages, writable, true);
+    }
+
+    // ── Pass 2: zero BSS + copy file data via CR3 switch ─────────────────────
+    let saved_cr3: u64;
+    unsafe {
+        asm!("mov {}, cr3", out(reg) saved_cr3, options(nostack, nomem));
+        asm!("mov cr3, {}", in(reg) cr3,        options(nostack, nomem));
+    }
+
+    for i in 0..phnum {
+        let ph_off = phoff + i * ph_size;
+        let ph = unsafe { &*(data[ph_off..].as_ptr() as *const Elf64Phdr) };
+        if ph.p_type != PT_LOAD || ph.p_memsz == 0 { continue; }
+
+        let va_start = ph.p_vaddr & !0xFFF;
+        let va_end   = (ph.p_vaddr + ph.p_memsz + 0xFFF) & !0xFFF;
+
+        // Zero (covers BSS and alignment padding).
+        unsafe { core::ptr::write_bytes(va_start as *mut u8, 0, (va_end - va_start) as usize); }
+
+        // Copy file image.
+        if ph.p_filesz > 0 {
+            let src = ph.p_offset as usize;
+            let end = src + ph.p_filesz as usize;
+            if end > data.len() {
+                unsafe { asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack, nomem)); }
+                return Err("segment beyond EOF");
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    data[src..].as_ptr(),
+                    ph.p_vaddr as *mut u8,
+                    ph.p_filesz as usize,
+                );
+            }
+        }
+    }
+
+    unsafe { asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack, nomem)); }
     Ok(ehdr.e_entry)
 }
