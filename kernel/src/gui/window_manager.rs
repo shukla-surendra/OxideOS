@@ -763,6 +763,10 @@ impl WindowManager {
         self.focused_window
     }
 
+    pub fn set_focused(&mut self, id: Option<usize>) {
+        self.focused_window = id;
+    }
+
     pub fn is_window_visible(&self, window_id: usize) -> bool {
         if window_id >= MAX_WINDOWS {
             return false;

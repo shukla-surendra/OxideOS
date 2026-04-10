@@ -35,6 +35,12 @@ pub enum Syscall {
     ReadDir       = 70,
     Dup2          = 81,
     Kill          = 91,
+    MsgqCreate    = 115,
+    Msgsnd        = 116,
+    Msgrcv        = 117,
+    MsgqDestroy   = 118,
+    MsgrcvWait    = 119,
+    MsgqLen       = 120,
     Invalid       = u64::MAX,
 }
 
@@ -62,6 +68,12 @@ impl Syscall {
             Self::ReadDir       => "readdir",
             Self::Dup2          => "dup2",
             Self::Kill          => "kill",
+            Self::MsgqCreate    => "msgq_create",
+            Self::Msgsnd        => "msgsnd",
+            Self::Msgrcv        => "msgrcv",
+            Self::MsgqDestroy   => "msgq_destroy",
+            Self::MsgrcvWait    => "msgrcv_wait",
+            Self::MsgqLen       => "msgq_len",
             Self::Invalid       => "invalid",
         }
     }
@@ -91,6 +103,12 @@ impl From<u64> for Syscall {
             70 => Self::ReadDir,
             81 => Self::Dup2,
             91 => Self::Kill,
+            115 => Self::MsgqCreate,
+            116 => Self::Msgsnd,
+            117 => Self::Msgrcv,
+            118 => Self::MsgqDestroy,
+            119 => Self::MsgrcvWait,
+            120 => Self::MsgqLen,
             _  => Self::Invalid,
         }
     }
@@ -208,6 +226,19 @@ pub trait SyscallRuntime {
     // ── IPC ────────────────────────────────────────────────────────────────
     /// Allocate a pipe; write (read_fd, write_fd) to the two user pointers.
     fn pipe_alloc(&mut self, read_fd_ptr: u64, write_fd_ptr: u64) -> i64 { ENOSYS }
+
+    /// Create or open a message queue.
+    fn msgq_create(&mut self, _id: u32) -> i64 { ENOSYS }
+    /// Send a message to a queue.
+    fn msgsnd(&mut self, _id: u32, _type_id: u32, _data: &[u8]) -> i64 { ENOSYS }
+    /// Non-blocking receive from a queue (EAGAIN if empty).
+    fn msgrcv(&mut self, _id: u32, _msg_out_ptr: u64) -> i64 { ENOSYS }
+    /// Destroy a message queue and free its slot.
+    fn msgq_destroy(&mut self, _id: u32) -> i64 { ENOSYS }
+    /// Blocking receive — task sleeps until a message is available.
+    fn msgrcv_wait(&mut self, _id: u32, _msg_out_ptr: u64) -> i64 { ENOSYS }
+    /// Return the number of pending messages in the queue.
+    fn msgq_len(&mut self, _id: u32) -> i64 { ENOSYS }
 }
 
 // ── Validation ─────────────────────────────────────────────────────────────
@@ -261,6 +292,12 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
                                                         request.arg3, request.arg4) },
         Syscall::Dup2          => sys_dup2(runtime, request.arg1 as i32, request.arg2 as i32),
         Syscall::Kill          => sys_kill(runtime, request.arg1),
+        Syscall::MsgqCreate    => sys_msgq_create(runtime, request.arg1 as u32),
+        Syscall::Msgsnd        => unsafe { sys_msgsnd(runtime, request.arg1 as u32, request.arg2 as u32, request.arg3, request.arg4) },
+        Syscall::Msgrcv        => unsafe { sys_msgrcv(runtime, request.arg1 as u32, request.arg2) },
+        Syscall::MsgqDestroy   => sys_msgq_destroy(runtime, request.arg1 as u32),
+        Syscall::MsgrcvWait    => unsafe { sys_msgrcv_wait(runtime, request.arg1 as u32, request.arg2) },
+        Syscall::MsgqLen       => sys_msgq_len(runtime, request.arg1 as u32),
         Syscall::Invalid       => SyscallResult::err(ENOSYS),
     }
 }
@@ -286,21 +323,24 @@ fn sys_close<R: SyscallRuntime>(runtime: &mut R, fd: i32) -> SyscallResult {
 unsafe fn sys_read<R: SyscallRuntime>(
     runtime: &mut R, fd: i32, buf_ptr: u64, count: u64,
 ) -> SyscallResult {
-    // stdin: read one byte per call from the global ring buffer
-    if fd == 0 {
-        if count == 0 { return SyscallResult::ok(0); }
-        if let Err(code) = validate_user_range(buf_ptr, 1) {
-            return SyscallResult::err(code);
-        }
-        let r = runtime.get_char();
-        if r < 0 { return SyscallResult::err(r); }
-        unsafe { ptr::write(buf_ptr as *mut u8, r as u8); }
-        return SyscallResult::ok(1);
-    }
+    if count == 0 { return SyscallResult::ok(0); }
     if let Err(code) = validate_user_range(buf_ptr, count) {
         return SyscallResult::err(code);
     }
     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr as *mut u8, count as usize) };
+    if fd == 0 {
+        // Try FD-table first (supports dup2-redirected stdin from a pipe).
+        // fs_read returns EBADF (-5) when fd=0 has no FdTable entry.
+        let r = runtime.fs_read(fd, buf);
+        if r != EBADF {
+            return if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) };
+        }
+        // Fallback: stdin ring buffer (one byte per call).
+        let r = runtime.get_char();
+        if r < 0 { return SyscallResult::err(r); }
+        buf[0] = r as u8;
+        return SyscallResult::ok(1);
+    }
     let result = runtime.fs_read(fd, buf);
     if result < 0 { SyscallResult::err(result) } else { SyscallResult::ok(result) }
 }
@@ -308,21 +348,24 @@ unsafe fn sys_read<R: SyscallRuntime>(
 unsafe fn sys_write<R: SyscallRuntime>(
     runtime: &mut R, fd: i32, buf_ptr: u64, count: u64,
 ) -> SyscallResult {
+    if fd < 0 { return SyscallResult::err(EBADF); }
+    if let Err(code) = validate_user_range(buf_ptr, count) {
+        return SyscallResult::err(code);
+    }
+    let buf = unsafe { slice::from_raw_parts(buf_ptr as *const u8, count as usize) };
     if fd == 1 || fd == 2 {
-        // stdout / stderr → serial console
-        if let Err(code) = validate_user_range(buf_ptr, count) {
-            return SyscallResult::err(code);
+        // Try FD-table first (supports dup2-redirected stdout/stderr to a pipe).
+        // fs_write_file returns EBADF (-5) when fd=1/2 has no FdTable entry.
+        let r = runtime.fs_write_file(fd, buf);
+        if r != EBADF {
+            return if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) };
         }
-        let buf = unsafe { slice::from_raw_parts(buf_ptr as *const u8, count as usize) };
+        // Fallback: plain console.
         runtime.write_console(buf);
         return SyscallResult::ok(count as i64);
     }
+    // fd >= 3 (or fd == 0 which is always EBADF for writes)
     if fd >= 3 {
-        // File descriptor → RamFS
-        if let Err(code) = validate_user_range(buf_ptr, count) {
-            return SyscallResult::err(code);
-        }
-        let buf = unsafe { slice::from_raw_parts(buf_ptr as *const u8, count as usize) };
         let result = runtime.fs_write_file(fd, buf);
         return if result < 0 { SyscallResult::err(result) } else { SyscallResult::ok(result) };
     }
@@ -416,5 +459,52 @@ unsafe fn sys_readdir<R: SyscallRuntime>(
 
 fn sys_dup2<R: SyscallRuntime>(runtime: &mut R, old_fd: i32, new_fd: i32) -> SyscallResult {
     let r = runtime.dup2_impl(old_fd, new_fd);
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+fn sys_msgq_create<R: SyscallRuntime>(runtime: &mut R, id: u32) -> SyscallResult {
+    let r = runtime.msgq_create(id);
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+unsafe fn sys_msgsnd<R: SyscallRuntime>(
+    runtime: &mut R, id: u32, type_id: u32, data_ptr: u64, data_len: u64,
+) -> SyscallResult {
+    if let Err(e) = validate_user_range(data_ptr, data_len) { return SyscallResult::err(e); }
+    let data = unsafe { slice::from_raw_parts(data_ptr as *const u8, data_len as usize) };
+    let r = runtime.msgsnd(id, type_id, data);
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+unsafe fn sys_msgrcv<R: SyscallRuntime>(
+    runtime: &mut R, id: u32, msg_out_ptr: u64,
+) -> SyscallResult {
+    if let Err(e) = validate_user_range(msg_out_ptr, size_of::<crate::kernel::ipc::Message>() as u64) {
+        return SyscallResult::err(e);
+    }
+    let r = runtime.msgrcv(id, msg_out_ptr);
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+fn sys_msgq_destroy<R: SyscallRuntime>(runtime: &mut R, id: u32) -> SyscallResult {
+    let r = runtime.msgq_destroy(id);
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+/// Blocking receive.  Returns ENOSYS if the runtime does not implement it
+/// (e.g. test/stub runtimes); real kernel runtime diverges into the scheduler.
+unsafe fn sys_msgrcv_wait<R: SyscallRuntime>(
+    runtime: &mut R, id: u32, msg_out_ptr: u64,
+) -> SyscallResult {
+    if let Err(e) = validate_user_range(msg_out_ptr, size_of::<crate::kernel::ipc::Message>() as u64) {
+        return SyscallResult::err(e);
+    }
+    let r = runtime.msgrcv_wait(id, msg_out_ptr);
+    // If the call diverged (blocking path), we never reach here.
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+fn sys_msgq_len<R: SyscallRuntime>(runtime: &mut R, id: u32) -> SyscallResult {
+    let r = runtime.msgq_len(id);
     if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
 }

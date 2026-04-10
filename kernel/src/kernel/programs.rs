@@ -48,6 +48,10 @@ pub static HELLO_RUST: &[u8] =
 pub static SH: &[u8] =
     include_bytes!("../../../userspace/bin/sh.elf");
 
+/// terminal — userspace GUI terminal (compositor IPC, pipe support).
+pub static TERMINAL: &[u8] =
+    include_bytes!("../../../userspace/bin/terminal.elf");
+
 /// Look up a built-in program by name.
 pub fn find(name: &str) -> Option<&'static [u8]> {
     match name {
@@ -62,6 +66,7 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
         "filetest"   => Some(FILETEST),
         "hello_rust" => Some(HELLO_RUST),
         "sh"         => Some(SH),
+        "terminal"   => Some(TERMINAL),
         _            => None,
     }
 }
@@ -70,5 +75,5 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
 pub const NAMES: &[&str] = &[
     "hello", "counter", "sysinfo", "input",
     "fib", "primes", "countdown", "spinner", "filetest",
-    "hello_rust", "sh",
+    "hello_rust", "sh", "terminal",
 ];

@@ -11,11 +11,14 @@ const PIPE_COUNT: usize = 8;
 const PIPE_BUF: usize = 4096;
 
 struct Pipe {
-    buf:        [u8; PIPE_BUF],
-    head:       usize, // next read position
-    tail:       usize, // next write position
-    read_open:  bool,
-    write_open: bool,
+    buf:         [u8; PIPE_BUF],
+    head:        usize, // next read position
+    tail:        usize, // next write position
+    read_open:   bool,
+    write_open:  bool,
+    /// Reference counts: how many FD-table entries (or raw fds) reference each end.
+    write_refs:  u8,
+    read_refs:   u8,
 }
 
 impl Pipe {
@@ -26,6 +29,8 @@ impl Pipe {
             tail:       0,
             read_open:  false,
             write_open: false,
+            write_refs: 0,
+            read_refs:  0,
         }
     }
 
@@ -46,7 +51,7 @@ pub fn is_pipe_fd(fd: i32) -> bool {
 }
 
 fn pipe_index(fd: i32) -> usize { ((fd - PIPE_FD_BASE) / 2) as usize }
-fn is_read_fd(fd: i32)  -> bool { (fd - PIPE_FD_BASE) % 2 == 0 }
+pub fn is_read_fd(fd: i32) -> bool { (fd - PIPE_FD_BASE) % 2 == 0 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
@@ -60,12 +65,26 @@ pub unsafe fn alloc() -> Option<(i32, i32)> {
             (*p).tail       = 0;
             (*p).read_open  = true;
             (*p).write_open = true;
+            (*p).read_refs  = 1;
+            (*p).write_refs = 1;
             let read_fd  = PIPE_FD_BASE + (i as i32) * 2;
             let write_fd = read_fd + 1;
             return Some((read_fd, write_fd));
         }
     }
     None
+}
+
+/// Increment reference count for one end of a pipe (used when dup2'ing or forking).
+pub unsafe fn addref(fd: i32) {
+    if !is_pipe_fd(fd) { return; }
+    let pipes = &raw mut PIPES;
+    let p = &raw mut (*pipes)[pipe_index(fd)];
+    if is_read_fd(fd) {
+        (*p).read_refs = (*p).read_refs.saturating_add(1);
+    } else {
+        (*p).write_refs = (*p).write_refs.saturating_add(1);
+    }
 }
 
 /// Write bytes to a pipe's write end. Returns bytes written or negative error.
@@ -86,13 +105,17 @@ pub unsafe fn write(fd: i32, data: &[u8]) -> i64 {
     written as i64
 }
 
-/// Read bytes from a pipe's read end. Returns bytes read or negative error.
+/// Read bytes from a pipe's read end. Returns bytes read, 0 for EOF, or negative error.
 pub unsafe fn read(fd: i32, buf: &mut [u8]) -> i64 {
     if !is_pipe_fd(fd) || !is_read_fd(fd) { return -5; } // EBADF
     let pipes = &raw mut PIPES;
     let p = &raw mut (*pipes)[pipe_index(fd)];
     if !(*p).read_open { return -5; }
-    if (*p).is_empty() { return -6; } // EAGAIN
+    if (*p).is_empty() {
+        // No write end holders remain → EOF
+        if (*p).write_refs == 0 { return 0; }
+        return -6; // EAGAIN
+    }
 
     let mut read = 0usize;
     while read < buf.len() && !(*p).is_empty() {
@@ -103,15 +126,17 @@ pub unsafe fn read(fd: i32, buf: &mut [u8]) -> i64 {
     read as i64
 }
 
-/// Close one end of a pipe.
+/// Close (decref) one end of a pipe. Marks the end closed when refs reach 0.
 pub unsafe fn close(fd: i32) -> i64 {
     if !is_pipe_fd(fd) { return -5; }
     let pipes = &raw mut PIPES;
     let p = &raw mut (*pipes)[pipe_index(fd)];
     if is_read_fd(fd) {
-        (*p).read_open = false;
+        if (*p).read_refs > 0 { (*p).read_refs -= 1; }
+        if (*p).read_refs == 0 { (*p).read_open = false; }
     } else {
-        (*p).write_open = false;
+        if (*p).write_refs > 0 { (*p).write_refs -= 1; }
+        if (*p).write_refs == 0 { (*p).write_open = false; }
     }
     0
 }

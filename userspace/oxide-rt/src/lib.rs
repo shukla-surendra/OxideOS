@@ -131,12 +131,70 @@ pub mod sys {
     pub const GETCHAR: u64 = 31;
     pub const GETTIME: u64 = 40;
     pub const SLEEP:   u64 = 41;
+    pub const PIPE:    u64 = 60;
     pub const READDIR: u64 = 70;
     pub const DUP2:    u64 = 81;
     pub const KILL:    u64 = 91;
+    pub const MSGQ_CREATE:  u64 = 115;
+    pub const MSGSND:       u64 = 116;
+    pub const MSGRCV:       u64 = 117;
+    pub const MSGQ_DESTROY: u64 = 118;
+    pub const MSGRCV_WAIT:  u64 = 119;
+    pub const MSGQ_LEN:     u64 = 120;
 }
 
 // ── High-level wrappers ──────────────────────────────────────────────────────
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct IpcMessage {
+    pub type_id: u32,
+    pub size: u32,
+    pub data: [u8; 256],
+}
+
+impl IpcMessage {
+    pub const fn empty() -> Self {
+        Self { type_id: 0, size: 0, data: [0; 256] }
+    }
+}
+
+/// Create or open a message queue. Returns the queue ID on success, or a negative error code.
+#[inline]
+pub fn msgq_create(id: u32) -> i64 {
+    unsafe { raw::syscall1(sys::MSGQ_CREATE, id as u64) }
+}
+
+/// Send a message to the specified queue. Returns 0 on success, or a negative error code.
+#[inline]
+pub fn msgsnd(id: u32, type_id: u32, data: &[u8]) -> i64 {
+    unsafe { raw::syscall4(sys::MSGSND, id as u64, type_id as u64, data.as_ptr() as u64, data.len() as u64) }
+}
+
+/// Non-blocking receive. Returns 0 on success, -EAGAIN if the queue is empty.
+#[inline]
+pub fn msgrcv(id: u32, msg_out: &mut IpcMessage) -> i64 {
+    unsafe { raw::syscall2(sys::MSGRCV, id as u64, msg_out as *mut IpcMessage as u64) }
+}
+
+/// Destroy a message queue. Returns 0 on success or a negative error code.
+#[inline]
+pub fn msgq_destroy(id: u32) -> i64 {
+    unsafe { raw::syscall1(sys::MSGQ_DESTROY, id as u64) }
+}
+
+/// Blocking receive. The task sleeps until a message is available.
+/// Returns 0 on success or a negative error code.
+#[inline]
+pub fn msgrcv_wait(id: u32, msg_out: &mut IpcMessage) -> i64 {
+    unsafe { raw::syscall2(sys::MSGRCV_WAIT, id as u64, msg_out as *mut IpcMessage as u64) }
+}
+
+/// Returns the number of pending messages in the queue, or a negative error code.
+#[inline]
+pub fn msgq_len(id: u32) -> i64 {
+    unsafe { raw::syscall1(sys::MSGQ_LEN, id as u64) }
+}
 
 /// Print raw bytes to the console.
 #[inline]
@@ -212,6 +270,13 @@ pub fn kill(pid: u32) -> i64 {
 #[inline]
 pub fn dup2(old_fd: i32, new_fd: i32) -> i64 {
     unsafe { raw::syscall2(sys::DUP2, old_fd as u64, new_fd as u64) }
+}
+
+/// Allocate an anonymous pipe.  On success writes the read and write FDs into
+/// `*r` and `*w` respectively and returns 0.  Returns negative on error.
+#[inline]
+pub fn pipe(r: *mut i32, w: *mut i32) -> i64 {
+    unsafe { raw::syscall2(sys::PIPE, r as u64, w as u64) }
 }
 
 /// Read directory entries from `path` into `buf`.
@@ -292,6 +357,60 @@ macro_rules! println {
         let _ = write!($crate::Console, $($arg)*);
         $crate::print_str("\n");
     }};
+}
+
+// ── Compositor client helpers ────────────────────────────────────────────────
+//
+// Userspace programs draw into their window by sending IPC messages to the
+// kernel compositor (queue ID 1).  All coordinates are relative to the
+// window's content area top-left (0, 0).
+
+pub const COMPOSITOR_QID: u32 = 1;
+
+const MSG_FILL_RECT:  u32 = 1;
+const MSG_DRAW_TEXT:  u32 = 2;
+const MSG_PRESENT:    u32 = 3;
+const MSG_CLEAR_RECT: u32 = 4;
+
+fn u32_le(v: u32, buf: &mut [u8], off: usize) {
+    buf[off]   = v as u8;
+    buf[off+1] = (v >> 8)  as u8;
+    buf[off+2] = (v >> 16) as u8;
+    buf[off+3] = (v >> 24) as u8;
+}
+
+/// Fill a rectangle with `color` (0xAARRGGBB).
+pub fn comp_fill_rect(x: u32, y: u32, w: u32, h: u32, color: u32) {
+    let mut d = [0u8; 20];
+    u32_le(x, &mut d, 0); u32_le(y, &mut d, 4);
+    u32_le(w, &mut d, 8); u32_le(h, &mut d, 12);
+    u32_le(color, &mut d, 16);
+    msgsnd(COMPOSITOR_QID, MSG_FILL_RECT, &d);
+}
+
+/// Clear a rectangle to the window background colour.
+pub fn comp_clear_rect(x: u32, y: u32, w: u32, h: u32) {
+    let mut d = [0u8; 16];
+    u32_le(x, &mut d, 0); u32_le(y, &mut d, 4);
+    u32_le(w, &mut d, 8); u32_le(h, &mut d, 12);
+    msgsnd(COMPOSITOR_QID, MSG_CLEAR_RECT, &d);
+}
+
+/// Draw a UTF-8 string.  `text` must be ≤ 236 bytes (IPC payload limit).
+pub fn comp_draw_text(x: u32, y: u32, color: u32, text: &str) {
+    let bytes = text.as_bytes();
+    let len = bytes.len().min(236);
+    let mut d = [0u8; 256];
+    u32_le(x, &mut d, 0); u32_le(y, &mut d, 4);
+    u32_le(color, &mut d, 8);
+    u32_le(len as u32, &mut d, 12);
+    d[16..16 + len].copy_from_slice(&bytes[..len]);
+    msgsnd(COMPOSITOR_QID, MSG_DRAW_TEXT, &d[..16 + len]);
+}
+
+/// Signal to the compositor that the current frame is complete.
+pub fn comp_present() {
+    msgsnd(COMPOSITOR_QID, MSG_PRESENT, &[]);
 }
 
 // ── Entry point & panic handler ──────────────────────────────────────────────

@@ -3,5 +3,6 @@ members = [
     "oxide-rt",
     "hello_rust",
     "sh",
+    "terminal",
 ]
 resolver = "2"

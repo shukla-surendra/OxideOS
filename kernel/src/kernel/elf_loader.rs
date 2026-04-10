@@ -135,24 +135,37 @@ pub unsafe fn load_in(data: &[u8], cr3: u64) -> Result<u64, &'static str> {
     let phoff = ehdr.e_phoff as usize;
     let phnum = ehdr.e_phnum as usize;
 
-    // ── Pass 1: map segments into `cr3` ──────────────────────────────────────
-    for i in 0..phnum {
-        let ph_off = phoff + i * ph_size;
-        if ph_off + core::mem::size_of::<Elf64Phdr>() > data.len() {
-            return Err("phdr out of bounds");
+    // ── Pass 1: map the full virtual range spanned by all PT_LOAD segments ───
+    //
+    // ELF segments frequently share pages at their boundaries (e.g. the code
+    // segment's last page is also the rodata segment's first page).  Mapping
+    // each segment individually hits "Page already mapped" on the shared page
+    // and map_user_region_in stops, leaving the rest of the second segment
+    // unmapped.  Instead we find the total [min_va, max_va) range and map it
+    // in one call.  All pages are mapped writable so Pass 2 can copy without
+    // faulting (CR0.WP prevents supervisor writes to read-only pages).
+    {
+        let mut min_va = u64::MAX;
+        let mut max_va = 0u64;
+        for i in 0..phnum {
+            let ph_off = phoff + i * ph_size;
+            if ph_off + core::mem::size_of::<Elf64Phdr>() > data.len() { continue; }
+            let ph = unsafe { &*(data[ph_off..].as_ptr() as *const Elf64Phdr) };
+            if ph.p_type != PT_LOAD || ph.p_memsz == 0 { continue; }
+            let va_start = ph.p_vaddr & !0xFFF;
+            let va_end   = (ph.p_vaddr + ph.p_memsz + 0xFFF) & !0xFFF;
+            if va_start < min_va { min_va = va_start; }
+            if va_end   > max_va { max_va = va_end;   }
         }
-        let ph = unsafe { &*(data[ph_off..].as_ptr() as *const Elf64Phdr) };
-        if ph.p_type != PT_LOAD || ph.p_memsz == 0 { continue; }
-
-        let va_start = ph.p_vaddr & !0xFFF;
-        let va_end   = (ph.p_vaddr + ph.p_memsz + 0xFFF) & !0xFFF;
-        let npages   = ((va_end - va_start) / PAGE_SIZE as u64) as usize;
-        let writable = (ph.p_flags & PF_W) != 0;
-
-        let _ = paging_allocator::map_user_region_in(cr3, va_start, npages, writable, true);
+        if min_va < max_va {
+            let npages = ((max_va - min_va) / PAGE_SIZE as u64) as usize;
+            paging_allocator::map_user_region_in(cr3, min_va, npages, true, true)
+                .map_err(|_| "OOM: ELF segments")?;
+        }
     }
 
-    // ── Pass 2: zero BSS + copy file data via CR3 switch ─────────────────────
+    // ── Pass 2: copy file data via CR3 switch ────────────────────────────────
+    // Pages are pre-zeroed by map_user_region_in, so BSS is already clear.
     let saved_cr3: u64;
     unsafe {
         asm!("mov {}, cr3", out(reg) saved_cr3, options(nostack, nomem));
@@ -164,13 +177,7 @@ pub unsafe fn load_in(data: &[u8], cr3: u64) -> Result<u64, &'static str> {
         let ph = unsafe { &*(data[ph_off..].as_ptr() as *const Elf64Phdr) };
         if ph.p_type != PT_LOAD || ph.p_memsz == 0 { continue; }
 
-        let va_start = ph.p_vaddr & !0xFFF;
-        let va_end   = (ph.p_vaddr + ph.p_memsz + 0xFFF) & !0xFFF;
-
-        // Zero (covers BSS and alignment padding).
-        unsafe { core::ptr::write_bytes(va_start as *mut u8, 0, (va_end - va_start) as usize); }
-
-        // Copy file image.
+        // Copy file image only (BSS tail is already zeroed by pre-zeroed frames).
         if ph.p_filesz > 0 {
             let src = ph.p_offset as usize;
             let end = src + ph.p_filesz as usize;

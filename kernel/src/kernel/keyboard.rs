@@ -212,20 +212,23 @@ pub unsafe fn register_arrow_key_callback(callback: ArrowKeyCallback) {
 // KEYBOARD INTERRUPT HANDLER
 // ============================================================================
 
-/// Handle keyboard interrupt (IRQ1)
+/// Handle keyboard interrupt (IRQ1).
+///
+/// VirtualBox note: we are in the keyboard IRQ handler (IRQ1), so any data
+/// present in the output buffer here is keyboard data — even if bit 5 of the
+/// status register says otherwise (VirtualBox sometimes sets it incorrectly).
+/// We therefore only gate on OBF (bit 0) and trust that IRQ1 means keyboard.
 pub unsafe fn handle_keyboard_interrupt() {
-    // Check status register to verify keyboard data
     let status: u8;
-    asm!("in al, 0x64", out("al") status, options(nostack, nomem));
+    unsafe { asm!("in al, 0x64", out("al") status, options(nostack, nomem)); }
 
-    // Check if data is available and it's from keyboard (not mouse)
-    if (status & 0x01) != 0 && (status & 0x20) == 0 {
-        // Read scancode
+    if (status & 0x01) != 0 {
         let scancode: u8;
-        asm!("in al, 0x60", out("al") scancode, options(nostack, nomem));
-        
-        // Process the scancode
-        process_scancode(scancode);
+        unsafe { asm!("in al, 0x60", out("al") scancode, options(nostack, nomem)); }
+        // bit 5 = 1 means "from AUX/mouse port"; skip mouse bytes that slipped in
+        if (status & 0x20) == 0 {
+            process_scancode(scancode);
+        }
     }
 }
 
@@ -520,47 +523,20 @@ unsafe fn handle_enter() {
     state.clear_buffer();
 }
 
-/// Update keyboard LEDs based on current state
+/// Update keyboard LEDs based on current state.
 unsafe fn update_keyboard_leds() {
     let state = unsafe { &*core::ptr::addr_of!(KEYBOARD_STATE) };
-    
+
     let mut led_state: u8 = 0;
     if state.scroll_lock { led_state |= 0x01; }
     if state.num_lock    { led_state |= 0x02; }
     if state.caps_lock   { led_state |= 0x04; }
-    
-    // Wait for keyboard to be ready
-    wait_for_keyboard();
-    
-    // Send LED update command
-    unsafe {
-        asm!("out 0x60, al", in("al") 0xEDu8, options(nostack, nomem));
-    }
-    
-    wait_for_keyboard();
-    
-    // Send LED state
-    unsafe {
-        asm!("out 0x60, al", in("al") led_state, options(nostack, nomem));
-    }
-    
-    wait_for_keyboard();
-}
 
-/// Wait for keyboard controller to be ready
-unsafe fn wait_for_keyboard() {
-    for _ in 0..1000 {
-        let status: u8;
-        unsafe {
-            asm!("in al, 0x64", out("al") status, options(nostack, nomem));
-        }
-        if (status & 0x02) == 0 {
-            return;
-        }
-        // Small delay
-        for _ in 0..100 {
-            core::arch::asm!("pause");
-        }
+    unsafe {
+        ctrl_data(0xED);      // LED command
+        let _ack = ctrl_read(); // consume ACK (0xFA)
+        ctrl_data(led_state);
+        let _ack = ctrl_read(); // consume ACK
     }
 }
 
@@ -601,14 +577,99 @@ pub unsafe fn is_caps_lock_on() -> bool {
     state.caps_lock
 }
 
+// ── 8042 controller helpers ──────────────────────────────────────────────────
+
+/// Wait until the 8042 input buffer is empty (safe to write a command/data).
+unsafe fn wait_write_ready() {
+    for _ in 0..100_000u32 {
+        let status: u8;
+        unsafe { asm!("in al, 0x64", out("al") status, options(nostack, nomem)); }
+        if (status & 0x02) == 0 { return; }
+        unsafe { asm!("pause", options(nostack, nomem)); }
+    }
+}
+
+/// Wait until the 8042 output buffer has data (safe to read from 0x60).
+unsafe fn wait_read_ready() {
+    for _ in 0..100_000u32 {
+        let status: u8;
+        unsafe { asm!("in al, 0x64", out("al") status, options(nostack, nomem)); }
+        if (status & 0x01) != 0 { return; }
+        unsafe { asm!("pause", options(nostack, nomem)); }
+    }
+}
+
+/// Drain any stale bytes from the 8042 output buffer.
+unsafe fn flush_output_buffer() {
+    for _ in 0..16u8 {
+        let status: u8;
+        unsafe { asm!("in al, 0x64", out("al") status, options(nostack, nomem)); }
+        if (status & 0x01) == 0 { break; }
+        let _: u8;
+        unsafe { asm!("in al, 0x60", out("al") _, options(nostack, nomem)); }
+    }
+}
+
+/// Send a command byte to the 8042 controller (port 0x64).
+unsafe fn ctrl_cmd(cmd: u8) {
+    unsafe {
+        wait_write_ready();
+        asm!("out 0x64, al", in("al") cmd, options(nostack, nomem));
+    }
+}
+
+/// Write a data byte to the 8042 (port 0x60).
+unsafe fn ctrl_data(b: u8) {
+    unsafe {
+        wait_write_ready();
+        asm!("out 0x60, al", in("al") b, options(nostack, nomem));
+    }
+}
+
+/// Read one byte from the 8042 output buffer (port 0x60).
+unsafe fn ctrl_read() -> u8 {
+    unsafe {
+        wait_read_ready();
+        let v: u8;
+        asm!("in al, 0x60", out("al") v, options(nostack, nomem));
+        v
+    }
+}
+
 /// Initialize keyboard driver
 pub unsafe fn init() {
     unsafe {
-        SERIAL_PORT.write_str("Initializing keyboard driver...\n");
-        
-        // Set default LED state
+        SERIAL_PORT.write_str("Initializing keyboard driver (8042)...\n");
+
+        // 1. Drain any stale data left in the output buffer.
+        flush_output_buffer();
+
+        // 2. Disable keyboard port so it stops sending during init.
+        ctrl_cmd(0xAD); // disable keyboard interface
+
+        // 3. Drain again — keyboard might have queued a byte.
+        flush_output_buffer();
+
+        // 4. Read the current Controller Command Byte (CCB).
+        ctrl_cmd(0x20);
+        let ccb = ctrl_read();
+
+        // 5. Enable keyboard IRQ1 (bit 0) and keyboard clock (clear bit 4).
+        //    Keep scancode translation (bit 6) enabled.
+        let ccb = (ccb | 0x01) & !0x10;
+        ctrl_cmd(0x60);
+        ctrl_data(ccb);
+
+        // 6. Re-enable the keyboard interface.
+        ctrl_cmd(0xAE);
+
+        // 7. Flush once more before setting LEDs.
+        flush_output_buffer();
+
+        // 8. Set LEDs (skip if the keyboard doesn't ACK to avoid hangs on
+        //    some VirtualBox configurations — wrap in a best-effort call).
         update_keyboard_leds();
-        
+
         SERIAL_PORT.write_str("Keyboard driver ready\n");
     }
 }

@@ -18,12 +18,16 @@ mod wallpaper;
 // ============================================================================
 // IMPORTS
 // ============================================================================
+extern crate alloc;
+use alloc::vec::Vec;
 use core::arch::asm;
 use gui::graphics::Graphics;
 use gui::{colors, terminal, widgets};
 use kernel::serial::SERIAL_PORT;
 use kernel::{gdt, idt, interrupts, timer, pic};
 use gui::window_manager::WindowManager;
+use gui::launcher::LauncherApp;
+use gui::start_menu::StartMenu;
 use core::ptr;
 
 use limine::BaseRevision;
@@ -104,8 +108,8 @@ unsafe extern "C" fn kmain() -> ! {
                 interrupts::init_mouse_system(width, height);
                 SERIAL_PORT.write_str("=== MOUSE INIT COMPLETED ===\n");
 
-                let (terminal_window_id, sysinfo_window_id) = create_boot_screen(&graphics);
-                run_gui_with_mouse(&graphics, terminal_window_id, sysinfo_window_id);
+                let (terminal_window_id, sysinfo_window_id, launcher_window_id) = create_boot_screen(&graphics);
+                run_gui_with_mouse(&graphics, terminal_window_id, sysinfo_window_id, launcher_window_id);
             }
         } else {
             unsafe {
@@ -193,7 +197,7 @@ unsafe fn test_paging_allocation() {
 // GUI
 // ============================================================================
 
-unsafe fn create_boot_screen(graphics: &Graphics) -> (usize, usize) {
+unsafe fn create_boot_screen(graphics: &Graphics) -> (usize, usize, usize) {
     let (width, height) = graphics.get_dimensions();
     SERIAL_PORT.write_str("Creating boot screen...\n");
 
@@ -204,11 +208,25 @@ unsafe fn create_boot_screen(graphics: &Graphics) -> (usize, usize) {
     unsafe { (*wm).draw_taskbar(graphics); }
 
     let ids = init_demo_windows(width, height);
+
+    // Initialise the compositor so userspace programs can draw into the terminal window.
+    const TITLE_BAR_H: u64 = 31;
+    if let Some(win) = unsafe { (*wm).get_window(ids.0) } {
+        unsafe {
+            kernel::compositor::init(
+                graphics,
+                win.x, win.y + TITLE_BAR_H,
+                win.width, win.height.saturating_sub(TITLE_BAR_H),
+                gui::colors::dark_theme::SURFACE,
+            );
+        }
+    }
+
     SERIAL_PORT.write_str("Boot screen created\n");
     ids
 }
 
-unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sysinfo_window_id: usize) {
+unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sysinfo_window_id: usize, launcher_window_id: usize) {
     SERIAL_PORT.write_str("Starting GUI with enhanced window manager...\n");
 
     let mut last_cursor_pos = (-1i64, -1i64);
@@ -217,7 +235,11 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
     let mut last_right_button = false;
     let mut needs_redraw = true;
     let mut terminal_dirty = false;
-    let mut terminal_app = terminal::TerminalApp::new(terminal_window_id);
+    // Pool of terminal windows (first is the main boot terminal).
+    let mut terminals: Vec<terminal::TerminalApp> = Vec::new();
+    terminals.push(terminal::TerminalApp::new(terminal_window_id));
+    let mut launcher_app = LauncherApp::new(launcher_window_id);
+    let mut start_menu   = StartMenu::new();
     let mut last_clock_sec: u64 = u64::MAX; // force draw on first frame
 
     let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
@@ -233,13 +255,16 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             needs_redraw = true;
         }
 
-        let cursor_pos    = gui::mouse::get_mouse_position();
-        let left_button   = gui::mouse::is_mouse_button_pressed(gui::mouse::MouseButton::Left);
-        let right_button  = gui::mouse::is_mouse_button_pressed(gui::mouse::MouseButton::Right);
-        let terminal_focused = unsafe { (*wm).get_focused() == Some(terminal_app.window_id()) };
+        let cursor_pos  = gui::mouse::get_mouse_position();
+        let left_button  = gui::mouse::is_mouse_button_pressed(gui::mouse::MouseButton::Left);
+        let right_button = gui::mouse::is_mouse_button_pressed(gui::mouse::MouseButton::Right);
 
-        if terminal_app.process_pending_input(terminal_focused) {
-            terminal_dirty = true;
+        // Process input for all terminal windows.
+        for term in terminals.iter_mut() {
+            let focused = unsafe { (*wm).get_focused() == Some(term.window_id()) };
+            if term.process_pending_input(focused) {
+                terminal_dirty = true;
+            }
         }
 
         if last_cursor_pos.0 >= 0 {
@@ -252,15 +277,37 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                     unsafe { (*wm).handle_drag(mx as u64, my as u64); }
                     needs_redraw = true;
                 }
+                // Update start menu + launcher hover state.
+                if start_menu.handle_mouse_move(mx as u64, my as u64) {
+                    needs_redraw = true;
+                }
+                if launcher_app.handle_mouse_move(unsafe { &*wm }, mx as u64, my as u64) {
+                    needs_redraw = true;
+                }
                 last_cursor_pos = (mx, my);
             }
             if left_button && !last_left_button {
-                // Check context menu first; only pass to window manager if not consumed.
-                let consumed = unsafe { (*wm).handle_context_menu_click(mx as u64, my as u64) };
-                if !consumed {
-                    unsafe { (*wm).handle_click(mx as u64, my as u64); }
+                // Start menu gets first pick — it handles its own button + popup.
+                let (prog_name, sm_consumed) = start_menu.handle_click(mx as u64, my as u64);
+                if let Some(name) = prog_name {
+                    spawn_program(name, &mut terminals, graphics, unsafe { &mut *wm });
+                    needs_redraw = true;
+                } else if sm_consumed {
+                    needs_redraw = true;
+                } else {
+                    // Check launcher tiles.
+                    let launched = launcher_app.handle_click(unsafe { &*wm }, mx as u64, my as u64);
+                    if let Some(prog_name) = launched {
+                        spawn_program(prog_name, &mut terminals, graphics, unsafe { &mut *wm });
+                        needs_redraw = true;
+                    } else {
+                        let consumed = unsafe { (*wm).handle_context_menu_click(mx as u64, my as u64) };
+                        if !consumed {
+                            unsafe { (*wm).handle_click(mx as u64, my as u64); }
+                        }
+                        needs_redraw = true;
+                    }
                 }
-                needs_redraw = true;
             }
             if !left_button && last_left_button {
                 unsafe { (*wm).release_drag(); }
@@ -273,19 +320,38 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             last_right_button = right_button;
         }
 
+        // Let compositor process any draw commands from userspace terminal.
+        if unsafe { kernel::compositor::process_messages() } {
+            terminal_dirty = true;
+        }
+
+        // Tick the launcher highlight animation; force redraw if it changed.
+        if launcher_app.tick() {
+            needs_redraw = true;
+        }
+
         if needs_redraw {
+            unsafe { refresh_compositor_geometry(graphics, &*wm, terminal_window_id); }
             let bg = unsafe { (*wm).get_background_style() };
             graphics.draw_background(bg);
             unsafe { (*wm).draw_taskbar(graphics); }
+            start_menu.draw_button(graphics);
             unsafe { (*wm).draw_all(graphics); }
-            terminal_app.draw(graphics, unsafe { &*wm });
+            for term in terminals.iter() {
+                term.draw(graphics, unsafe { &*wm });
+            }
             draw_sysinfo_panel(graphics, unsafe { &*wm }, sysinfo_window_id);
+            launcher_app.draw(graphics, unsafe { &*wm });
             unsafe { (*wm).draw_context_menu(graphics); }
+            start_menu.draw_menu(graphics);
             needs_redraw   = false;
             terminal_dirty = false;
         } else if terminal_dirty {
-            unsafe { (*wm).draw_window(graphics, terminal_window_id); }
-            terminal_app.draw(graphics, unsafe { &*wm });
+            // Redraw all terminal windows that may have changed.
+            for term in terminals.iter() {
+                unsafe { (*wm).draw_window(graphics, term.window_id()); }
+                term.draw(graphics, unsafe { &*wm });
+            }
             terminal_dirty = false;
         }
 
@@ -300,28 +366,103 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
         // Run the scheduler: give the next ready task one time slice (~20 ms).
         // Returns Some((pid, exit_code)) when a task permanently exits.
         if let Some((pid, exit_code)) = unsafe { kernel::scheduler::tick() } {
-            terminal_app.on_task_exit(pid, exit_code);
+            for term in terminals.iter_mut() {
+                term.on_task_exit(pid, exit_code);
+            }
             terminal_dirty = true;
+        }
+
+        // Drain any pending task stdout every frame so output appears live.
+        for term in terminals.iter_mut() {
+            if term.poll_task_outputs() {
+                terminal_dirty = true;
+            }
         }
 
         unsafe { core::arch::asm!("hlt"); }
     }
 }
 
-unsafe fn init_demo_windows(screen_width: u64, screen_height: u64) -> (usize, usize) {
+/// Programs that get their own terminal window when launched from the start menu / launcher.
+const TERMINAL_PROGRAMS: &[&str] = &["sh", "terminal", "input"];
+
+/// Spawn `name` — opens a new terminal window for shell-like programs,
+/// otherwise spawns in the background (output drains to the first terminal).
+fn spawn_program(
+    name: &str,
+    terminals: &mut Vec<terminal::TerminalApp>,
+    graphics: &Graphics,
+    wm: &mut WindowManager,
+) {
+    let code = match crate::kernel::programs::find(name) {
+        Some(c) => c,
+        None    => return,
+    };
+
+    // Shell-like programs → new dedicated terminal window.
+    if TERMINAL_PROGRAMS.contains(&name) {
+        let (w, h) = graphics.get_dimensions();
+        // Cascade new windows so they don't all stack at the same spot.
+        let offset  = (terminals.len() as u64).min(4) * 28;
+        let win_x   = 30 + offset;
+        let win_y   = 60 + offset;
+        let win_w   = 540u64.min(w.saturating_sub(win_x + 10));
+        let win_h   = 380u64.min(h.saturating_sub(win_y + 50));
+        let title   = if name == "sh" { "Shell" } else { "Terminal" };
+        let new_win = widgets::Window::new(win_x, win_y, win_w, win_h, title);
+        if let Some(wid) = wm.add_window(new_win) {
+            wm.set_focused(Some(wid));
+            let mut term = terminal::TerminalApp::new(wid);
+            // Spawn the process and attach it as foreground in the new terminal.
+            if let Ok(pid) = unsafe { crate::kernel::scheduler::spawn(code, name) } {
+                term.attach_foreground(pid);
+            }
+            terminals.push(term);
+        }
+    } else {
+        // Background spawn — output drains to terminal[0] as usual.
+        let _ = unsafe { crate::kernel::scheduler::spawn(code, name) };
+    }
+}
+
+unsafe fn init_demo_windows(screen_width: u64, screen_height: u64) -> (usize, usize, usize) {
     let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
 
-    // Terminal — taller, wider, comfortable reading area
+    // Terminal — left side, comfortable reading area
     let term_h = (screen_height.saturating_sub(80 + 50)).min(420).max(260);
-    let win1 = widgets::Window::new(50, 70, 560, term_h, "Terminal");
+    let win1 = widgets::Window::new(10, 50, 540, term_h, "Terminal");
     let terminal_id = unsafe { (*wm).add_window(win1).unwrap_or(0) };
 
-    // System Info — fixed width on the right
-    let win2 = widgets::Window::new(screen_width - 310, 70, 290, 280, "System Info");
+    // System Info — top-right corner
+    let win2 = widgets::Window::new(screen_width - 310, 50, 290, 260, "System Info");
     let sysinfo_id = unsafe { (*wm).add_window(win2).unwrap_or(1) };
 
+    // Launcher — below sysinfo on the right side, shows all programs as clickable tiles
+    // Width: 3 columns × (160 + 10) - 10 + 24 pad = 510 + 4 = 514, round to 520
+    // Height: 2 section headers × 18 + 4 rows × (72 + 10) - 10 + 20 status + 20 pad ≈ 400
+    let launcher_x = screen_width - 530;
+    let launcher_y = 50u64 + 260 + 12; // below sysinfo
+    let launcher_h = screen_height.saturating_sub(launcher_y + 50).min(440).max(300);
+    let win3 = widgets::Window::new(launcher_x, launcher_y, 520, launcher_h, "Programs");
+    let launcher_id = unsafe { (*wm).add_window(win3).unwrap_or(2) };
+
     SERIAL_PORT.write_str("Demo windows initialized\n");
-    (terminal_id, sysinfo_id)
+    (terminal_id, sysinfo_id, launcher_id)
+}
+
+/// Re-compute the terminal window's content area and refresh the compositor.
+unsafe fn refresh_compositor_geometry(graphics: &Graphics, wm: &gui::window_manager::WindowManager, terminal_id: usize) {
+    const TITLE_BAR_H: u64 = 31; // 30 px gradient + 1 px accent line
+    if let Some(win) = wm.get_window(terminal_id) {
+        let cx = win.x;
+        let cy = win.y + TITLE_BAR_H;
+        let cw = win.width;
+        let ch = win.height.saturating_sub(TITLE_BAR_H);
+        unsafe {
+            kernel::compositor::update_geometry(cx, cy, cw, ch);
+        }
+    }
+    let _ = graphics; // kept for potential future use
 }
 
 // ============================================================================

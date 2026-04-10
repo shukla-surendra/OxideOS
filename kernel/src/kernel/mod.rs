@@ -21,3 +21,6 @@ pub mod elf_loader;
 pub mod ata;
 pub mod fat;
 pub mod pipe;
+pub mod ipc;
+pub mod compositor;
+pub mod vfs;

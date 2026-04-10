@@ -210,13 +210,9 @@ impl SyscallRuntime for KernelRuntime {
     fn readdir_impl(&mut self, path: &[u8], buf: &mut [u8]) -> i64 {
         let path_str = match core::str::from_utf8(path) {
             Ok(s)  => s,
-            Err(_) => return -1,
+            Err(_) => return -22, // EINVAL
         };
-        // Try RamFS first; FAT16 directory listing not yet supported
-        match unsafe { crate::kernel::fs::ramfs::RAMFS.get() } {
-            Some(fs) => fs.read_dir_raw(path_str, buf),
-            None     => -2,
-        }
+        crate::kernel::vfs::vfs_readdir(path_str, buf)
     }
 
     fn dup2_impl(&mut self, old_fd: i32, new_fd: i32) -> i64 {
@@ -228,34 +224,15 @@ impl SyscallRuntime for KernelRuntime {
     }
 
     fn fs_open(&mut self, path: &[u8], flags: u32) -> i64 {
-        // Route /disk/ paths to FAT16; everything else to RamFS.
-        if path.starts_with(b"/disk/") || {
-            !path.starts_with(b"/") && crate::kernel::ata::is_present()
-        } {
-            return unsafe { crate::kernel::fat::open(path, flags) };
-        }
         let path_str = match core::str::from_utf8(path) {
             Ok(s)  => s,
-            Err(_) => return -1,
+            Err(_) => return -22, // EINVAL
         };
-        unsafe {
-            let sched = &raw mut crate::kernel::scheduler::SCHED;
-            let idx   = crate::kernel::scheduler::CURRENT_TASK_IDX;
-            let fdt   = &raw mut (*sched).tasks[idx].fd_table;
-            match crate::kernel::fs::ramfs::RAMFS.get() {
-                Some(fs) => (*fdt).open(fs, path_str, flags),
-                None     => -2,
-            }
-        }
+        unsafe { crate::kernel::vfs::vfs_open(path_str, flags) }
     }
 
     fn fs_close(&mut self, fd: i32) -> i64 {
-        if crate::kernel::fat::is_fat_fd(fd) {
-            return unsafe { crate::kernel::fat::close(fd) };
-        }
-        if crate::kernel::pipe::is_pipe_fd(fd) {
-            return unsafe { crate::kernel::pipe::close(fd) };
-        }
+        // FdTable::close dispatches to the right backend (pipe/FAT16/RamFS/dev).
         unsafe {
             let sched = &raw mut crate::kernel::scheduler::SCHED;
             let idx   = crate::kernel::scheduler::CURRENT_TASK_IDX;
@@ -264,12 +241,7 @@ impl SyscallRuntime for KernelRuntime {
     }
 
     fn fs_read(&mut self, fd: i32, buf: &mut [u8]) -> i64 {
-        if crate::kernel::fat::is_fat_fd(fd) {
-            return unsafe { crate::kernel::fat::read_fd(fd, buf) };
-        }
-        if crate::kernel::pipe::is_pipe_fd(fd) {
-            return unsafe { crate::kernel::pipe::read(fd, buf) };
-        }
+        // FdTable::read_fd handles all backends including pipes and FAT16.
         unsafe {
             let sched = &raw mut crate::kernel::scheduler::SCHED;
             let idx   = crate::kernel::scheduler::CURRENT_TASK_IDX;
@@ -282,12 +254,8 @@ impl SyscallRuntime for KernelRuntime {
     }
 
     fn fs_write_file(&mut self, fd: i32, buf: &[u8]) -> i64 {
-        if crate::kernel::pipe::is_pipe_fd(fd) {
-            return unsafe { crate::kernel::pipe::write(fd, buf) };
-        }
-        if crate::kernel::fat::is_fat_fd(fd) {
-            return -1; // FAT write not yet implemented
-        }
+        // FdTable::write_fd handles all backends.
+        // For fd=1/2 with no FdTable entry, returns EBADF; caller falls back to console.
         unsafe {
             let sched = &raw mut crate::kernel::scheduler::SCHED;
             let idx   = crate::kernel::scheduler::CURRENT_TASK_IDX;
@@ -301,15 +269,80 @@ impl SyscallRuntime for KernelRuntime {
 
     fn pipe_alloc(&mut self, read_fd_ptr: u64, write_fd_ptr: u64) -> i64 {
         unsafe {
-            match crate::kernel::pipe::alloc() {
-                Some((r, w)) => {
-                    core::ptr::write_unaligned(read_fd_ptr  as *mut i32, r);
-                    core::ptr::write_unaligned(write_fd_ptr as *mut i32, w);
+            let (raw_r, raw_w) = match crate::kernel::pipe::alloc() {
+                Some(pair) => pair,
+                None       => return -6, // EAGAIN: out of raw pipes
+            };
+            let sched = &raw mut crate::kernel::scheduler::SCHED;
+            let idx   = crate::kernel::scheduler::CURRENT_TASK_IDX;
+            let fdt   = &raw mut (*sched).tasks[idx].fd_table;
+            match (*fdt).open_pipe(raw_r, raw_w) {
+                Some((rslot, wslot)) => {
+                    core::ptr::write_unaligned(read_fd_ptr  as *mut i32, rslot as i32);
+                    core::ptr::write_unaligned(write_fd_ptr as *mut i32, wslot as i32);
                     0
                 }
-                None => -4, // ENOMEM
+                None => {
+                    // No room in FD table; release the raw pipe.
+                    crate::kernel::pipe::close(raw_r);
+                    crate::kernel::pipe::close(raw_w);
+                    -24 // EMFILE
+                }
             }
         }
+    }
+
+    fn msgq_create(&mut self, id: u32) -> i64 {
+        unsafe { crate::kernel::ipc::msgq_create(id) }
+    }
+
+    fn msgsnd(&mut self, id: u32, type_id: u32, data: &[u8]) -> i64 {
+        unsafe { crate::kernel::ipc::msgsnd(id, type_id, data) }
+    }
+
+    fn msgrcv(&mut self, id: u32, msg_out_ptr: u64) -> i64 {
+        unsafe {
+            let mut msg = crate::kernel::ipc::Message::empty();
+            let res = crate::kernel::ipc::msgrcv(id, &mut msg);
+            if res == 0 {
+                core::ptr::write_unaligned(msg_out_ptr as *mut crate::kernel::ipc::Message, msg);
+            }
+            res
+        }
+    }
+
+    fn msgq_destroy(&mut self, id: u32) -> i64 {
+        unsafe { crate::kernel::ipc::msgq_destroy(id) }
+    }
+
+    /// Blocking receive.  If the queue is empty the task is suspended via the
+    /// scheduler (same mechanism as Sleep / Waitpid).  `tick()` will dequeue
+    /// the message and wake the task on the next frame that has data.
+    fn msgrcv_wait(&mut self, id: u32, msg_out_ptr: u64) -> i64 {
+        unsafe {
+            // Fast path: queue already has data — dequeue immediately.
+            let mut msg = crate::kernel::ipc::Message::empty();
+            if crate::kernel::ipc::msgrcv(id, &mut msg) == 0 {
+                core::ptr::write_unaligned(msg_out_ptr as *mut crate::kernel::ipc::Message, msg);
+                return 0;
+            }
+
+            // Slow path: block the task until a message arrives.
+            let ctx_opt = core::ptr::replace(
+                &raw mut crate::kernel::user_mode::CURRENT_SYSCALL_CTX,
+                None,
+            );
+            if let Some(ctx) = ctx_opt {
+                // Diverges — control returns to the GUI main loop.
+                crate::kernel::scheduler::wait_for_msg(id, msg_out_ptr, ctx);
+            }
+            // Fallback if no scheduler context (should not happen in normal use).
+            -11 // EAGAIN with no scheduler
+        }
+    }
+
+    fn msgq_len(&mut self, id: u32) -> i64 {
+        unsafe { crate::kernel::ipc::msgq_len(id) }
     }
 }
 
@@ -412,15 +445,24 @@ impl KernelRuntime {
             (*s).tasks[CURRENT_TASK_IDX].cr3
         };
 
-        // Update current task: new image, reset FD table.
+        // Update current task: new image, reset FD table but inherit stdin/stdout/stderr.
         unsafe {
             let s    = &raw mut SCHED;
             let idx  = CURRENT_TASK_IDX;
             let task = &raw mut (*s).tasks[idx];
+            // Save fd 0/1/2 before wiping the table (Unix exec inherits these).
+            let saved_std = [
+                (*task).fd_table.entries[0],
+                (*task).fd_table.entries[1],
+                (*task).fd_table.entries[2],
+            ];
             (*task).cr3        = new_cr3;
             (*task).entry      = entry;
             (*task).first_run  = true;
             (*task).fd_table   = FdTable::new();
+            (*task).fd_table.entries[0] = saved_std[0];
+            (*task).fd_table.entries[1] = saved_std[1];
+            (*task).fd_table.entries[2] = saved_std[2];
             (*task).output_len = 0;
         }
 

@@ -581,9 +581,9 @@ Phase 4.2  Page fault → SIGSEGV         ✅ DONE  (user #PF/#GP → exit_to_ke
 Phase 3.5  dup2 syscall                  ✅ DONE  (Dup2=81, FdTable::dup2)
 Phase 3.3  ReadDir syscall               ✅ DONE  (ReadDir=70, RamFs::read_dir_raw)
 Phase 3.2  Shell (/bin/sh)               ✅ DONE  (Rust shell: echo/cat/ls + fork/exec/waitpid)
-Phase 2.1  VFS layer                     ← unified file access              ← NEXT
-Phase 2.2  FAT16 write                   ← persistent storage
-Phase 4.1  Signals full                  ← Ctrl+C, signal handlers
+Phase 2.1  VFS layer                     ✅ DONE  (mount table, FdBackend, /dev/null, /dev/tty)
+Phase 2.2  FAT16 write                   ✅ DONE  (cluster alloc, write_fd, flush, O_CREAT/O_TRUNC; sh `>` redirect)
+Phase 4.1  Signals full                  ← Ctrl+C, signal handlers          ← NEXT
 Phase 4.4  TTY (canonical/raw mode)      ← proper line editing
 Phase 3.3  Core utilities (standalone)   ← /bin/cat, /bin/ls as programs
 Phase 3.4  Text editor                   ← edit files interactively
@@ -593,7 +593,7 @@ Phase 5.2  mmap (anonymous)              ← richer allocator
 Phase 7.1  virtio-net driver             ← network hardware
 Phase 7.2  Network stack (ARP/IP/UDP)    ← basic networking
 Phase 7.3  Socket syscalls               ← userspace networking
-Phase 8.3  Message-passing IPC           ← GUI app protocol
+Phase 8.3  Message-passing IPC           ✅ DONE
 Phase 8.1  Userspace compositor          ← multi-app GUI
 Phase 9.4  fast syscall path             ← performance
 Phase 9.2  SMEP/SMAP                     ← security

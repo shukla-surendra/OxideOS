@@ -47,11 +47,31 @@ pub struct INode {
     pub data: Vec<u8>,
 }
 
+// ── FD backend tag ────────────────────────────────────────────────────────
+/// Which underlying filesystem or subsystem backs an open file descriptor.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FdBackend {
+    /// In-memory RamFS file; `inode_idx` identifies the node.
+    RamFS,
+    /// FAT16 disk file; `raw_fd` is the internal FAT slot (FAT_FD_BASE + i).
+    Fat16,
+    /// Anonymous pipe end; `raw_fd` is the pipe's raw fd, `writable` tells direction.
+    Pipe,
+    /// /dev/null — writes discard, reads return EOF.
+    DevNull,
+    /// /dev/tty  — reads come from stdin ring; writes go to console.
+    DevTty,
+}
+
 // ── Per-task file-descriptor entry ────────────────────────────────────────
 /// A single open-file record stored inside a task's `FdTable`.
 #[derive(Clone, Copy)]
 pub struct FdEntry {
+    pub backend:   FdBackend,
+    /// RamFS: inode index.
     pub inode_idx: usize,
+    /// Fat16: internal FAT raw fd.  Pipe: raw pipe fd.
+    pub raw_fd:    i32,
     pub offset:    usize,
     pub writable:  bool,
     pub append:    bool,
@@ -106,19 +126,75 @@ impl FdTable {
 
         let initial_offset = if append { fs.inodes[inode_idx].data.len() } else { 0 };
         self.entries[fd] = Some(FdEntry {
+            backend:   FdBackend::RamFS,
             inode_idx,
-            offset:   initial_offset,
+            raw_fd:    0,
+            offset:    initial_offset,
             writable,
             append,
         });
         fd as i64
     }
 
-    /// Close `fd`.
+    /// Allocate two FD slots backed by a raw pipe pair.  Returns `(read_slot, write_slot)`.
+    pub fn open_pipe(&mut self, raw_read_fd: i32, raw_write_fd: i32) -> Option<(usize, usize)> {
+        let rslot = self.alloc_fd()?;
+        self.entries[rslot] = Some(FdEntry {
+            backend: FdBackend::Pipe,
+            inode_idx: 0, raw_fd: raw_read_fd, offset: 0, writable: false, append: false,
+        });
+        let wslot = self.alloc_fd()?;
+        self.entries[wslot] = Some(FdEntry {
+            backend: FdBackend::Pipe,
+            inode_idx: 0, raw_fd: raw_write_fd, offset: 0, writable: true, append: false,
+        });
+        Some((rslot, wslot))
+    }
+
+    /// Allocate one FD slot backed by an internal FAT16 raw fd.
+    pub fn open_fat(&mut self, fat_raw_fd: i32, writable: bool) -> i64 {
+        match self.alloc_fd() {
+            None   => -24, // EMFILE
+            Some(fd) => {
+                self.entries[fd] = Some(FdEntry {
+                    backend: FdBackend::Fat16,
+                    inode_idx: 0, raw_fd: fat_raw_fd, offset: 0, writable, append: false,
+                });
+                fd as i64
+            }
+        }
+    }
+
+    /// Allocate one FD slot for a /dev file.
+    pub fn open_dev(&mut self, backend: FdBackend) -> i64 {
+        match self.alloc_fd() {
+            None   => -24, // EMFILE
+            Some(fd) => {
+                self.entries[fd] = Some(FdEntry {
+                    backend,
+                    inode_idx: 0, raw_fd: 0, offset: 0,
+                    writable: backend != FdBackend::DevNull, // DevNull and DevTty both accept writes
+                    append: false,
+                });
+                fd as i64
+            }
+        }
+    }
+
+    /// Close `fd`.  Runs backend-specific cleanup.
     pub fn close(&mut self, fd: i32) -> i64 {
         if fd < 0 || fd as usize >= MAX_FD { return EBADF; }
-        if self.entries[fd as usize].take().is_none() { return EBADF; }
-        0
+        match self.entries[fd as usize].take() {
+            None    => EBADF,
+            Some(e) => {
+                match e.backend {
+                    FdBackend::Pipe  => unsafe { crate::kernel::pipe::close(e.raw_fd); }
+                    FdBackend::Fat16 => unsafe { crate::kernel::fat::close(e.raw_fd); }
+                    _ => {}
+                }
+                0
+            }
+        }
     }
 
     /// Read up to `buf.len()` bytes from `fd`.
@@ -128,6 +204,24 @@ impl FdTable {
             Some(e) => e,
             None    => return EBADF,
         };
+        match entry.backend {
+            FdBackend::Pipe => {
+                return unsafe { crate::kernel::pipe::read(entry.raw_fd, buf) };
+            }
+            FdBackend::Fat16 => {
+                return unsafe { crate::kernel::fat::read_fd(entry.raw_fd, buf) };
+            }
+            FdBackend::DevNull => return 0,
+            FdBackend::DevTty  => {
+                // One character at a time from the stdin ring.
+                if buf.is_empty() { return 0; }
+                return match crate::kernel::stdin::pop() {
+                    Some(ch) => { buf[0] = ch; 1 }
+                    None     => -6, // EAGAIN
+                };
+            }
+            FdBackend::RamFS => {}
+        }
         if entry.inode_idx >= fs.inodes.len() { return EBADF; }
         let inode = &fs.inodes[entry.inode_idx];
         if inode.kind != NodeKind::File { return EISDIR; }
@@ -148,6 +242,22 @@ impl FdTable {
             Some(e) => e,
             None    => return EBADF,
         };
+        match entry.backend {
+            FdBackend::Pipe  => {
+                return unsafe { crate::kernel::pipe::write(entry.raw_fd, buf) };
+            }
+            FdBackend::Fat16 => {
+                return unsafe { crate::kernel::fat::write_fd(entry.raw_fd, buf) };
+            }
+            FdBackend::DevNull | FdBackend::DevTty => {
+                // DevNull discards; DevTty mirrors to the output capture path
+                if entry.backend == FdBackend::DevTty {
+                    crate::kernel::user_mode::output_write(buf);
+                }
+                return buf.len() as i64;
+            }
+            FdBackend::RamFS => {}
+        }
         if !entry.writable { return EACCES; }
         if entry.inode_idx >= fs.inodes.len() { return EBADF; }
 
@@ -167,12 +277,26 @@ impl FdTable {
     }
 
     /// Duplicate `old_fd` to `new_fd`.  Returns `new_fd` or negative error.
+    /// `new_fd` 0–2 are allowed so that stdout/stdin can be redirected.
     pub fn dup2(&mut self, old_fd: i32, new_fd: i32) -> i64 {
-        if old_fd < 3 || old_fd as usize >= MAX_FD { return -5; } // EBADF
-        if new_fd < 3 || new_fd as usize >= MAX_FD { return -5; }
+        if old_fd < 0 || old_fd as usize >= MAX_FD { return -5; }
+        if new_fd < 0 || new_fd as usize >= MAX_FD { return -5; }
         match self.entries[old_fd as usize] {
-            None    => -5, // EBADF
+            None    => -5,
             Some(e) => {
+                // Addref the resource being duplicated.
+                match e.backend {
+                    FdBackend::Pipe  => unsafe { crate::kernel::pipe::addref(e.raw_fd); }
+                    _ => {}
+                }
+                // Close whatever is currently at new_fd.
+                if let Some(old) = self.entries[new_fd as usize] {
+                    match old.backend {
+                        FdBackend::Pipe  => unsafe { crate::kernel::pipe::close(old.raw_fd); }
+                        FdBackend::Fat16 => unsafe { crate::kernel::fat::close(old.raw_fd); }
+                        _ => {}
+                    }
+                }
                 self.entries[new_fd as usize] = Some(e);
                 new_fd as i64
             }
@@ -180,13 +304,14 @@ impl FdTable {
     }
 
     /// After `RamFs::remove_file` removes the inode at `removed_idx`, fix up
-    /// all open FD entries so that indices above the gap are decremented by 1.
-    /// FDs that pointed directly to the removed inode are closed (set to None).
+    /// all open RamFS FD entries so indices above the gap are decremented.
+    /// FDs pointing directly at the removed inode are closed (set to None).
     pub fn on_inode_removed(&mut self, removed_idx: usize) {
         for slot in self.entries.iter_mut() {
             if let Some(e) = slot {
+                if e.backend != FdBackend::RamFS { continue; }
                 if e.inode_idx == removed_idx {
-                    *slot = None; // was pointing at the deleted file
+                    *slot = None;
                 } else if e.inode_idx > removed_idx {
                     e.inode_idx -= 1;
                 }

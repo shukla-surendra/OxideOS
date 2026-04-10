@@ -37,9 +37,10 @@ pub enum TaskState {
     Empty,
     Ready,
     Running,
-    Sleeping(u64), // wake at this tick
-    Waiting(u8),   // waiting for child with this PID to die
-    Dead(i64),     // exit code (pages already freed)
+    Sleeping(u64),           // wake at this tick
+    Waiting(u8),             // waiting for child with this PID to die
+    WaitingForMsg(u32, u64), // blocking msgrcv: (queue_id, user msg_out ptr)
+    Dead(i64),               // exit code (pages already freed)
 }
 
 pub struct Task {
@@ -262,6 +263,21 @@ pub unsafe fn tick() -> Option<(u8, i64)> {
         }
     }
 
+    // Wake tasks blocked on msgrcv_wait if their queue now has a message.
+    for i in 0..MAX_TASKS {
+        if let TaskState::WaitingForMsg(queue_id, msg_ptr) = (*sched).tasks[i].state {
+            let mut msg = crate::kernel::ipc::Message::empty();
+            if unsafe { crate::kernel::ipc::msgrcv(queue_id, &mut msg) } == 0 {
+                unsafe {
+                    core::ptr::write_unaligned(
+                        msg_ptr as *mut crate::kernel::ipc::Message, msg);
+                }
+                (*sched).tasks[i].ctx.rax = 0; // success
+                (*sched).tasks[i].state   = TaskState::Ready;
+            }
+        }
+    }
+
     // Wake tasks waiting for a child that has died, and reap the child.
     for i in 0..MAX_TASKS {
         if let TaskState::Waiting(child_pid) = (*sched).tasks[i].state {
@@ -423,6 +439,14 @@ pub unsafe fn fork_task(
     (*child).heap_end   = parent_heap;
     (*child).output_len = 0;
     (*child).fd_table   = parent_fd;
+    // Addref every pipe end the child inherited so reference counts stay correct.
+    for slot in &(*child).fd_table.entries {
+        if let Some(e) = slot {
+            if e.backend == crate::kernel::fs::ramfs::FdBackend::Pipe {
+                crate::kernel::pipe::addref(e.raw_fd);
+            }
+        }
+    }
     (*child).name       = parent_name;
     (*child).name_len   = parent_nlen;
 
@@ -455,6 +479,24 @@ pub unsafe fn wait_for_pid(
     unsafe { crate::kernel::user_mode::exit_to_kernel(EXIT_SLEEPING) }
 }
 
+/// Block the current task until a message arrives on `queue_id`.
+///
+/// On wakeup, `tick()` will have already written the message to `msg_ptr`
+/// and set `rax = 0`.  If the queue already has a message the task is placed
+/// in WaitingForMsg and will be woken on the very next tick.
+pub unsafe fn wait_for_msg(
+    queue_id: u32,
+    msg_ptr:  u64,
+    mut ctx:  crate::kernel::user_mode::TaskContext,
+) -> ! {
+    ctx.rax = 0;
+    let sched = &raw mut SCHED;
+    let cur   = (*sched).current;
+    (*sched).tasks[cur].ctx   = ctx;
+    (*sched).tasks[cur].state = TaskState::WaitingForMsg(queue_id, msg_ptr);
+    unsafe { crate::kernel::user_mode::exit_to_kernel(EXIT_SLEEPING) }
+}
+
 /// Returns `true` when at least one non-finished task exists.
 pub fn has_task() -> bool {
     unsafe {
@@ -470,6 +512,7 @@ pub fn task_count() -> usize {
         let sched = &raw const SCHED;
         (0..MAX_TASKS).filter(|&i| matches!((*sched).tasks[i].state,
             TaskState::Ready | TaskState::Running
-            | TaskState::Sleeping(_) | TaskState::Waiting(_))).count()
+            | TaskState::Sleeping(_) | TaskState::Waiting(_)
+            | TaskState::WaitingForMsg(_, _))).count()
     }
 }

@@ -42,7 +42,7 @@ const SCROLL_AMOUNT: usize = 5;
 const COMMANDS: &[&str] = &[
     "about", "cat", "cd", "clear", "cls", "echo",
     "help", "history", "kill", "ls", "mkdir", "pid",
-    "ps", "pwd", "rm", "run", "sh", "sysinfo", "ticks", "touch",
+    "ps", "pwd", "rm", "run", "sh", "sysinfo", "terminal", "ticks", "touch",
     "uptime", "version", "write",
 ];
 
@@ -79,6 +79,14 @@ fn dequeue_event() -> Option<u16> {
         INPUT_HEAD = (INPUT_HEAD + 1) % INPUT_QUEUE_SIZE;
         Some(event)
     })
+}
+
+/// Push a VT100 cursor-key escape sequence (\x1B [ X) into the stdin ring
+/// so a running user program (e.g. the shell) can handle arrow keys.
+fn push_vt100(suffix: u8) {
+    crate::kernel::stdin::push(0x1B);
+    crate::kernel::stdin::push(b'[');
+    crate::kernel::stdin::push(suffix);
 }
 
 /// Pick a colour for a terminal history line based on its prefix/content.
@@ -134,6 +142,8 @@ pub struct TerminalApp {
     window_id:        usize,
     history:          Vec<String>,
     input:            String,
+    /// Byte-index of the cursor within `input` (0 = before first char).
+    cursor_pos:       usize,
     command_history:  Vec<String>,
     history_cursor:   Option<usize>,
     cwd:              String,
@@ -151,6 +161,7 @@ impl TerminalApp {
             window_id,
             history:          Vec::new(),
             input:            String::new(),
+            cursor_pos:       0,
             command_history:  Vec::new(),
             history_cursor:   None,
             cwd:              String::from("/"),
@@ -261,6 +272,9 @@ impl TerminalApp {
         any
     }
 
+    /// Attach a spawned process as the foreground program for this terminal.
+    pub fn attach_foreground(&mut self, pid: u8) { self.enter_passthrough(pid); }
+
     fn enter_passthrough(&mut self, pid: u8) {
         self.passthrough_mode = true;
         self.fg_pid           = Some(pid);
@@ -275,16 +289,34 @@ impl TerminalApp {
         let mut changed = false;
         while let Some(event) = dequeue_event() {
             if self.passthrough_mode {
-                // Ctrl+C (ASCII 3) kills the foreground process
-                if event == 3 {
-                    if let Some(pid) = self.fg_pid {
-                        unsafe { crate::kernel::scheduler::kill(pid); }
-                        self.push_line(&format!("[pid {}] killed (Ctrl+C)", pid));
-                        self.exit_passthrough();
+                match event {
+                    // Ctrl+C — kill foreground process
+                    3 => {
+                        if let Some(pid) = self.fg_pid {
+                            unsafe { crate::kernel::scheduler::kill(pid); }
+                            self.push_line(&format!("[pid {}] killed (Ctrl+C)", pid));
+                            self.exit_passthrough();
+                            changed = true;
+                        }
+                    }
+                    // Scroll history while program is running
+                    EVENT_PAGE_UP => {
+                        let max = self.history.len().saturating_sub(1);
+                        self.scroll_offset = (self.scroll_offset + SCROLL_AMOUNT).min(max);
                         changed = true;
                     }
+                    EVENT_PAGE_DOWN => {
+                        self.scroll_offset = self.scroll_offset.saturating_sub(SCROLL_AMOUNT);
+                        changed = true;
+                    }
+                    // Arrow keys → push VT100 escape sequence into stdin for the running program
+                    EVENT_ARROW_UP    => { push_vt100(b'A'); }
+                    EVENT_ARROW_DOWN  => { push_vt100(b'B'); }
+                    EVENT_ARROW_RIGHT => { push_vt100(b'C'); }
+                    EVENT_ARROW_LEFT  => { push_vt100(b'D'); }
+                    // All other keystrokes already in stdin ring via keyboard.rs
+                    _ => {}
                 }
-                // All other keystrokes are already delivered to stdin ring by keyboard.rs
             } else if focused {
                 changed |= self.handle_event(event);
             }
@@ -349,22 +381,40 @@ impl TerminalApp {
                                &indicator, 0xFFFFAA00);  // amber text
         } else {
             // Normal prompt + input + cursor
-            let prompt_sym = ">";
+            // Compute the visible window: scroll so the cursor is always on screen.
+            let prompt_cols   = 2usize; // "> "
+            let visible_cols  = max_chars.saturating_sub(prompt_cols);
+            // Start of the visible window within `input` (in chars, not bytes —
+            // we only handle ASCII in the input for now so chars == bytes here).
+            let win_start = if self.cursor_pos > visible_cols {
+                self.cursor_pos - visible_cols
+            } else {
+                0
+            };
+            // Clamp win_start to a char boundary (all ASCII, but guard anyway).
+            let win_start = {
+                let mut s = win_start;
+                while s > 0 && !self.input.is_char_boundary(s) { s -= 1; }
+                s
+            };
+            let visible_bytes = &self.input[win_start..];
             let input_display: alloc::string::String =
-                if self.input.len() > max_chars.saturating_sub(3) {
-                    alloc::string::String::from(
-                        &self.input[self.input.len().saturating_sub(max_chars.saturating_sub(3))..])
+                if visible_bytes.len() > visible_cols {
+                    alloc::string::String::from(&visible_bytes[..visible_cols])
                 } else {
-                    self.input.clone()
+                    alloc::string::String::from(visible_bytes)
                 };
+
             fonts::draw_string(graphics, content_x + 6, input_y + 8,
-                               prompt_sym, 0xFF00D060);           // bright green >
+                               ">", 0xFF00D060);                  // bright green >
             fonts::draw_string(graphics, content_x + 6 + CHAR_WIDTH * 2, input_y + 8,
                                &input_display, 0xFFD8E8FF);       // light blue input text
 
             if is_focused {
+                // Cursor column = chars before cursor that are in the visible window.
+                let chars_before = self.cursor_pos.saturating_sub(win_start);
                 let cx = content_x + 6 + CHAR_WIDTH * 2
-                       + input_display.len() as u64 * CHAR_WIDTH;
+                       + chars_before as u64 * CHAR_WIDTH;
                 graphics.fill_rect(cx, input_y + 5, 2, LINE_HEIGHT - 2, 0xFF00AAFF);
             }
         }
@@ -376,8 +426,33 @@ impl TerminalApp {
         match event {
             EVENT_ARROW_UP    => self.history_up(),
             EVENT_ARROW_DOWN  => self.history_down(),
-            EVENT_ARROW_LEFT |
-            EVENT_ARROW_RIGHT => false,
+            EVENT_ARROW_LEFT  => {
+                if self.cursor_pos > 0 {
+                    // Step back one UTF-8 character boundary
+                    self.cursor_pos -= 1;
+                    while self.cursor_pos > 0
+                        && !self.input.is_char_boundary(self.cursor_pos)
+                    {
+                        self.cursor_pos -= 1;
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+            EVENT_ARROW_RIGHT => {
+                if self.cursor_pos < self.input.len() {
+                    self.cursor_pos += 1;
+                    while self.cursor_pos < self.input.len()
+                        && !self.input.is_char_boundary(self.cursor_pos)
+                    {
+                        self.cursor_pos += 1;
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
             EVENT_PAGE_UP     => {
                 let max_scroll = self.history.len().saturating_sub(1);
                 self.scroll_offset = (self.scroll_offset + SCROLL_AMOUNT).min(max_scroll);
@@ -393,12 +468,26 @@ impl TerminalApp {
 
     fn handle_key(&mut self, ch: u8) -> bool {
         match ch {
-            8 => { self.history_cursor = None; self.input.pop(); true }
+            8 => {
+                // Backspace: delete char before cursor
+                if self.cursor_pos > 0 {
+                    self.history_cursor = None;
+                    // Find the start of the char just before cursor_pos
+                    let mut start = self.cursor_pos - 1;
+                    while start > 0 && !self.input.is_char_boundary(start) {
+                        start -= 1;
+                    }
+                    self.input.drain(start..self.cursor_pos);
+                    self.cursor_pos = start;
+                }
+                true
+            }
             b'\n' | b'\r' => { self.submit_command(); true }
             b'\t'         => self.autocomplete(),
             32..=126      => {
                 self.history_cursor = None;
-                self.input.push(ch as char);
+                self.input.insert(self.cursor_pos, ch as char);
+                self.cursor_pos += 1;
                 true
             }
             _ => false,
@@ -420,6 +509,7 @@ impl TerminalApp {
         let command = String::from(self.input.trim());
         self.push_line(&format!("> {}", self.input));
         self.input.clear();
+        self.cursor_pos    = 0;
         self.history_cursor = None;
         if command.is_empty() { return; }
         self.record_command(&command);
@@ -652,10 +742,17 @@ impl TerminalApp {
                 self.push_line("  echo <text>");
                 self.push_line("  clear | cls | history | version | about");
                 self.push_line("Programs:");
-                self.push_line("  run <name>         - spawn user program");
+                self.push_line("  run <name>         - spawn (foreground)");
+                self.push_line("  run <name> &       - spawn (background)");
                 self.push_line("  run                - list programs");
+                self.push_line("  sh                 - launch userspace shell");
+                self.push_line("  sh &               - shell in background");
                 self.push_line("  ps                 - show all tasks");
                 self.push_line("  kill <pid>         - terminate a task");
+                self.push_line("Navigation:");
+                self.push_line("  Left/Right         - move cursor in input");
+                self.push_line("  PgUp/PgDn          - scroll history");
+                self.push_line("  Ctrl+C             - kill foreground program");
             }
 
             "clear" | "cls" => self.history.clear(),
@@ -723,19 +820,49 @@ impl TerminalApp {
             "run" => {
                 let name = parts.next().unwrap_or("");
                 if name.is_empty() {
-                    self.push_line("usage: run <program>");
+                    self.push_line("usage: run <program> [&]");
                     self.push_line("programs:");
                     for n in crate::kernel::programs::NAMES {
                         self.push_line(&format!("  {}", n));
                     }
                     return;
                 }
+                // Check for background `&` token
+                let background = parts.next().map(|t| t.trim()) == Some("&");
                 match crate::kernel::programs::find(name) {
                     None => self.push_line(&format!("run: unknown program '{}'", name)),
                     Some(code) => {
                         match unsafe { crate::kernel::scheduler::spawn(code, name) } {
-                            Ok(pid) => self.push_line(&format!("spawned '{}' (pid {})", name, pid)),
+                            Ok(pid) => {
+                                if background {
+                                    self.push_line(&format!("spawned '{}' (pid {}) [background]", name, pid));
+                                } else {
+                                    self.push_line(&format!("spawned '{}' (pid {})", name, pid));
+                                    self.enter_passthrough(pid);
+                                }
+                            }
                             Err(e)  => self.push_line(&format!("run: {}", e)),
+                        }
+                    }
+                }
+            }
+
+            "sh" => {
+                // `sh &` runs the shell in background (output drains to history)
+                let background = parts.next().map(|t| t.trim()) == Some("&");
+                match crate::kernel::programs::find("sh") {
+                    None => self.push_line("sh: not available"),
+                    Some(code) => {
+                        match unsafe { crate::kernel::scheduler::spawn(code, "sh") } {
+                            Ok(pid) => {
+                                if background {
+                                    self.push_line(&format!("spawned 'sh' (pid {}) [background]", pid));
+                                } else {
+                                    self.push_line(&format!("spawned 'sh' (pid {})", pid));
+                                    self.enter_passthrough(pid);
+                                }
+                            }
+                            Err(e) => self.push_line(&format!("sh: {}", e)),
                         }
                     }
                 }
@@ -749,12 +876,13 @@ impl TerminalApp {
                     if matches!(info.state, TaskState::Empty) { continue; }
                     let name = core::str::from_utf8(&info.name[..info.name_len]).unwrap_or("?");
                     let state_str = match info.state {
-                        TaskState::Empty        => continue,
-                        TaskState::Ready        => "ready",
-                        TaskState::Running      => "running",
-                        TaskState::Sleeping(_)  => "sleeping",
-                        TaskState::Waiting(_)   => "waiting",
-                        TaskState::Dead(_)      => "dead",
+                        TaskState::Empty              => continue,
+                        TaskState::Ready              => "ready",
+                        TaskState::Running            => "running",
+                        TaskState::Sleeping(_)        => "sleeping",
+                        TaskState::Waiting(_)         => "waiting",
+                        TaskState::WaitingForMsg(_,_) => "ipc-wait",
+                        TaskState::Dead(_)            => "dead",
                     };
                     self.push_line(&format!("  [{}] {} ({})", info.pid, name, state_str));
                     any = true;
@@ -801,7 +929,8 @@ impl TerminalApp {
             _                 => return false,
         };
         self.history_cursor = Some(next);
-        self.input = self.command_history[next].clone();
+        self.input      = self.command_history[next].clone();
+        self.cursor_pos = self.input.len();
         true
     }
 
@@ -809,12 +938,14 @@ impl TerminalApp {
         match self.history_cursor {
             Some(i) if i + 1 < self.command_history.len() => {
                 self.history_cursor = Some(i + 1);
-                self.input = self.command_history[i + 1].clone();
+                self.input      = self.command_history[i + 1].clone();
+                self.cursor_pos = self.input.len();
                 true
             }
             Some(_) => {
                 self.history_cursor = None;
                 self.input.clear();
+                self.cursor_pos = 0;
                 true
             }
             None => false,
@@ -847,6 +978,7 @@ impl TerminalApp {
         if matches!(first, "echo" | "cat" | "cd" | "mkdir" | "touch" | "write" | "rm" | "ls" | "run") {
             self.input.push(' ');
         }
+        self.cursor_pos = self.input.len();
         true
     }
 

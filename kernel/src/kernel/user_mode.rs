@@ -80,6 +80,9 @@ struct SavedKernelContext {
 
 static USER_MODE_ACTIVE: AtomicBool = AtomicBool::new(false);
 static USER_EXIT_CODE: AtomicI64 = AtomicI64::new(-1);
+/// The kernel CR3 saved immediately before we switch to a user page table.
+/// Restored by exit_to_kernel() before returning to the scheduler.
+static mut KERNEL_CR3: u64 = 0;
 #[unsafe(no_mangle)]
 static mut RETURN_CONTEXT: SavedKernelContext = SavedKernelContext {
     rsp: 0,
@@ -189,19 +192,34 @@ pub fn set_active(v: bool) {
 /// Run a user task for the first time, entering at `entry` with `stack_top`.
 /// Switches to `cr3` (per-process page table) before entering ring 3.
 pub unsafe fn launch_at(entry: u64, stack_top: u64, cr3: u64) -> i64 {
-    unsafe { core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, nomem)); }
+    unsafe {
+        // Save kernel CR3 so exit_to_kernel can restore it.
+        core::arch::asm!("mov {}, cr3", out(reg) KERNEL_CR3, options(nostack, nomem));
+        core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, nomem));
+    }
     enter_user_mode(entry, stack_top)
 }
 
 /// Resume a previously saved task context (e.g. after preemption or sleep).
 /// Switches to `cr3` before returning to ring 3.
 pub unsafe fn resume_user_context(ctx: &TaskContext, cr3: u64) -> i64 {
-    unsafe { core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, nomem)); }
+    unsafe {
+        // Save kernel CR3 so exit_to_kernel can restore it.
+        core::arch::asm!("mov {}, cr3", out(reg) KERNEL_CR3, options(nostack, nomem));
+        core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, nomem));
+    }
     USER_MODE_ACTIVE.store(true, Ordering::Relaxed);
     resume_user_context_trampoline(ctx as *const TaskContext)
 }
 
 pub unsafe fn exit_to_kernel(code: i64) -> ! {
+    // Restore the kernel page table FIRST so that all subsequent kernel code
+    // (including free_user_page_table) runs with a valid, stable CR3.
+    let kcr3 = unsafe { KERNEL_CR3 };
+    if kcr3 != 0 {
+        unsafe { core::arch::asm!("mov cr3, {}", in(reg) kcr3, options(nostack, nomem)); }
+    }
+
     CURRENT_SYSCALL_CTX = None;
     USER_EXIT_CODE.store(code, Ordering::Relaxed);
     USER_MODE_ACTIVE.store(false, Ordering::Relaxed);
