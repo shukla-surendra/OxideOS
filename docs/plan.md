@@ -7,7 +7,7 @@ milestone.
 
 ---
 
-## Current State (as of this writing)
+## Current State (as of April 2026)
 
 ### What works today
 
@@ -23,241 +23,166 @@ milestone.
 | ELF64 loader (ET_EXEC, static) | ✅ Complete |
 | Syscall dispatch (`int 0x80`, 17 syscalls) | ✅ Complete |
 | RamFS (in-memory tree, 32 open FDs) | ✅ Complete |
-| FAT16 read-only (root directory, ATA PIO) | ✅ Complete |
+| FAT16 read + write (root dir, ATA PIO) | ✅ Complete |
 | Anonymous pipes (8 pairs, 4 KB each) | ✅ Complete |
 | Stdin ring buffer → GetChar syscall | ✅ Complete |
-| PS/2 keyboard (full US QWERTY) | ✅ Complete |
+| PS/2 keyboard (US QWERTY, IRQ + polling) | ✅ Complete (VirtualBox debug active) |
 | PS/2 mouse (packets, buttons, cursor) | ✅ Complete |
 | Framebuffer graphics + back-buffer blit | ✅ Complete |
-| Window manager (drag, focus, taskbar) | ✅ Complete |
-| GUI terminal (21 commands, tab-complete) | ✅ Complete |
+| Window manager (drag, focus, taskbar, clock) | ✅ Complete |
+| Start menu (program launcher, categories) | ✅ Complete |
+| GUI terminal (real bash-style UI, inline prompt) | ✅ Complete |
+| Multiple terminal windows (sh opens new window) | ✅ Complete |
+| Shutdown / Reboot (ACPI ports + 8042 reset) | ✅ Complete |
+| Shell (`/bin/sh`) with `>` / `>>` redirect | ✅ Complete |
 | Serial port debug output | ✅ Complete |
+| Fork / exec / waitpid / exit cleanup | ✅ Complete |
+| Per-task FD table + dup2 | ✅ Complete |
+| brk/sbrk + userspace heap | ✅ Complete |
+| kill syscall | ✅ Complete |
+| User page-fault → SIGSEGV | ✅ Complete |
+| ReadDir syscall | ✅ Complete |
+| VFS layer (mount table, /dev/null, /dev/tty) | ✅ Complete |
+| IPC message queues (compositor protocol) | ✅ Complete |
 
 ### Known gaps
 
 | Subsystem | Gap |
 |-----------|-----|
-| Process model | No `fork`, `exec`, `waitpid` — can only `spawn` built-in binaries; per-task FD table ✅ |
-| Memory | No `mmap`/`brk` — user programs cannot allocate heap dynamically |
-| Filesystem | FAT16 write not implemented; no subdirectory traversal; no VFS layer |
-| Signals | No signal delivery, no `Ctrl+C` interrupt to process |
-| TTY | No TTY abstraction — keyboard goes straight to terminal widget |
-| Shell | No userspace shell — `run` built into kernel terminal |
+| Keyboard | VirtualBox keyboard input unreliable — debugging active |
+| Signals | No full signal delivery (sigaction/trampoline); kill works but no Ctrl+C→SIGINT |
+| TTY | No TTY abstraction — no canonical/raw mode switching |
+| Filesystem | No subdirectory support on FAT16; no ext2; no partition table parsing |
 | Networking | None |
-| Block device | ATA sector read only; no write; no partition support |
-| Permissions | No users, no file permissions |
-| Dynamic linking | Only static ELF — no shared libraries |
+| Dynamic linking | Only static ELF |
 | SMP | Single core only |
+| Permissions | No users, no file permissions |
+| mmap | Anonymous mmap not implemented (only brk) |
 
 ---
 
-## Phase 1 — Solid Process Model
+## Available `no_std` Crates for OxideOS
+
+These Rust crates work in a `#![no_std]` kernel environment. Adding them via `Cargo.toml`
+replaces hand-rolled code with battle-tested implementations.
+
+### Immediately useful (drop-in improvements)
+
+| Crate | `alloc`? | What it replaces / adds |
+|-------|----------|--------------------------|
+| `pc-keyboard` | No | Replace hand-rolled scancode table; proper PS/2 set 1/2 decoder with VirtualBox compatibility |
+| `pic8259` | No | Replace `pic.rs` — battle-tested 8259 PIC init/EOI/mask |
+| `uart_16550` | No | Replace `serial.rs` — safe 16550 UART driver |
+| `spin` | No | Already used — Mutex/RwLock/Once for shared kernel state |
+| `heapless` | No | Fixed-capacity `Vec`/`String`/`IndexMap` without allocator |
+| `bitvec` | Optional | Replace bitmap allocator with safe bit manipulation |
+| `x86_64` | No | Safe wrappers for CR3, VirtAddr, PageTableEntry, CPUID |
+| `portable-atomic` | No | Cross-arch safe atomics |
+
+### Medium-term (enable new features)
+
+| Crate | `alloc`? | Purpose |
+|-------|----------|---------|
+| `smoltcp` | Yes | Complete no_std TCP/IP stack — ARP, IP, UDP, TCP, ICMP. Drops Phase 7 from High to Medium effort |
+| `virtio-drivers` | Yes | VirtIO-net and VirtIO-block device drivers for QEMU/VirtualBox |
+| `acpi` | Yes | Parse ACPI tables (RSDP/MADT/FADT) — proper ACPI shutdown, SMP core discovery |
+| `xmas-elf` | Optional | Replace hand-rolled ELF loader with a tested parser |
+| `nom` | Optional | Parser combinators — shell tokenisation, config files, ELF sections |
+| `linked_list_allocator` or `talc` | No | Better kernel heap allocator (replace bump allocator) |
+| `libm` | No | `sin`/`cos`/`sqrt` etc. — for GUI effects, physics, graphing |
+| `miniz_oxide` | No | Deflate/zlib compression — compress ramdisk / ELF binaries |
+
+### Future / optional
+
+| Crate | Purpose |
+|-------|---------|
+| `embedded-graphics` | 2D graphics primitives (lines, circles, images) for GUI |
+| `smolstr` | Small-string optimisation (avoids heap for short strings) |
+| `postcard` | Compact binary serialization for IPC messages |
+| `sha2` / `md5` | File checksums, future auth |
+| `chacha20poly1305` | Authenticated encryption |
+| `uuid` | UUIDs for process / file IDs |
+| `noto-sans-mono-bitmap` | High-quality mono bitmap font with full Unicode coverage |
+
+### How to add a crate
+
+```toml
+# kernel/Cargo.toml
+[dependencies]
+pc-keyboard = { version = "0.7", default-features = false }
+smoltcp = { version = "0.11", default-features = false, features = ["proto-ipv4", "socket-tcp"] }
+x86_64 = { version = "0.15", default-features = false, features = ["instructions"] }
+```
+
+Most `no_std` crates require `default-features = false` to drop their `std` dependency.
+
+---
+
+## Phase 1 — Solid Process Model ✅ COMPLETE
 
 **Goal:** Any ELF binary from disk can be loaded, forked, exec'd, and waited on.
-This is the single most important gap — everything else depends on real processes.
 
 ### 1.1 `exec` syscall ✅ DONE
-
-- `Exec = 5` added to syscall table and dispatch.
-- `KernelRuntime::exec_program` resolves the path (built-in registry → RamFS → FAT16),
-  creates a fresh CR3, maps stack, loads ELF or flat binary via `load_in`.
-- Old CR3's user pages freed via new `paging_allocator::free_user_page_table`.
-- Replaces current task by updating `task.{cr3, entry, first_run, fd_table}` then
-  calling `exit_to_kernel(EXIT_PREEMPTED)` — non-local goto back to `tick()`.
-  Next scheduler tick calls `launch_at(new_entry, stack, new_cr3)`.
-- Supports: built-in registry (`hello`, `counter`, …), `/path` in RamFS, `/disk/` on FAT16.
-
 ### 1.2 `fork` syscall ✅ DONE
-
-- `Fork = 1` wired in syscall table and dispatch.
-- `paging_allocator::copy_user_page_table(src_cr3)` added: walks L4 indices 0–255,
-  deep-copies every L3/L2/L1 table frame and every leaf data frame into fresh physical
-  frames; kernel half (256–511) kept as shared pointers.
-- `scheduler::fork_task(parent_idx, child_ctx)`: finds free slot, copies cr3/FD table/
-  heap_end/name from parent, sets child rax=0 so it returns 0 from fork.
-- `KernelRuntime::fork_child()`: reads `CURRENT_SYSCALL_CTX`, sets rax=0 for child,
-  calls `fork_task`; parent returns child PID normally via SyscallResult.
-- `Task` extended: `parent_pid: u8`, `heap_end: u64`.
-
 ### 1.3 Per-task FD table ✅ DONE
-
-- `FdTable` (`Copy`, `const`-constructible) extracted from `RamFs` and moved into `Task`.
-- `RamFs` now owns only inodes; all FD state lives in `Task.fd_table`.
-- `FdTable::open/close/read_fd/write_fd` take `&mut RamFs` / `&RamFs` as needed.
-- Syscall `KernelRuntime` routes all FD ops to `SCHED.tasks[CURRENT_TASK_IDX].fd_table`.
-- `spawn()` resets the table with `FdTable::new()` on each task launch.
-- `FdTable::on_inode_removed(idx)` fixup helper added for callers of `remove_file`.
-- Stdin/stdout/stderr (FDs 0/1/2) are reserved; real files start at FD 3.
-
 ### 1.4 `waitpid` syscall ✅ DONE
-
-- `Wait = 2` wired in dispatch.
-- New `TaskState::Waiting(child_pid)` variant.
-- `scheduler::wait_for_pid(parent_idx, child_pid, ctx)`: saves parent ctx, sets state
-  to `Waiting(child_pid)`, calls `exit_to_kernel(EXIT_SLEEPING)` — diverges back to tick.
-- In `tick()`: each tick scans for `Waiting` tasks whose child is `Dead`; when found,
-  writes exit code into `ctx.rax`, sets parent Ready, reaps child (Empty).
-- `KernelRuntime::waitpid_impl`: checks if child already Dead (immediate return), else
-  consumes `CURRENT_SYSCALL_CTX` and calls `wait_for_pid`.
-
 ### 1.5 Exit cleanup ✅ DONE
 
-- In `tick()`, immediately after marking a task `Dead`, calls
-  `paging_allocator::free_user_page_table(cr3)` and zeros `task.cr3`.
-- Frees all user leaf frames, L1/L2/L3 table frames, and the L4 frame itself.
-- Kernel half untouched. waitpid only needs the exit code stored in `Dead(code)`.
+---
 
-### Deliverable
-```
-> run /bin/sh          # userspace shell starts (phase 3)
-$ fork_test            # forks, child prints, parent waits
-```
+## Phase 2 — Virtual Filesystem (VFS) ✅ MOSTLY DONE
+
+### 2.1 VFS layer ✅ DONE
+- Mount table: `/` → RamFS, `/disk` → FAT16
+- FdBackend enum routes open/read/write/close to the right driver
+- `/dev/null`, `/dev/tty` device files
+
+### 2.2 FAT16 write support ✅ DONE
+- Cluster allocation (scan FAT for 0x0000, mark 0xFFFF)
+- `write_fd` with cluster chain extension
+- Directory entry size flush on write/close
+- O_CREAT / O_TRUNC / O_APPEND support
+- Both FAT copies written
+- Shell `>` and `>>` redirect via `sh`
+
+### 2.3 FAT16 subdirectory support ← NEXT after keyboard fix
+- Parse ATTR_DIRECTORY entries; follow cluster chains
+- `readdir` for subdirectories
+- `cd /disk/bin/` in terminal
+
+### 2.4 `/dev` device filesystem ✅ PARTIAL
+- `/dev/null` and `/dev/tty` exist
+- Missing: `/dev/zero`, `/dev/disk0` raw block device
+
+### 2.5 `stat` / `fstat` syscalls ← TODO
+- Return `Stat { size, kind, permissions, inode }`
 
 ---
 
-## Phase 2 — Virtual Filesystem (VFS)
+## Phase 3 — Userspace Shell & Standard Programs ✅ MOSTLY DONE
 
-**Goal:** One unified file abstraction — same `open`/`read`/`write`/`close` regardless
-of whether the file lives in RamFS, on the FAT16 disk, or on a future ext2 partition.
+### 3.1 Toolchain ✅ DONE
+- `oxide-rt` runtime crate (`_start`, `exit`, `write`, `read`, `open`, `close`, `brk`)
+- Programs compile with `--target x86_64-unknown-none`
+- `make programs` builds userspace ELF + mcopy to FAT16 disk
 
-### 2.1 VFS layer
+### 3.2 Shell (`/bin/sh`) ✅ DONE
+- Fork + exec + waitpid
+- `>` / `>>` redirect support
+- Opens in a new dedicated terminal window
+- Terminal UI redesigned to real bash/sh style (inline prompt, block cursor)
 
-Create `kernel/src/kernel/vfs.rs`:
+### 3.3 Core utilities ← PARTIAL
+- Built into kernel terminal: `ls`, `cat`, `mkdir`, `touch`, `rm`, `echo`, `pwd`
+- Missing as standalone `/bin/` programs: `cp`, `mv`, `ps`, `kill`, `sleep`
 
-```
-VNode {
-    kind: File | Dir | Device | Symlink,
-    ops:  &'static VnodeOps,   // open/read/write/readdir/stat/…
-    data: *mut (),             // filesystem-private state
-}
+### 3.4 Text editor (`/bin/edit`) ← TODO
+- nano-like: full-screen, arrow key navigation, Ctrl+S save, Ctrl+Q quit
 
-VnodeOps {
-    open:    fn(&VNode, flags) -> Result<FD>,
-    read:    fn(&VNode, offset, buf) -> Result<usize>,
-    write:   fn(&VNode, offset, buf) -> Result<usize>,
-    readdir: fn(&VNode) -> Vec<DirEntry>,
-    stat:    fn(&VNode) -> Stat,
-    create:  fn(&VNode, name, kind) -> Result<VNode>,
-    unlink:  fn(&VNode, name) -> Result<()>,
-}
-```
+### 3.5 `dup2` / `dup` syscalls ✅ DONE
 
-- Register mount points: `/` → RamFS, `/disk` → FAT16 (when ATA present).
-- Path resolution walks the mount table then follows directory entries.
-- All existing syscalls (`Open`, `Read`, `Write`, `Close`) route through VFS.
-
-### 2.2 FAT16 write support
-
-Implement write-back to the ATA disk:
-
-- **Allocate cluster**: scan the FAT for a free entry (value `0x0000`), mark it
-  `0xFFFF` (end-of-chain).
-- **Write sector**: call `ata::write_sector`.
-- **Update directory entry**: find the file's 32-byte entry in the root dir, update
-  file size and first-cluster fields.
-- **Flush**: issue ATA FLUSH CACHE (`0xE7`) after writes.
-- Expose via VFS `write` op on FAT vnodes.
-
-### 2.3 FAT16 subdirectory support
-
-- Parse `ATTR_DIRECTORY` (0x10) entries; follow their cluster chain to read sub-dir sectors.
-- Implement `readdir` for subdirectories.
-- Make `cd /disk/bin/` work in the terminal.
-
-### 2.4 `/dev` device filesystem
-
-- Mount a simple devfs at `/dev`.
-- `/dev/null` — reads return 0 bytes; writes discard.
-- `/dev/zero` — reads return zeroed bytes.
-- `/dev/tty` — reads from stdin ring; writes to terminal output.
-- `/dev/disk0` — raw block device backed by ATA.
-
-### 2.5 `stat` / `fstat` syscalls
-
-- `Stat = 70`, `Fstat = 71`.
-- Return `Stat { size, kind, permissions, inode }`.
-
-### Deliverable
-```
-$ echo hello > /disk/greeting.txt   # writes to FAT16
-$ cat /disk/greeting.txt            # reads back
-$ ls /disk/bin/                     # subdirectory listing
-```
-
----
-
-## Phase 3 — Userspace Shell & Standard Programs
-
-**Goal:** The kernel `run` command is replaced by a real userspace shell that can execute
-arbitrary programs, pipe output, and redirect I/O.
-
-### 3.1 Toolchain
-
-To compile C or Rust programs that target OxideOS:
-
-- Write a minimal `libc.h` / `syscall.h` that wraps `int 0x80` calls.
-- Alternatively, write a small Rust `no_std` runtime crate (`oxide-rt`) that implements
-  `_start`, `exit`, `write`, `read`, `open`, `close`.
-- Programs compile with `--target x86_64-unknown-none`, linked with a custom linker
-  script that sets `BASE = 0x400000`.
-- Add a `Makefile` target `make programs` that builds all userspace ELF binaries and
-  `mcopy`s them to `oxide_disk.img` under `/bin/`.
-
-### 3.2 Shell (`/bin/sh`)
-
-A minimal POSIX-ish shell written in C or Rust no_std:
-
-- **Prompt**: print `$`, read a line via `read(0, buf, N)`.
-- **Tokenise**: split on whitespace, handle `>`, `>>`, `<`, `|`.
-- **Execute**: `fork` + `exec /bin/<cmd>` + `waitpid`.
-- **Pipes**: call `pipe()`, fork two children, dup2 read/write ends, exec both sides.
-- **Redirects**: `open` file, `dup2` FD to 0 or 1 before `exec`.
-- Built-ins: `cd`, `pwd`, `exit`, `echo`.
-
-### 3.3 Core utilities
-
-| Program | Purpose |
-|---------|---------|
-| `/bin/echo` | Print arguments |
-| `/bin/cat` | Read and print files |
-| `/bin/ls` | Directory listing |
-| `/bin/cp` | Copy file |
-| `/bin/mv` | Move/rename file |
-| `/bin/rm` | Delete file |
-| `/bin/mkdir` | Create directory |
-| `/bin/pwd` | Print working directory |
-| `/bin/ps` | List processes |
-| `/bin/kill` | Send signal to process |
-| `/bin/sleep` | Sleep N seconds |
-| `/bin/true` / `/bin/false` | Exit 0 / Exit 1 |
-
-### 3.4 Text editor (`/bin/edit`)
-
-A terminal-based text editor (nano-like):
-
-- Full-screen mode: clear terminal, draw lines with line numbers.
-- Arrow keys move cursor; `Ctrl+S` saves; `Ctrl+Q` quits.
-- Read file into a `Vec<String>` line buffer; write back on save.
-- Display status bar: filename, line/col, modified flag.
-
-### 3.5 `dup2` / `dup` syscalls
-
-- `Dup = 80`, `Dup2 = 81`.
-- Copy FD to a new number; used by shell for pipe/redirect setup.
-
-### 3.6 `chdir` / `getcwd` syscalls
-
-- `Chdir = 82`, `Getcwd = 83`.
-- Each task tracks a current working directory VNode; path resolution is relative to it.
-- Shell `cd` uses `Chdir`; prompt uses `Getcwd`.
-
-### Deliverable
-```
-$ ls /bin
-$ cat /etc/motd
-$ echo "hello" | cat
-$ edit /disk/notes.txt
-```
+### 3.6 `chdir` / `getcwd` syscalls ← TODO
+- Each task tracks a working directory; path resolution relative to it
 
 ---
 
@@ -265,355 +190,228 @@ $ edit /disk/notes.txt
 
 **Goal:** Processes can be interrupted, killed, and managed the way POSIX programs expect.
 
-### 4.1 Signal infrastructure (partial) ✅ kill syscall DONE
+### 4.1 Signal infrastructure ✅ PARTIAL
+- `kill` syscall (Kill=91) marks task Dead immediately
+- Missing: `pending_signals` bitmask, `sigaction`, delivery trampoline
 
-- `Kill = 91` wired in dispatch; `KernelRuntime::kill_pid` calls `scheduler::kill(pid)`
-  which marks the target task `Dead(-1)` immediately.
-- Full signal infrastructure (pending_signals bitmask, sigaction, delivery trampoline) pending.
+Full implementation:
+- `pending_signals: u32` bitmask in `Task`
+- `signal_handlers: [u64; 32]` — user-space handler addresses
+- `sigaction` syscall (`= 90`)
+- Before resuming any user task in `tick()`: deliver pending signals via trampoline
 
-- Add a `pending_signals: u32` bitmask to `Task` (one bit per signal 1–31).
-- Add `signal_handlers: [u64; 32]` — user-space handler addresses (0 = default, 1 = ignore).
-- `sigaction` syscall (`= 90`): set handler for signal N.
-- `kill` syscall (`= 91`): send signal to PID (sets bit in target task's `pending_signals`).
-- Before resuming any user task in `tick()`, check `pending_signals`; if nonzero, deliver
-  the highest-priority pending signal by injecting a trampoline frame onto the user stack.
+### 4.2 Ctrl+C → SIGINT ← NEXT PRIORITY
+- Keyboard ISR: if Ctrl+C detected and foreground PID exists, send SIGINT
+- Requires "foreground PID" concept (shell sets it after fork+exec)
 
-### 4.2 Default signal actions
-
-| Signal | Default | Use |
-|--------|---------|-----|
-| SIGKILL (9) | Terminate | Unconditional kill |
-| SIGTERM (15)| Terminate | Graceful kill |
-| SIGINT (2) | Terminate | Ctrl+C |
-| SIGCHLD (17)| Ignore | Child exited |
-| SIGSEGV (11)| Terminate | Page fault |
-
-### 4.3 Ctrl+C → SIGINT
-
-- In the keyboard ISR: if `Ctrl+C` is detected and a foreground process group exists,
-  send `SIGINT` to that group instead of pushing to the stdin ring.
-- This requires a concept of a "foreground PID" (set by the shell after `fork`+`exec`).
-
-### 4.4 TTY subsystem
-
+### 4.3 TTY subsystem ← TODO
 Create `kernel/src/kernel/tty.rs`:
-
-- A TTY owns an input queue (line-discipline) and an output queue.
-- **Canonical mode** (cooked): buffer input until `\n`; handle `Backspace`/`Ctrl+C`/`Ctrl+D`.
-- **Raw mode**: pass every byte immediately (used by editors and the shell readline).
-- `ioctl` syscall (`= 92`): `TCGETS`/`TCSETS` to switch modes.
-- `/dev/tty` device file routes through the TTY subsystem.
-- Each task inherits a TTY pointer (or `None` if background); FDs 0/1/2 point to it.
-
-### 4.5 Page fault handler → SIGSEGV
-
-- The existing `#PF` handler (IDT vector 14) currently panics.
-- If the fault is in user space (CS & 3 == 3), send `SIGSEGV` to the current task
-  instead of halting the kernel.
-
-### Deliverable
-```
-$ run_forever &         # background process
-$ kill 3                # sends SIGTERM → process exits
-$ Ctrl+C               # sends SIGINT to foreground
-```
+- Canonical mode (cooked): buffer until `\n`; handle Backspace/Ctrl+C/Ctrl+D
+- Raw mode: pass every byte immediately (for editors, readline)
+- `ioctl` syscall (`= 92`): TCGETS/TCSETS to switch modes
+- `/dev/tty` routes through TTY
 
 ---
 
-## Phase 5 — Dynamic Memory for User Programs
+## Phase 5 — Dynamic Memory for User Programs ✅ DONE
 
-**Goal:** User programs can call `malloc`/`free` (or Rust's allocator) without the kernel
-pre-mapping a fixed region.
+### 5.1 `brk` / `sbrk` ✅ DONE
+- Brk=11, USER_HEAP_BASE=0x0100_0000, map pages on demand
 
-### 5.1 `brk` / `sbrk` syscall ✅ DONE
+### 5.2 `mmap` (anonymous) ← TODO
+- MAP_ANONYMOUS | MAP_PRIVATE: map zeroed pages above heap_end
 
-- `Brk = 11` wired in dispatch.
-- Each `Task` carries `heap_end: u64`; initial value 0 means use `USER_HEAP_BASE = 0x0100_0000`.
-- `brk(0)` returns current break; `brk(new_end)` maps pages from current break to `new_end`
-  via `map_user_region_in` on the running task's CR3; updates `task.heap_end`.
-- `oxide-rt::brk(new_end)` and no-arg query wrapped for Rust user programs.
-
-### 5.2 `mmap` (anonymous)
-
-- Add `Mmap = 10`, `Munmap = 11`.
-- For `MAP_ANONYMOUS | MAP_PRIVATE`: find a free virtual range above `heap_end`,
-  call `map_user_region_in` with zeroed pages, return the virtual address.
-- `Munmap`: unmap pages, free physical frames.
-- Thread stacks, `malloc` arenas, and `dlopen` will use `mmap`.
-
-### 5.3 Userspace allocator
-
-Ship a minimal `malloc.c` or `alloc.rs` as part of the OS standard library:
-
-```c
-// A simple sbrk-based bump allocator with free-list
-void *malloc(size_t n);
-void  free(void *p);
-void *realloc(void *p, size_t n);
-```
-
-### 5.4 Stack growth (optional)
-
-- The kernel can detect stack-overflow page faults (address just below the mapped stack)
-  and grow the stack by one page automatically, up to a configurable limit.
-
-### Deliverable
-```c
-// user program
-int *arr = malloc(1000 * sizeof(int));
-// ... use it ...
-free(arr);
-```
+### 5.3 Userspace allocator ← TODO
+- Ship `alloc.rs` as part of oxide-rt (sbrk-based free-list allocator)
 
 ---
 
 ## Phase 6 — Extended Filesystem & Persistence
 
-**Goal:** A proper on-disk filesystem that supports directories, permissions, and large files.
+**Goal:** Proper on-disk filesystem with directories, permissions, and large files.
 
-### 6.1 ext2 filesystem driver
+### 6.1 FAT16 subdirectory support ← NEXT (simpler than ext2)
+- Implement before ext2; unblocks `cd /disk/subdir/`
 
-FAT16 is limiting (8.3 names, no permissions, root-dir-only subdirs). Implement a
-read/write ext2 driver:
+### 6.2 ext2 filesystem driver ← TODO
+- Superblock, block groups, inodes, direct+indirect blocks, directory entries
+- Start read-only; write in second pass
 
-- **Superblock** at byte offset 1024: magic `0xEF53`, block size, inode count.
-- **Block group descriptors** immediately after superblock.
-- **Inode table**: 128-byte inodes with `i_mode`, `i_size`, `i_block[15]`.
-- **Direct + indirect blocks** for file data.
-- **Directory entries**: 4-byte inode, 2-byte rec_len, 1-byte name_len, name.
-- Start with read-only; add write in a second pass (bitmap allocation).
+### 6.3 Partition table (MBR) ← TODO
+- Parse 64-byte MBR at LBA 0 offset 446
+- Support FAT16 (0x06) and ext2 (0x83) partition types
 
-### 6.2 Partition table (MBR)
-
-- Parse the 64-byte MBR partition table at LBA 0 offset 446.
-- Find the first `0x83` (Linux ext2) or `0x06` (FAT16) partition.
-- Pass the partition start LBA + size to the filesystem driver.
-- This allows a single `oxide_disk.img` to hold both a FAT16 boot partition
-  and an ext2 root partition.
-
-### 6.3 File permissions
-
-- Add `uid: u16`, `gid: u16`, `mode: u16` to VNode / inode.
-- Each task carries `uid` and `gid` (initially 0 = root for all).
-- Permission check on `open`: verify `(mode >> shift) & 0x7 & requested`.
-- `chmod` (`= 93`), `chown` (`= 94`) syscalls.
-
-### 6.4 Symlinks and hard links
-
-- `symlink` syscall: create a VNode of kind `Symlink`, stores a target path string.
-- VFS path resolution follows symlinks (with a depth limit of 8).
-- `link` syscall: increment inode reference count; add a new directory entry.
-
-### 6.5 `rename` syscall
-
-- Atomic rename within the same filesystem.
-
-### Deliverable
-```
-$ mkfs.ext2 /dev/disk0p2     # format second partition
-$ mount /dev/disk0p2 /home   # mount at /home
-$ ls /home/user/             # full ext2 directory tree
-$ chmod 600 /home/user/.key
-```
+### 6.4 File permissions ← TODO
+- uid/gid/mode in VNode; permission check on open
+- chmod (=93), chown (=94) syscalls
 
 ---
 
 ## Phase 7 — Networking
 
-**Goal:** Basic TCP/IP so the OS can fetch a web page or host a simple server.
+**Goal:** Basic TCP/IP so the OS can ping and host simple services.
 
-### 7.1 virtio-net driver
+**Key insight:** Use `smoltcp` crate instead of writing a network stack from scratch.
+This converts Phase 7 from ~6 weeks to ~2 weeks of work.
 
-- Detect virtio-net PCI device (vendor `0x1AF4`, device `0x1000`).
-- Read BAR0 (I/O base); negotiate features (VIRTIO_NET_F_MAC).
-- Set up two virtqueues (RX + TX) with DMA-accessible descriptor tables.
-- Implement `send_packet(buf)` and `recv_packet() -> Option<Vec<u8>>`.
-- Wire receive IRQ to a new ISR (unmask the appropriate PCI IRQ line).
+### 7.1 Network driver ← TODO
+Option A: **virtio-net** (use `virtio-drivers` crate)
+- Detect PCI vendor 0x1AF4 / device 0x1000
+- Negotiate features, set up RX/TX virtqueues
+- QEMU flag: `-netdev user,id=net0 -device virtio-net-pci,netdev=net0`
 
-Alternative: RTL8139 driver (simpler, widely emulated):
-- I/O port at BAR0; 4 RX descriptors, TX circular buffer.
+Option B: RTL8139 (simpler, no external crate needed)
 - QEMU flag: `-netdev user,id=net0 -device rtl8139,netdev=net0`
 
-### 7.2 Network stack (`kernel/src/net/`)
+### 7.2 smoltcp integration ← TODO
+```toml
+smoltcp = { version = "0.11", default-features = false,
+            features = ["proto-ipv4", "socket-tcp", "socket-udp", "socket-icmp"] }
+```
+- Implement `smoltcp::phy::Device` trait for the NIC driver
+- Wire RX/TX to the virtio-net or RTL8139 driver
+- Get DHCP via `smoltcp::socket::dhcpv4`
 
-**Ethernet layer:**
-- Parse/build Ethernet II frames (dst MAC, src MAC, EtherType).
-- ARP table: map IPv4 → MAC; send ARP requests; handle ARP replies.
-
-**IPv4:**
-- Parse IP header (version, IHL, TTL, protocol, src/dst IP).
-- Implement ICMP echo reply (ping response).
-- Checksum calculation.
-
-**UDP:**
-- Parse UDP header; dispatch to registered port handlers.
-- `udp_send(dst_ip, dst_port, src_port, data)`.
-
-**TCP (basic):**
-- State machine: CLOSED → SYN_SENT → ESTABLISHED → FIN_WAIT → CLOSED.
-- Three-way handshake for connections.
-- Sliding window (fixed size, no congestion control for first pass).
-- `tcp_connect(ip, port) -> Socket`, `tcp_listen(port) -> Socket`.
-
-### 7.3 Socket syscalls
-
-- `Socket = 100`, `Bind = 101`, `Connect = 102`, `Listen = 103`, `Accept = 104`.
-- `Send = 105`, `Recv = 106`, `Close` reuses existing FD close.
-- Sockets appear as file descriptors; `read`/`write` work on them.
-
-### 7.4 DHCP client
-
-- On boot (or on `ifup`): broadcast DHCP DISCOVER, parse OFFER, send REQUEST, use ACK
-  to configure IP/mask/gateway/DNS.
+### 7.3 Socket syscalls ← TODO
+- Socket=100, Bind=101, Connect=102, Listen=103, Accept=104
+- Send=105, Recv=106 — sockets as file descriptors
 
 ### Deliverable
 ```
-$ ping 8.8.8.8            # ICMP echo
-$ wget http://example.com # TCP + HTTP/1.0
-$ nc -l 8080              # netcat TCP listener
+$ ping 8.8.8.8
+$ wget http://example.com
 ```
 
 ---
 
 ## Phase 8 — Multi-Window GUI Applications
 
-**Goal:** Multiple GUI apps run in separate processes, each drawing into their own window.
+**Goal:** Multiple GUI apps run as separate processes with their own windows.
 
-### 8.1 Shared framebuffer / window protocol
+### 8.1 Shared framebuffer / compositor ← TODO
+- Kernel WM owns framebuffer
+- User processes post draw commands via IPC message queue (already implemented)
+- Each process gets a canvas (shared memory region)
 
-- The kernel window manager owns the framebuffer.
-- User processes communicate with it via a **message-passing IPC** (see 8.3).
-- Each process gets a "canvas" — a shared memory region mapped into both the process
-  and the compositor.
+### 8.2 Shared memory ← TODO
+- shmget (=110), shmat (=111), shmdt (=112)
+- Kernel maps same physical frames into two virtual address spaces
 
-### 8.2 Shared memory
+### 8.3 Message-passing IPC ✅ DONE
+- IPC message queue implemented (`kernel/src/kernel/ipc.rs`)
+- Compositor protocol: CreateWindow, DrawRect, PresentCanvas, DestroyWindow
 
-- `shmget` (`= 110`) / `shmat` (`= 111`) / `shmdt` (`= 112`).
-- Kernel allocates physical frames, maps them into two different virtual address spaces.
-- Used for the window-canvas protocol and for IPC data transfer.
-
-### 8.3 Message-passing IPC
-
-- `msgq_create` (`= 115`), `msgsnd` (`= 116`), `msgrcv` (`= 117`).
-- Fixed-size message queue in kernel memory.
-- Window manager exposes a well-known queue ID; apps post `CreateWindow`, `DrawRect`,
-  `PresentCanvas`, `DestroyWindow` messages.
-
-### 8.4 GUI applications
-
-With the above primitives, port existing kernel widgets to userspace:
+### 8.4 Userspace GUI applications ← TODO
 
 | App | Description |
 |-----|-------------|
-| `wm` | Compositor / window manager process (replaces kernel WM) |
-| `terminal` | Terminal emulator process (replaces kernel terminal) |
+| `terminal` | Terminal emulator process (current kernel terminal → userspace) |
 | `file_manager` | Browse RamFS + FAT16 visually |
 | `text_editor` | Full-screen editor with syntax highlighting |
 | `clock` | Floating clock widget |
-| `settings` | Change resolution, key repeat, etc. |
-
-### Deliverable
-Multiple resizable, draggable windows, each running an independent process.
 
 ---
 
 ## Phase 9 — Stability, Security & Polish
 
-**Goal:** The OS is robust, doesn't crash on bad input, and enforces basic security.
+### 9.1 fast syscall path (`syscall`/`sysret`) ← HIGH VALUE
+- Replace `int 0x80` with SYSCALL/SYSRET (set STAR, LSTAR, SFMASK MSRs)
+- ~3× faster syscall round-trip
 
-### 9.1 Kernel address-space layout
+### 9.2 SMEP / SMAP enforcement ← TODO
+- CR4 bits: prevent kernel from executing/reading user-space without `stac`
 
-- Move to a proper kernel ASLR: randomise the physical offset at boot.
-- Guard pages around kernel stack (unmapped page below RSP0).
+### 9.3 SMP (optional, advanced) ← TODO
+- AP startup via INIT-SIPI sequence
+- Per-CPU scheduler instances
 
-### 9.2 SMEP / SMAP enforcement
+### 9.4 ACPI proper ← TODO
+- Use `acpi` crate to parse RSDP → XSDT → FADT
+- Proper PM1a shutdown (replaces port-guessing in `shutdown.rs`)
 
-- Set SMEP bit in CR4 to prevent kernel from executing user-space code.
-- Set SMAP bit in CR4 to prevent kernel from reading user-space without explicit `stac`.
-- Use `copy_from_user` / `copy_to_user` helpers in syscall handlers.
-
-### 9.3 Capabilities / privilege separation
-
-- `setuid` / `setgid` syscalls.
-- Processes run as unprivileged by default; only `root` (uid=0) can `mount`, `mknod`,
-  bind ports <1024.
-
-### 9.4 `fast syscall` path (`syscall`/`sysret`)
-
-- Replace `int 0x80` with the `syscall`/`sysret` instruction pair.
-- Set MSRs: `STAR`, `LSTAR`, `SFMASK`.
-- ~3× faster syscall round-trip on modern CPUs.
-
-### 9.5 SMP (optional, advanced)
-
-- AP startup via INIT-SIPI sequence.
-- Per-CPU `SCHED` instances; run-queue migration.
-- Spinlock / mutex primitives for shared kernel data.
-
-### 9.6 ACPI
-
-- Parse ACPI tables from firmware (RSDP → RSDT/XSDT → MADT, FADT).
-- Power off: `ACPI_PM1a_CNT` shutdown sequence.
-- `shutdown` command in shell triggers ACPI S5 state.
-
-### 9.7 Crash dump / kernel panic improvements
-
-- On panic: save register state, dump to serial port and screen.
-- Optionally write a crash dump to `/var/crash` if the filesystem is available.
+### 9.5 Crash dump ← TODO
+- On panic: save registers, dump to serial + screen
+- Optionally write to `/var/crash`
 
 ---
 
 ## Implementation Priority Order
 
-The following is the recommended sequence to work through these phases, ordered so each
-addition has maximum visible impact:
+```
+✅ Phase 1     Process model (fork/exec/waitpid/exit)
+✅ Phase 2.1   VFS layer
+✅ Phase 2.2   FAT16 write + sh redirects
+✅ Phase 3.1   Toolchain (oxide-rt)
+✅ Phase 3.2   Shell (/bin/sh) — new window, real terminal UI
+✅ Phase 3.5   dup2 syscall
+✅ Phase 4.1   kill syscall (partial)
+✅ Phase 5.1   brk/sbrk + userspace heap
+✅ Phase 8.3   IPC message queues
+✅ GUI         Start menu, taskbar, multi-terminal, shutdown/reboot
 
+🔧 NOW         Fix VirtualBox keyboard (replace scancode table with `pc-keyboard` crate)
+⬡  NEXT        Phase 4.2  Ctrl+C → SIGINT for foreground process
+⬡             Phase 2.3  FAT16 subdirectory support
+⬡             Phase 3.6  chdir/getcwd syscalls
+⬡             Phase 3.3  Standalone /bin/cat, /bin/ls, /bin/cp, /bin/ps
+⬡             Phase 3.4  Text editor (/bin/edit)
+⬡             Phase 4.3  TTY (canonical/raw mode)
+⬡             Phase 5.2  mmap anonymous
+⬡             Phase 6.2  ext2 read-only driver
+⬡             Phase 6.3  MBR partition table
+⬡             Phase 9.1  fast syscall (SYSCALL/SYSRET)
+⬡             Phase 7.1  virtio-net driver (use virtio-drivers crate)
+⬡             Phase 7.2  smoltcp integration
+⬡             Phase 7.3  Socket syscalls
+⬡             Phase 8.2  Shared memory
+⬡             Phase 8.1  Userspace compositor
+⬡             Phase 9.2  SMEP/SMAP
+⬡             Phase 9.3  SMP
 ```
-Phase 1.3  Per-task FD table             ✅ DONE
-Phase 1.1  exec syscall                  ✅ DONE
-Phase 3.1  Toolchain (libc + build)      ✅ DONE  (oxide-rt, hello_rust.elf)
-Phase 1.2  fork syscall                  ✅ DONE  (full page copy)
-Phase 1.4  waitpid                       ✅ DONE  (Waiting state + tick reap)
-Phase 1.5  Exit cleanup                  ✅ DONE  (free_user_page_table on death)
-Phase 5.1  brk / sbrk                    ✅ DONE  (USER_HEAP_BASE + map on demand)
-Phase 4.1  kill syscall                  ✅ DONE  (Kill=91, scheduler::kill)
-Phase 4.2  Page fault → SIGSEGV         ✅ DONE  (user #PF/#GP → exit_to_kernel(-11))
-Phase 3.5  dup2 syscall                  ✅ DONE  (Dup2=81, FdTable::dup2)
-Phase 3.3  ReadDir syscall               ✅ DONE  (ReadDir=70, RamFs::read_dir_raw)
-Phase 3.2  Shell (/bin/sh)               ✅ DONE  (Rust shell: echo/cat/ls + fork/exec/waitpid)
-Phase 2.1  VFS layer                     ✅ DONE  (mount table, FdBackend, /dev/null, /dev/tty)
-Phase 2.2  FAT16 write                   ✅ DONE  (cluster alloc, write_fd, flush, O_CREAT/O_TRUNC; sh `>` redirect)
-Phase 4.1  Signals full                  ← Ctrl+C, signal handlers          ← NEXT
-Phase 4.4  TTY (canonical/raw mode)      ← proper line editing
-Phase 3.3  Core utilities (standalone)   ← /bin/cat, /bin/ls as programs
-Phase 3.4  Text editor                   ← edit files interactively
-Phase 6.1  ext2 driver (read-only)       ← better filesystem
-Phase 6.2  Partition table               ← real disk layout
-Phase 5.2  mmap (anonymous)              ← richer allocator
-Phase 7.1  virtio-net driver             ← network hardware
-Phase 7.2  Network stack (ARP/IP/UDP)    ← basic networking
-Phase 7.3  Socket syscalls               ← userspace networking
-Phase 8.3  Message-passing IPC           ✅ DONE
-Phase 8.1  Userspace compositor          ← multi-app GUI
-Phase 9.4  fast syscall path             ← performance
-Phase 9.2  SMEP/SMAP                     ← security
+
+---
+
+## Quick Wins — Add These Crates Now
+
+These are safe, low-risk additions that immediately improve reliability:
+
+```toml
+# kernel/Cargo.toml [dependencies]
+
+# Proper PS/2 keyboard decoding — fixes VirtualBox AUXB bit 5 issue
+pc-keyboard = { version = "0.7", default-features = false }
+
+# Safe x86_64 hardware abstractions
+x86_64 = { version = "0.15", default-features = false, features = ["instructions"] }
+
+# Fixed-capacity collections (no allocator needed, great for kernel data structures)
+heapless = { version = "0.8", default-features = false }
+
+# Better kernel heap allocator (drop-in for our bump allocator)
+linked_list_allocator = { version = "0.10", default-features = false }
 ```
+
+Adding `pc-keyboard` in particular is the correct fix for the VirtualBox keyboard problem.
+It decodes PS/2 scancode set 1 and 2 with proper handling of all edge cases (extended codes,
+key release, pause key, print screen multi-byte sequences) and is used by several well-known
+hobby OSes including blog_os.
 
 ---
 
 ## Complexity Estimates
 
-| Phase | Effort | Dependencies |
-|-------|--------|--------------|
-| 1 — Process model | Medium | Per-task FD table first |
-| 2 — VFS | Medium | Phase 1 exec path |
-| 3 — Shell & utils | Medium | Phases 1 + 2 complete |
-| 4 — Signals & TTY | Medium | Phase 1 fork/exec |
-| 5 — Dynamic memory | Low–Medium | Phase 1 |
-| 6 — ext2 / partitions | High | VFS layer |
-| 7 — Networking | High | Independent of above |
-| 8 — GUI apps | Medium | IPC + shared memory |
-| 9 — Security & SMP | High | Everything else stable |
+| Phase | Effort (with crates) | Dependencies |
+|-------|----------------------|--------------|
+| Keyboard fix (`pc-keyboard`) | Very Low | — |
+| Signals + TTY | Medium | Phase 1 fork/exec |
+| FAT16 subdirs | Low | Phase 2.2 write |
+| Text editor | Low–Medium | TTY/raw mode |
+| ext2 read-only | Medium | VFS layer |
+| Networking (`smoltcp`) | Medium | virtio-net driver |
+| Userspace GUI | Medium | IPC + shared memory |
+| SYSCALL/SYSRET | Low | GDT/MSR setup |
+| SMEP/SMAP | Low | stable syscall path |
+| SMP | High | Everything stable |
 
 ---
 
@@ -622,26 +420,27 @@ Phase 9.2  SMEP/SMAP                     ← security
 ```
 kernel/src/
 ├── kernel/
-│   ├── vfs.rs            ← Phase 2.1
-│   ├── ext2.rs           ← Phase 6.1
-│   ├── tty.rs            ← Phase 4.4
-│   ├── signal.rs         ← Phase 4.1
+│   ├── vfs.rs            ✅ done
+│   ├── fat.rs            ✅ done (read+write)
+│   ├── ext2.rs           ← Phase 6.2
+│   ├── tty.rs            ← Phase 4.3
+│   ├── signal.rs         ← Phase 4.1 full
 │   ├── net/
 │   │   ├── virtio.rs     ← Phase 7.1
-│   │   ├── arp.rs
-│   │   ├── ipv4.rs
-│   │   ├── tcp.rs
-│   │   └── udp.rs
-│   └── ipc.rs            ← Phase 8.3
+│   │   └── smoltcp_glue.rs ← Phase 7.2
+│   └── ipc.rs            ✅ done
+├── gui/
+│   ├── terminal.rs       ✅ done (real bash UI)
+│   ├── start_menu.rs     ✅ done
+│   ├── window_manager.rs ✅ done
+│   └── compositor.rs     ✅ done
 userspace/
-├── libc/                 ← Phase 3.1
-│   ├── syscall.h
-│   └── malloc.c
-├── sh/                   ← Phase 3.2
-├── coreutils/            ← Phase 3.3
-│   ├── ls.c, cat.c, …
+├── oxide-rt/             ✅ done (syscall wrappers, _start)
+├── sh/                   ✅ done (fork+exec shell)
+├── bin/                  ← Phase 3.3 (standalone coreutils)
+│   ├── cat, ls, cp, mv, rm, ps, kill, sleep
 ├── edit/                 ← Phase 3.4
 └── gui/                  ← Phase 8.4
-    ├── wm.c
-    └── terminal.c
+    ├── terminal
+    └── file_manager
 ```
