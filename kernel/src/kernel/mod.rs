@@ -24,3 +24,4 @@ pub mod pipe;
 pub mod ipc;
 pub mod compositor;
 pub mod vfs;
+pub mod shutdown;

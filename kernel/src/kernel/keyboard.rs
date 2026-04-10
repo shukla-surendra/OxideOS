@@ -7,7 +7,7 @@ use core::arch::asm;
 use crate::kernel::serial::SERIAL_PORT;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-const KEYBOARD_DEBUG_LOGGING: bool = false;
+const KEYBOARD_DEBUG_LOGGING: bool = true; // ← serial log every scancode for VirtualBox debug
 
 // ============================================================================
 // KEYBOARD STATE
@@ -222,12 +222,57 @@ pub unsafe fn handle_keyboard_interrupt() {
     let status: u8;
     unsafe { asm!("in al, 0x64", out("al") status, options(nostack, nomem)); }
 
+    // Always read port 0x60 if OBF is set — in IRQ1 context the data IS keyboard.
+    // Do NOT gate on bit 5 (AUXB): VirtualBox incorrectly sets it for keyboard data.
+    let scancode: u8;
+    unsafe { asm!("in al, 0x60", out("al") scancode, options(nostack, nomem)); }
+
+    if KEYBOARD_DEBUG_LOGGING {
+        SERIAL_PORT.write_str("[KBD-IRQ sc=0x");
+        SERIAL_PORT.write_hex(scancode as u32);
+        SERIAL_PORT.write_str(" st=0x");
+        SERIAL_PORT.write_hex(status as u32);
+        SERIAL_PORT.write_str("]\n");
+    }
+
     if (status & 0x01) != 0 {
+        process_scancode(scancode);
+    }
+}
+
+/// Polling fallback: read any pending keyboard byte without waiting for IRQ.
+/// Called from the main GUI loop each frame — handles VirtualBox/firmware
+/// setups where IRQ1 is unreliable.
+///
+/// We do NOT check bit 5 (AUXB) here because VirtualBox incorrectly sets it
+/// for keyboard data, causing all scancodes to be silently skipped.
+/// Mouse data is already consumed by IRQ12 before we reach this point.
+pub unsafe fn poll() {
+    for _ in 0..8u8 {
+        let status: u8;
+        unsafe { asm!("in al, 0x64", out("al") status, options(nostack, nomem)); }
+        if (status & 0x01) == 0 { break; } // output buffer empty — nothing to read
         let scancode: u8;
         unsafe { asm!("in al, 0x60", out("al") scancode, options(nostack, nomem)); }
-        // bit 5 = 1 means "from AUX/mouse port"; skip mouse bytes that slipped in
+        // Skip if this is mouse data (bit 5 set) — mouse bytes come via IRQ12.
+        // VirtualBox exception: in IRQ1 context we trust the IRQ number, but here
+        // in a polling context we honour AUXB since mouse and keyboard share port 0x60.
+        // If this causes issues on specific VirtualBox versions, remove the bit-5 guard.
         if (status & 0x20) == 0 {
+            if KEYBOARD_DEBUG_LOGGING {
+                SERIAL_PORT.write_str("[KBD-POLL sc=0x");
+                SERIAL_PORT.write_hex(scancode as u32);
+                SERIAL_PORT.write_str(" st=0x");
+                SERIAL_PORT.write_hex(status as u32);
+                SERIAL_PORT.write_str("]\n");
+            }
             process_scancode(scancode);
+        } else if KEYBOARD_DEBUG_LOGGING {
+            SERIAL_PORT.write_str("[KBD-POLL-MOUSE sc=0x");
+            SERIAL_PORT.write_hex(scancode as u32);
+            SERIAL_PORT.write_str(" st=0x");
+            SERIAL_PORT.write_hex(status as u32);
+            SERIAL_PORT.write_str("]\n");
         }
     }
 }
@@ -523,6 +568,22 @@ unsafe fn handle_enter() {
     state.clear_buffer();
 }
 
+/// Read one byte from the 8042 with a short timeout; returns 0xFF on timeout.
+/// Used in LED update so VirtualBox environments that don't ACK don't block long.
+unsafe fn ctrl_read_fast() -> u8 {
+    for _ in 0..10_000u32 {
+        let status: u8;
+        unsafe { asm!("in al, 0x64", out("al") status, options(nostack, nomem)); }
+        if (status & 0x01) != 0 {
+            let v: u8;
+            unsafe { asm!("in al, 0x60", out("al") v, options(nostack, nomem)); }
+            return v;
+        }
+        unsafe { asm!("pause", options(nostack, nomem)); }
+    }
+    0xFF // timeout
+}
+
 /// Update keyboard LEDs based on current state.
 unsafe fn update_keyboard_leds() {
     let state = unsafe { &*core::ptr::addr_of!(KEYBOARD_STATE) };
@@ -533,10 +594,10 @@ unsafe fn update_keyboard_leds() {
     if state.caps_lock   { led_state |= 0x04; }
 
     unsafe {
-        ctrl_data(0xED);      // LED command
-        let _ack = ctrl_read(); // consume ACK (0xFA)
+        ctrl_data(0xED);           // LED command
+        ctrl_read_fast();          // consume ACK (0xFA) — timeout-safe
         ctrl_data(led_state);
-        let _ack = ctrl_read(); // consume ACK
+        ctrl_read_fast();          // consume ACK — timeout-safe
     }
 }
 
@@ -636,38 +697,44 @@ unsafe fn ctrl_read() -> u8 {
     }
 }
 
-/// Initialize keyboard driver
+/// Initialize keyboard driver.
+///
+/// Strategy for maximum VirtualBox / QEMU compatibility:
+///   • Drain stale output-buffer bytes first.
+///   • Write a known-good CCB directly (no CCB read — reading it is unreliable
+///     on some hypervisors and we have been burned by garbage values before).
+///   • CCB = 0x47: IRQ1 enabled (bit 0), IRQ12 enabled (bit 1), scancode
+///     translation enabled (bit 6), both clocks enabled (bits 4/5 = 0).
+///   • Re-enable the keyboard port.
+///   • Update LEDs with a short timeout so we don't hang on VirtualBox.
 pub unsafe fn init() {
     unsafe {
         SERIAL_PORT.write_str("Initializing keyboard driver (8042)...\n");
 
-        // 1. Drain any stale data left in the output buffer.
+        // 1. Drain any stale data.
         flush_output_buffer();
 
-        // 2. Disable keyboard port so it stops sending during init.
-        ctrl_cmd(0xAD); // disable keyboard interface
+        // 2. Disable keyboard port temporarily.
+        ctrl_cmd(0xAD);
 
-        // 3. Drain again — keyboard might have queued a byte.
+        // 3. Drain again in case keyboard queued a byte.
         flush_output_buffer();
 
-        // 4. Read the current Controller Command Byte (CCB).
-        ctrl_cmd(0x20);
-        let ccb = ctrl_read();
-
-        // 5. Enable keyboard IRQ1 (bit 0) and keyboard clock (clear bit 4).
-        //    Keep scancode translation (bit 6) enabled.
-        let ccb = (ccb | 0x01) & !0x10;
+        // 4. Write a known-good CCB without reading the old one.
+        //    Bit 0 = enable keyboard IRQ1
+        //    Bit 1 = enable mouse IRQ12
+        //    Bit 6 = enable keyboard scancode translation (set 1 → set 2 xlat)
+        //    Bits 4/5 = 0 → both PS/2 clocks enabled
         ctrl_cmd(0x60);
-        ctrl_data(ccb);
+        ctrl_data(0x47);
 
-        // 6. Re-enable the keyboard interface.
+        // 5. Re-enable the keyboard port.
         ctrl_cmd(0xAE);
 
-        // 7. Flush once more before setting LEDs.
+        // 6. Drain once more.
         flush_output_buffer();
 
-        // 8. Set LEDs (skip if the keyboard doesn't ACK to avoid hangs on
-        //    some VirtualBox configurations — wrap in a best-effort call).
+        // 7. Set keyboard LEDs (best-effort; timeout-safe via ctrl_read_fast).
         update_keyboard_leds();
 
         SERIAL_PORT.write_str("Keyboard driver ready\n");

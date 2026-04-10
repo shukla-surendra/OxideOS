@@ -19,7 +19,7 @@ const MENU_W:    u64 = 240;
 const HDR_H:     u64 = 36; // OS name header
 const SEC_H:     u64 = 18; // section label row
 const ITEM_H:    u64 = 30; // per-program row
-const FOOTER_H:  u64 = 28; // bottom shutdown row
+const FOOTER_H:  u64 = 36; // bottom shutdown/reboot row
 
 // ── Colour palette ─────────────────────────────────────────────────────────
 const COL_BTN_IDLE:   u32 = 0xFF1C2236;
@@ -119,29 +119,38 @@ impl StartMenu {
     }
 
     /// Call on a left-click.
-    /// Returns `Some(name)` when a program should be spawned,
-    ///         `None` otherwise (may still toggle or close the menu).
-    /// `consumed` is set true when the click was handled by the start menu at all.
-    pub fn handle_click(&mut self, mx: u64, my: u64) -> (Option<&'static str>, bool) {
+    /// Returns `(program_name, shutdown_action, consumed)`:
+    /// - `program_name`    — spawn this program
+    /// - `shutdown_action` — `1` = shutdown, `2` = reboot, `0` = none
+    /// - `consumed`        — click was handled by the start menu
+    pub fn handle_click(&mut self, mx: u64, my: u64) -> (Option<&'static str>, u8, bool) {
         // Click on the start button?
         if my < BTN_H && mx >= BTN_X && mx < BTN_X + BTN_W {
             self.toggle();
-            return (None, true);
+            return (None, 0, true);
         }
 
-        if !self.open { return (None, false); }
+        if !self.open { return (None, 0, false); }
 
         // Click inside the menu panel?
         let mh = menu_height();
         if mx >= MENU_X && mx < MENU_X + MENU_W && my >= MENU_Y && my < MENU_Y + mh {
+            // Check footer shutdown/reboot buttons first.
+            let footer_y = MENU_Y + mh - FOOTER_H;
+            if my >= footer_y {
+                // Footer is split into two halves: left=shutdown, right=reboot
+                let action = if mx < MENU_X + MENU_W / 2 { 1u8 } else { 2u8 };
+                self.close();
+                return (None, action, true);
+            }
             let prog = self.item_at(mx, my).map(|i| ENTRIES[i].name);
             self.close();
-            return (prog, true);
+            return (prog, 0, true);
         }
 
         // Click outside while open → close
         self.close();
-        (None, false)
+        (None, 0, false)
     }
 
     // ── Geometry helpers ──────────────────────────────────────────────────
@@ -278,11 +287,20 @@ impl StartMenu {
             y += ITEM_H;
         }
 
-        // Footer (shutdown / info row)
+        // Footer — Shutdown | Reboot
+        let half = MENU_W / 2;
         graphics.fill_rect(MENU_X, y, MENU_W, FOOTER_H, COL_FOOT_BG);
         graphics.fill_rect(MENU_X, y, MENU_W, 1, COL_MENU_BDR);
-        fonts::draw_string(graphics, MENU_X + 10, y + 9,
-            "Click a program to launch it", COL_FOOT_TEXT);
+        // Divider between the two buttons
+        graphics.fill_rect(MENU_X + half, y + 4, 1, FOOTER_H - 8, COL_MENU_BDR);
+
+        // Shutdown button (left half)
+        graphics.fill_rect(MENU_X + 1, y + 1, half - 2, FOOTER_H - 2, 0xFF0D1420);
+        fonts::draw_string(graphics, MENU_X + 10, y + 12, "⏻ Shut Down", 0xFFCC4444);
+
+        // Reboot button (right half)
+        graphics.fill_rect(MENU_X + half + 1, y + 1, half - 2, FOOTER_H - 2, 0xFF0D1420);
+        fonts::draw_string(graphics, MENU_X + half + 10, y + 12, "↺ Reboot", 0xFF4488CC);
 
         // Border around the whole menu
         graphics.draw_rect(MENU_X, MENU_Y, MENU_W, mh, COL_MENU_BDR, 1);

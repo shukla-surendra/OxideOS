@@ -42,8 +42,8 @@ const SCROLL_AMOUNT: usize = 5;
 const COMMANDS: &[&str] = &[
     "about", "cat", "cd", "clear", "cls", "echo",
     "help", "history", "kill", "ls", "mkdir", "pid",
-    "ps", "pwd", "rm", "run", "sh", "sysinfo", "terminal", "ticks", "touch",
-    "uptime", "version", "write",
+    "ps", "pwd", "reboot", "rm", "run", "sh", "shutdown", "sysinfo",
+    "terminal", "ticks", "touch", "uptime", "version", "write",
 ];
 
 // ── Input queue (interrupt-safe ring buffer) ───────────────────────────────
@@ -325,97 +325,125 @@ impl TerminalApp {
     }
 
     // ── Drawing ─────────────────────────────────────────────────────────────
+    //
+    // The terminal looks like a real shell: a single full-area text surface.
+    // History lines fill from top; the prompt + input appear as the last line.
+    // No separate "chat box" — everything is inline text on a dark background.
 
     pub fn draw(&self, graphics: &Graphics, wm: &WindowManager) {
         if !wm.is_window_visible(self.window_id) { return; }
         let Some(window) = wm.get_window(self.window_id) else { return; };
 
-        let is_focused    = wm.get_focused() == Some(self.window_id);
-        let content_x     = window.x + CONTENT_PADDING_X;
-        let content_y     = window.y + 30 + CONTENT_PADDING_Y;
-        let content_width = window.width.saturating_sub(CONTENT_PADDING_X * 2);
-        let content_height= window.height.saturating_sub(30 + CONTENT_PADDING_Y * 2);
-        let output_height = content_height.saturating_sub(INPUT_HEIGHT + 6);
-        let input_y       = content_y + output_height + 6;
-        let max_chars     = (content_width / CHAR_WIDTH).max(4) as usize;
-        let visible_lines = (output_height / LINE_HEIGHT).max(1) as usize;
+        let is_focused = wm.get_focused() == Some(self.window_id);
 
-        // Output area — dark background with subtle top border
-        graphics.fill_rect(content_x, content_y, content_width, output_height, 0xFF0A1018);
-        graphics.fill_rect(content_x, content_y, content_width, 1, 0xFF1A5F9A);
-        graphics.draw_rect(content_x, content_y, content_width, output_height, 0xFF1E2840, 1);
+        // Content area (below title bar, small inset).
+        let cx = window.x + 4;
+        let cy = window.y + 31;                             // title bar height = 30 + 1px line
+        let cw = window.width.saturating_sub(8);
+        let ch = window.height.saturating_sub(31 + 4);
 
-        // Input area
-        graphics.fill_rect(content_x, input_y, content_width, INPUT_HEIGHT, 0xFF0D1520);
-        graphics.fill_rect(content_x, input_y, content_width, 1,
-                           if is_focused { 0xFF007ACC } else { 0xFF1E2840 });
-        graphics.draw_rect(content_x, input_y, content_width, INPUT_HEIGHT,
-                           if is_focused { 0xFF1A5F9A } else { 0xFF151E2E }, 1);
+        // Full dark terminal background — no borders or boxes.
+        graphics.fill_rect(cx, cy, cw, ch, 0xFF0C1014);
 
-        // History lines — colour-coded, with scroll support
-        let end_line   = self.history.len().saturating_sub(self.scroll_offset);
-        let start_line = end_line.saturating_sub(visible_lines);
-        for (i, line) in self.history.iter().skip(start_line).take(visible_lines).enumerate() {
-            let color = line_color(line);
-            fonts::draw_string(graphics, content_x + 6,
-                               content_y + 2 + i as u64 * LINE_HEIGHT,
-                               line, color);
+        // Thin focus indicator on the left edge (like a cursor line in some terminals).
+        if is_focused {
+            graphics.fill_rect(cx, cy, 2, ch, 0xFF007ACC);
         }
 
-        // Scroll indicator when viewing history
+        let text_x = cx + 6;
+        let max_cols = (cw.saturating_sub(12) / CHAR_WIDTH).max(4) as usize;
+
+        // The bottom line is reserved for the prompt+input (or running indicator).
+        // All lines above it show history.
+        let total_lines   = (ch / LINE_HEIGHT).max(2) as usize;
+        let history_lines = total_lines - 1;   // one line for the input row
+
+        // ── History ────────────────────────────────────────────────────────
+        let end_idx   = self.history.len().saturating_sub(self.scroll_offset);
+        let start_idx = end_idx.saturating_sub(history_lines);
+
+        // Scroll-back indicator (top line when scrolled)
         if self.scroll_offset > 0 {
-            let above = self.history.len().saturating_sub(visible_lines + self.scroll_offset);
-            let msg = format!("^ {} lines above (PgDn to return)", above + self.scroll_offset);
-            fonts::draw_string(graphics, content_x + 6, content_y + 2, &msg, 0xFF888888);
+            let above = self.history.len()
+                .saturating_sub(history_lines + self.scroll_offset);
+            let msg = format!("-- {} more lines above -- (PgDn to scroll down)",
+                              above + self.scroll_offset);
+            let row_y = cy + 2;
+            graphics.fill_rect(cx, row_y, cw, LINE_HEIGHT, 0xFF141C20);
+            fonts::draw_string(graphics, text_x, row_y + 2, &msg, 0xFF607080);
+            // Show one fewer history line to make room.
+            let hist_start = end_idx.saturating_sub(history_lines - 1);
+            for (row, line) in self.history.iter()
+                .skip(hist_start).take(history_lines - 1).enumerate()
+            {
+                let y = cy + 2 + (row as u64 + 1) * LINE_HEIGHT;
+                fonts::draw_string(graphics, text_x, y, line, line_color(line));
+            }
+        } else {
+            for (row, line) in self.history.iter()
+                .skip(start_idx).take(history_lines).enumerate()
+            {
+                let y = cy + 2 + row as u64 * LINE_HEIGHT;
+                fonts::draw_string(graphics, text_x, y, line, line_color(line));
+            }
         }
+
+        // ── Prompt / input line (bottom row) ───────────────────────────────
+        let input_row_y = cy + ch - LINE_HEIGHT - 2;
+
+        // Subtle highlight on the active input line.
+        graphics.fill_rect(cx, input_row_y, cw, LINE_HEIGHT + 2, 0xFF101820);
 
         if self.passthrough_mode {
-            // Show running indicator instead of normal input box
+            // Running a foreground program — show amber status.
             let indicator = match self.fg_pid {
-                Some(pid) => format!("  Running [pid {}]  (Ctrl+C to kill)", pid),
-                None      => String::from("  Running..."),
+                Some(pid) => format!("[pid {}] running  (Ctrl+C to kill)", pid),
+                None      => String::from("[running...]"),
             };
-            graphics.fill_rect(content_x, input_y, content_width, INPUT_HEIGHT, 0xFF0D1520);
-            graphics.fill_rect(content_x, input_y, content_width, 1, 0xFFFF8C00); // amber top border
-            fonts::draw_string(graphics, content_x + 6, input_y + 8,
-                               &indicator, 0xFFFFAA00);  // amber text
+            fonts::draw_string(graphics, text_x, input_row_y + 2,
+                               &indicator, 0xFFFFAA00);
         } else {
-            // Normal prompt + input + cursor
-            // Compute the visible window: scroll so the cursor is always on screen.
-            let prompt_cols   = 2usize; // "> "
-            let visible_cols  = max_chars.saturating_sub(prompt_cols);
-            // Start of the visible window within `input` (in chars, not bytes —
-            // we only handle ASCII in the input for now so chars == bytes here).
-            let win_start = if self.cursor_pos > visible_cols {
-                self.cursor_pos - visible_cols
+            // Prompt: "oxide:~$ " — green like bash.
+            let prompt     = "oxide:~$ ";
+            let prompt_len = prompt.len() as u64;
+            fonts::draw_string(graphics, text_x, input_row_y + 2,
+                               prompt, 0xFF33DD66);   // bright green
+
+            // Input text — scrolls to keep cursor visible.
+            let avail_cols  = max_cols.saturating_sub(prompt.len());
+            let win_start = if self.cursor_pos > avail_cols {
+                self.cursor_pos - avail_cols
             } else {
                 0
             };
-            // Clamp win_start to a char boundary (all ASCII, but guard anyway).
             let win_start = {
                 let mut s = win_start;
                 while s > 0 && !self.input.is_char_boundary(s) { s -= 1; }
                 s
             };
-            let visible_bytes = &self.input[win_start..];
-            let input_display: alloc::string::String =
-                if visible_bytes.len() > visible_cols {
-                    alloc::string::String::from(&visible_bytes[..visible_cols])
-                } else {
-                    alloc::string::String::from(visible_bytes)
-                };
+            let visible_slice = &self.input[win_start..];
+            let display: String = if visible_slice.len() > avail_cols {
+                String::from(&visible_slice[..avail_cols])
+            } else {
+                String::from(visible_slice)
+            };
 
-            fonts::draw_string(graphics, content_x + 6, input_y + 8,
-                               ">", 0xFF00D060);                  // bright green >
-            fonts::draw_string(graphics, content_x + 6 + CHAR_WIDTH * 2, input_y + 8,
-                               &input_display, 0xFFD8E8FF);       // light blue input text
+            let input_text_x = text_x + prompt_len * CHAR_WIDTH;
+            fonts::draw_string(graphics, input_text_x, input_row_y + 2,
+                               &display, 0xFFDDEEFF);  // near-white text
 
+            // Block cursor: draw a filled rectangle behind the character at cursor.
             if is_focused {
-                // Cursor column = chars before cursor that are in the visible window.
-                let chars_before = self.cursor_pos.saturating_sub(win_start);
-                let cx = content_x + 6 + CHAR_WIDTH * 2
-                       + chars_before as u64 * CHAR_WIDTH;
-                graphics.fill_rect(cx, input_y + 5, 2, LINE_HEIGHT - 2, 0xFF00AAFF);
+                let chars_before  = self.cursor_pos.saturating_sub(win_start);
+                let cursor_x      = input_text_x + chars_before as u64 * CHAR_WIDTH;
+                // Filled block cursor.
+                graphics.fill_rect(cursor_x, input_row_y + 1, CHAR_WIDTH, LINE_HEIGHT, 0xFF007ACC);
+                // Character on top of cursor (in background colour so it's readable).
+                if let Some(ch) = self.input[self.cursor_pos..].chars().next() {
+                    let mut buf = [0u8; 4];
+                    let s = ch.encode_utf8(&mut buf);
+                    fonts::draw_string(graphics, cursor_x, input_row_y + 2, s, 0xFF0C1014);
+                }
             }
         }
     }
@@ -806,15 +834,24 @@ impl TerminalApp {
             }
 
             "version" => {
-                self.push_line("OxideOS kernel prototype");
-                self.push_line("GUI terminal revision 3 (with RamFS)");
+                self.push_line("OxideOS v0.1.0-dev");
+                self.push_line("Built with Rust (no_std), Limine bootloader");
             }
 
             "about" => {
-                self.push_line("OxideOS GUI terminal");
-                self.push_line("Features: RamFS, history, tab-complete");
-                self.push_line("Filesystem: in-memory RamFS");
-                self.push_line("Next: process scheduler, ELF loader");
+                self.push_line("OxideOS — a hobby OS written in Rust");
+                self.push_line("Features: VFS, RamFS, FAT16, pipes, IPC, GUI");
+                self.push_line("Type 'help' for available commands.");
+            }
+
+            "shutdown" | "poweroff" => {
+                self.push_line("Shutting down...");
+                crate::kernel::shutdown::poweroff();
+            }
+
+            "reboot" => {
+                self.push_line("Rebooting...");
+                crate::kernel::shutdown::reboot();
             }
 
             "run" => {

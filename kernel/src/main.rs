@@ -152,6 +152,10 @@ unsafe fn init_interrupt_system() {
     pic::init();
     SERIAL_PORT.write_str("  ✓ PIC remapped\n");
 
+    SERIAL_PORT.write_str("Step 5.5: Initializing 8042 keyboard controller...\n");
+    unsafe { crate::kernel::keyboard::init(); }
+    SERIAL_PORT.write_str("  ✓ Keyboard controller initialized\n");
+
     SERIAL_PORT.write_str("Step 6: Initializing 64-bit timer...\n");
     timer::init(100);
     SERIAL_PORT.write_str("  ✓ Timer at 100Hz\n");
@@ -246,6 +250,9 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
     terminal::install_input_hooks();
 
     loop {
+        // Poll keyboard directly each frame — fallback for VirtualBox where
+        // IRQ1 may be unreliable or the output buffer fills without an interrupt.
+        crate::kernel::keyboard::poll();
         interrupts::poll_mouse_data();
 
         // Trigger a full redraw once per second so the taskbar clock updates.
@@ -288,10 +295,14 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             }
             if left_button && !last_left_button {
                 // Start menu gets first pick — it handles its own button + popup.
-                let (prog_name, sm_consumed) = start_menu.handle_click(mx as u64, my as u64);
+                let (prog_name, sm_action, sm_consumed) = start_menu.handle_click(mx as u64, my as u64);
                 if let Some(name) = prog_name {
                     spawn_program(name, &mut terminals, graphics, unsafe { &mut *wm });
                     needs_redraw = true;
+                } else if sm_action == 1 {
+                    crate::kernel::shutdown::poweroff();
+                } else if sm_action == 2 {
+                    crate::kernel::shutdown::reboot();
                 } else if sm_consumed {
                     needs_redraw = true;
                 } else {
