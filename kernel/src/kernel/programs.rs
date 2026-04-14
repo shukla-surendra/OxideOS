@@ -52,6 +52,32 @@ pub static SH: &[u8] =
 pub static TERMINAL: &[u8] =
     include_bytes!("../../../userspace/bin/terminal.elf");
 
+// ── Coreutils ────────────────────────────────────────────────────────────────
+
+/// ls — list directory contents.
+pub static LS: &[u8] =
+    include_bytes!("../../../userspace/bin/ls.elf");
+
+/// cat — concatenate and print files.
+pub static CAT: &[u8] =
+    include_bytes!("../../../userspace/bin/cat.elf");
+
+/// ps — show running processes.
+pub static PS: &[u8] =
+    include_bytes!("../../../userspace/bin/ps.elf");
+
+/// cp — copy a file.
+pub static CP: &[u8] =
+    include_bytes!("../../../userspace/bin/cp.elf");
+
+/// mkdir — create a directory.
+pub static MKDIR: &[u8] =
+    include_bytes!("../../../userspace/bin/mkdir.elf");
+
+/// pwd — print working directory.
+pub static PWD: &[u8] =
+    include_bytes!("../../../userspace/bin/pwd.elf");
+
 /// Look up a built-in program by name.
 pub fn find(name: &str) -> Option<&'static [u8]> {
     match name {
@@ -63,11 +89,17 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
         "primes"    => Some(PRIMES),
         "countdown" => Some(COUNTDOWN),
         "spinner"   => Some(SPINNER),
-        "filetest"   => Some(FILETEST),
+        "filetest"  => Some(FILETEST),
         "hello_rust" => Some(HELLO_RUST),
-        "sh"         => Some(SH),
-        "terminal"   => Some(TERMINAL),
-        _            => None,
+        "sh"        => Some(SH),
+        "terminal"  => Some(TERMINAL),
+        "ls"        => Some(LS),
+        "cat"       => Some(CAT),
+        "ps"        => Some(PS),
+        "cp"        => Some(CP),
+        "mkdir"     => Some(MKDIR),
+        "pwd"       => Some(PWD),
+        _           => None,
     }
 }
 
@@ -76,4 +108,5 @@ pub const NAMES: &[&str] = &[
     "hello", "counter", "sysinfo", "input",
     "fib", "primes", "countdown", "spinner", "filetest",
     "hello_rust", "sh", "terminal",
+    "ls", "cat", "ps", "cp", "mkdir", "pwd",
 ];

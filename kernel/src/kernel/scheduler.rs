@@ -43,6 +43,8 @@ pub enum TaskState {
     Dead(i64),               // exit code (pages already freed)
 }
 
+pub const CWD_MAX: usize = 128;
+
 pub struct Task {
     pub state:      TaskState,
     pub ctx:        TaskContext,
@@ -61,10 +63,15 @@ pub struct Task {
     /// Per-process open file-descriptor table.
     /// FDs 0/1/2 (stdin/stdout/stderr) are reserved; real files start at FD 3.
     pub fd_table:   FdTable,
+    /// Current working directory (null-terminated UTF-8 path).
+    pub cwd:        [u8; CWD_MAX],
+    pub cwd_len:    usize,
 }
 
 impl Task {
     const fn empty() -> Self {
+        let mut cwd = [0u8; CWD_MAX];
+        cwd[0] = b'/';
         Self {
             state:      TaskState::Empty,
             ctx:        TaskContext::zeroed(),
@@ -79,6 +86,8 @@ impl Task {
             output:     [0u8; TASK_OUTPUT_CAP],
             output_len: 0,
             fd_table:   FdTable::new(),
+            cwd,
+            cwd_len:    1, // "/"
         }
     }
 
@@ -427,6 +436,8 @@ pub unsafe fn fork_task(
     let parent_entry = (*sched).tasks[parent_idx].entry;
     let parent_name  = (*sched).tasks[parent_idx].name;
     let parent_nlen  = (*sched).tasks[parent_idx].name_len;
+    let parent_cwd   = (*sched).tasks[parent_idx].cwd;
+    let parent_cwdl  = (*sched).tasks[parent_idx].cwd_len;
 
     let child = &raw mut (*sched).tasks[child_slot];
     (*child).state      = TaskState::Ready;
@@ -439,6 +450,8 @@ pub unsafe fn fork_task(
     (*child).heap_end   = parent_heap;
     (*child).output_len = 0;
     (*child).fd_table   = parent_fd;
+    (*child).cwd        = parent_cwd;
+    (*child).cwd_len    = parent_cwdl;
     // Addref every pipe end the child inherited so reference counts stay correct.
     for slot in &(*child).fd_table.entries {
         if let Some(e) = slot {

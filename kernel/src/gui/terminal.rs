@@ -151,6 +151,8 @@ pub struct TerminalApp {
     passthrough_mode: bool,
     /// PID of the currently-running foreground program, if any.
     fg_pid:           Option<u8>,
+    /// Characters typed while a program is running (for visual echo only).
+    passthrough_input: String,
     /// Lines scrolled back from the bottom (0 = follow tail).
     scroll_offset:    usize,
 }
@@ -167,6 +169,7 @@ impl TerminalApp {
             cwd:              String::from("/"),
             passthrough_mode: false,
             fg_pid:           None,
+            passthrough_input: String::new(),
             scroll_offset:    0,
         };
         t.print_banner();
@@ -255,7 +258,9 @@ impl TerminalApp {
         if self.fg_pid == Some(pid) {
             self.exit_passthrough();
         }
-        self.push_line(&format!("[pid {}] exited with code {}", pid, exit_code));
+        if exit_code != 0 {
+            self.push_line(&format!("[pid {}] exited: {}", pid, exit_code));
+        }
     }
 
     /// Drain stdout from all running tasks into history. Returns true if any
@@ -276,13 +281,15 @@ impl TerminalApp {
     pub fn attach_foreground(&mut self, pid: u8) { self.enter_passthrough(pid); }
 
     fn enter_passthrough(&mut self, pid: u8) {
-        self.passthrough_mode = true;
-        self.fg_pid           = Some(pid);
+        self.passthrough_mode  = true;
+        self.fg_pid            = Some(pid);
+        self.passthrough_input.clear();
     }
 
     fn exit_passthrough(&mut self) {
         self.passthrough_mode = false;
         self.fg_pid           = None;
+        self.passthrough_input.clear();
     }
 
     pub fn process_pending_input(&mut self, focused: bool) -> bool {
@@ -314,7 +321,21 @@ impl TerminalApp {
                     EVENT_ARROW_DOWN  => { push_vt100(b'B'); }
                     EVENT_ARROW_RIGHT => { push_vt100(b'C'); }
                     EVENT_ARROW_LEFT  => { push_vt100(b'D'); }
-                    // All other keystrokes already in stdin ring via keyboard.rs
+                    // Backspace: remove last char from echo buffer (key already in stdin)
+                    8 => {
+                        self.passthrough_input.pop();
+                        changed = true;
+                    }
+                    // Enter/newline: clear echo buffer (newline already sent to stdin)
+                    10 | 13 => {
+                        self.passthrough_input.clear();
+                        changed = true;
+                    }
+                    // Printable chars: append to echo buffer for display
+                    32..=126 => {
+                        self.passthrough_input.push(event as u8 as char);
+                        changed = true;
+                    }
                     _ => {}
                 }
             } else if focused {
@@ -395,19 +416,38 @@ impl TerminalApp {
         graphics.fill_rect(cx, input_row_y, cw, LINE_HEIGHT + 2, 0xFF101820);
 
         if self.passthrough_mode {
-            // Running a foreground program — show amber status.
-            let indicator = match self.fg_pid {
-                Some(pid) => format!("[pid {}] running  (Ctrl+C to kill)", pid),
-                None      => String::from("[running...]"),
+            // Running a foreground program — show dim prompt prefix + typed echo buffer.
+            let pid_prefix = match self.fg_pid {
+                Some(pid) => format!("[{}]$ ", pid),
+                None      => String::from("$ "),
             };
+            let prefix_cols = pid_prefix.len();
+            let avail_echo  = max_cols.saturating_sub(prefix_cols);
+            // Trim echo to visible portion (tail so the most-recently typed chars show)
+            let echo_str  = &self.passthrough_input;
+            let echo_start = echo_str.len().saturating_sub(avail_echo);
+            let echo_vis   = &echo_str[echo_start..];
             fonts::draw_string(graphics, text_x, input_row_y + 2,
-                               &indicator, 0xFFFFAA00);
+                               &pid_prefix, 0xFF506070); // dim slate prefix
+            let echo_x = text_x + prefix_cols as u64 * CHAR_WIDTH;
+            fonts::draw_string(graphics, echo_x, input_row_y + 2,
+                               echo_vis, 0xFFDDEEFF);    // near-white echo text
+            // Block cursor at end of echo
+            if is_focused {
+                let cur_x = echo_x + echo_vis.len() as u64 * CHAR_WIDTH;
+                graphics.fill_rect(cur_x, input_row_y + 1, CHAR_WIDTH, LINE_HEIGHT, 0xFF506070);
+            }
         } else {
-            // Prompt: "oxide:~$ " — green like bash.
-            let prompt     = "oxide:~$ ";
+            // Prompt: "oxide:<cwd>$ " — green like bash.
+            let short_cwd = if self.cwd == "/" || self.cwd.is_empty() {
+                String::from("~")
+            } else {
+                String::from(self.cwd.trim_end_matches('/'))
+            };
+            let prompt     = format!("oxide:{}$ ", short_cwd);
             let prompt_len = prompt.len() as u64;
             fonts::draw_string(graphics, text_x, input_row_y + 2,
-                               prompt, 0xFF33DD66);   // bright green
+                               &prompt, 0xFF33DD66);   // bright green
 
             // Input text — scrolls to keep cursor visible.
             let avail_cols  = max_cols.saturating_sub(prompt.len());
@@ -560,11 +600,23 @@ impl TerminalApp {
                 if resolved == "/" {
                     self.cwd = String::from("/");
                 } else if Self::is_disk_path(&resolved) {
-                    // /disk itself — treat as a virtual directory rooted on FAT
-                    if crate::kernel::ata::is_present() {
-                        self.cwd = String::from("/disk/");
+                    if !crate::kernel::ata::is_present() {
+                        self.push_line("cd: no disk attached");
                     } else {
-                        self.push_line("cd: /disk: no disk attached");
+                        // Check if the resolved path is a real FAT directory.
+                        let path_bytes = resolved.as_bytes();
+                        let ok = if resolved == "/disk" || resolved == "/disk/" {
+                            true
+                        } else {
+                            unsafe { crate::kernel::fat::resolve_dir(path_bytes).is_some() }
+                        };
+                        if ok {
+                            let mut cwd = resolved;
+                            if !cwd.ends_with('/') { cwd.push('/'); }
+                            self.cwd = cwd;
+                        } else {
+                            self.push_line(&format!("cd: {}: no such directory", target));
+                        }
                     }
                 } else {
                     // RamFS directory check
@@ -587,19 +639,27 @@ impl TerminalApp {
                 };
 
                 if Self::is_disk_path(&path) {
-                    // List FAT root directory
                     if !crate::kernel::ata::is_present() {
                         self.push_line("ls: no disk attached");
                     } else {
-                        let entries = unsafe { crate::kernel::fat::list_root() };
-                        if entries.is_empty() {
-                            self.push_line("(empty disk directory)");
-                        } else {
-                            for (name, is_dir) in &entries {
-                                let suffix = if *is_dir { "/" } else { "" };
-                                self.push_line(&format!("  {}{}", name, suffix));
+                        // Resolve to a DirLoc (root or subdir).
+                        let dir_loc = unsafe {
+                            crate::kernel::fat::resolve_dir(path.as_bytes())
+                        };
+                        match dir_loc {
+                            None => self.push_line("ls: no such directory"),
+                            Some(loc) => {
+                                let entries = unsafe { crate::kernel::fat::list_dir(loc) };
+                                if entries.is_empty() {
+                                    self.push_line("(empty directory)");
+                                } else {
+                                    for (name, is_dir) in &entries {
+                                        let suffix = if *is_dir { "/" } else { "" };
+                                        self.push_line(&format!("  {}{}", name, suffix));
+                                    }
+                                    self.push_line(&format!("  ({} entries)", entries.len()));
+                                }
                             }
-                            self.push_line(&format!("  ({} entries)", entries.len()));
                         }
                     }
                 } else {
@@ -664,14 +724,27 @@ impl TerminalApp {
                     None     => self.push_line("usage: mkdir <path>"),
                     Some(arg) => {
                         let path = self.resolve_path(arg);
-                        unsafe {
-                            match RAMFS.get() {
-                                Some(fs) => match fs.create_dir(&path) {
-                                    Ok(_)    => self.push_line("directory created"),
-                                    Err(-17) => self.push_line("mkdir: already exists"),
-                                    Err(_)   => self.push_line("mkdir: failed (bad path?)"),
-                                },
-                                None => self.push_line("mkdir: filesystem not ready"),
+                        if Self::is_disk_path(&path) {
+                            if !crate::kernel::ata::is_present() {
+                                self.push_line("mkdir: no disk attached");
+                            } else {
+                                let r = unsafe { crate::kernel::fat::mkdir(path.as_bytes()) };
+                                match r {
+                                    0  => self.push_line("directory created"),
+                                    -28 => self.push_line("mkdir: disk full"),
+                                    _  => self.push_line("mkdir: failed"),
+                                }
+                            }
+                        } else {
+                            unsafe {
+                                match RAMFS.get() {
+                                    Some(fs) => match fs.create_dir(&path) {
+                                        Ok(_)    => self.push_line("directory created"),
+                                        Err(-17) => self.push_line("mkdir: already exists"),
+                                        Err(_)   => self.push_line("mkdir: failed (bad path?)"),
+                                    },
+                                    None => self.push_line("mkdir: filesystem not ready"),
+                                }
                             }
                         }
                     }

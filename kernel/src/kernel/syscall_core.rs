@@ -33,6 +33,9 @@ pub enum Syscall {
     GetSystemInfo = 50,
     Pipe          = 60,
     ReadDir       = 70,
+    Mkdir         = 71,
+    Chdir         = 72,
+    Getcwd        = 73,
     Dup2          = 81,
     Kill          = 91,
     MsgqCreate    = 115,
@@ -66,6 +69,9 @@ impl Syscall {
             Self::GetSystemInfo => "get_system_info",
             Self::Pipe          => "pipe",
             Self::ReadDir       => "readdir",
+            Self::Mkdir         => "mkdir",
+            Self::Chdir         => "chdir",
+            Self::Getcwd        => "getcwd",
             Self::Dup2          => "dup2",
             Self::Kill          => "kill",
             Self::MsgqCreate    => "msgq_create",
@@ -101,6 +107,9 @@ impl From<u64> for Syscall {
             50 => Self::GetSystemInfo,
             60 => Self::Pipe,
             70 => Self::ReadDir,
+            71 => Self::Mkdir,
+            72 => Self::Chdir,
+            73 => Self::Getcwd,
             81 => Self::Dup2,
             91 => Self::Kill,
             115 => Self::MsgqCreate,
@@ -210,6 +219,15 @@ pub trait SyscallRuntime {
     /// Returns bytes written, or negative on error.
     fn readdir_impl(&mut self, _path: &[u8], _buf: &mut [u8]) -> i64 { ENOSYS }
 
+    /// Create a directory at `path`.  Returns 0 on success.
+    fn mkdir_impl(&mut self, _path: &[u8]) -> i64 { ENOSYS }
+
+    /// Change the calling process's working directory.  Returns 0 on success.
+    fn chdir_impl(&mut self, _path: &[u8]) -> i64 { ENOSYS }
+
+    /// Copy the current working directory into `buf`.  Returns bytes written.
+    fn getcwd_impl(&mut self, _buf: &mut [u8]) -> i64 { ENOSYS }
+
     /// Duplicate `old_fd` to `new_fd`.  Returns `new_fd` on success.
     fn dup2_impl(&mut self, _old_fd: i32, _new_fd: i32) -> i64 { ENOSYS }
 
@@ -290,6 +308,9 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
         Syscall::Pipe          => unsafe { sys_pipe(runtime, request.arg1, request.arg2) },
         Syscall::ReadDir       => unsafe { sys_readdir(runtime, request.arg1, request.arg2,
                                                         request.arg3, request.arg4) },
+        Syscall::Mkdir         => unsafe { sys_mkdir(runtime, request.arg1, request.arg2) },
+        Syscall::Chdir         => unsafe { sys_chdir(runtime, request.arg1, request.arg2) },
+        Syscall::Getcwd        => unsafe { sys_getcwd(runtime, request.arg1, request.arg2) },
         Syscall::Dup2          => sys_dup2(runtime, request.arg1 as i32, request.arg2 as i32),
         Syscall::Kill          => sys_kill(runtime, request.arg1),
         Syscall::MsgqCreate    => sys_msgq_create(runtime, request.arg1 as u32),
@@ -454,6 +475,33 @@ unsafe fn sys_readdir<R: SyscallRuntime>(
     let path = unsafe { slice::from_raw_parts(path_ptr as *const u8, path_len as usize) };
     let buf  = unsafe { slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize) };
     let r = runtime.readdir_impl(path, buf);
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+unsafe fn sys_mkdir<R: SyscallRuntime>(
+    runtime: &mut R, path_ptr: u64, path_len: u64,
+) -> SyscallResult {
+    if let Err(e) = validate_user_range(path_ptr, path_len) { return SyscallResult::err(e); }
+    let path = unsafe { slice::from_raw_parts(path_ptr as *const u8, path_len as usize) };
+    let r = runtime.mkdir_impl(path);
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+unsafe fn sys_chdir<R: SyscallRuntime>(
+    runtime: &mut R, path_ptr: u64, path_len: u64,
+) -> SyscallResult {
+    if let Err(e) = validate_user_range(path_ptr, path_len) { return SyscallResult::err(e); }
+    let path = unsafe { slice::from_raw_parts(path_ptr as *const u8, path_len as usize) };
+    let r = runtime.chdir_impl(path);
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+unsafe fn sys_getcwd<R: SyscallRuntime>(
+    runtime: &mut R, buf_ptr: u64, buf_len: u64,
+) -> SyscallResult {
+    if let Err(e) = validate_user_range(buf_ptr, buf_len) { return SyscallResult::err(e); }
+    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize) };
+    let r = runtime.getcwd_impl(buf);
     if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
 }
 

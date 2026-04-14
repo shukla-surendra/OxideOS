@@ -4,5 +4,6 @@ members = [
     "hello_rust",
     "sh",
     "terminal",
+    "coreutils",
 ]
 resolver = "2"

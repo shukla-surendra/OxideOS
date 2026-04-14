@@ -100,15 +100,17 @@ pub unsafe fn vfs_open(path: &str, flags: u32) -> i64 {
 pub fn vfs_readdir(path: &str, buf: &mut [u8]) -> i64 {
     match resolve(path) {
         Resolved::Dev { .. } => {
-            // Synthesise a minimal /dev listing.
             let listing = b"null\ntty\n";
             let n = listing.len().min(buf.len());
             buf[..n].copy_from_slice(&listing[..n]);
             n as i64
         }
-        Resolved::Fat16 { .. } => {
-            // FAT16 directory listing: list root dir entries.
-            unsafe { crate::kernel::fat::list_root_raw(buf) }
+        Resolved::Fat16 { fat_path } => {
+            // Resolve to the specific directory (supports subdirs).
+            match unsafe { crate::kernel::fat::resolve_dir(fat_path) } {
+                Some(loc) => unsafe { crate::kernel::fat::list_dir_raw(loc, buf) },
+                None      => -7, // ENOENT
+            }
         }
         Resolved::RamFS { path } => {
             match unsafe { crate::kernel::fs::ramfs::RAMFS.get() } {
@@ -117,4 +119,74 @@ pub fn vfs_readdir(path: &str, buf: &mut [u8]) -> i64 {
             }
         }
     }
+}
+
+// ── VFS mkdir ────────────────────────────────────────────────────────────────
+
+/// Create a directory at `path`.  Returns 0 on success.
+pub unsafe fn vfs_mkdir(path: &str) -> i64 {
+    match resolve(path) {
+        Resolved::Fat16 { fat_path } => {
+            if !crate::kernel::ata::is_present() { return -19; }
+            unsafe { crate::kernel::fat::mkdir(fat_path) }
+        }
+        Resolved::RamFS { path } => {
+            match unsafe { crate::kernel::fs::ramfs::RAMFS.get() } {
+                Some(fs) => fs.create_dir(path).map(|_| 0i64).unwrap_or(-1),
+                None     => -2,
+            }
+        }
+        Resolved::Dev { .. } => -1, // EPERM: can't mkdir in /dev
+    }
+}
+
+// ── VFS chdir ────────────────────────────────────────────────────────────────
+
+/// Change the current task's working directory to `path`.
+/// Verifies the path is a real directory before accepting it.
+pub unsafe fn vfs_chdir(path: &str) -> i64 {
+    use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX, CWD_MAX};
+
+    // Validate that the path is an existing directory.
+    let exists = match resolve(path) {
+        Resolved::Fat16 { fat_path } => {
+            if !crate::kernel::ata::is_present() { return -19; }
+            // Root of disk ("/disk") is always valid; otherwise check.
+            fat_path == b"/disk" || fat_path == b"/disk/"
+            || unsafe { crate::kernel::fat::resolve_dir(fat_path).is_some() }
+        }
+        Resolved::RamFS { path: rpath } => {
+            rpath == "/"
+            || unsafe { crate::kernel::fs::ramfs::RAMFS.get() }
+                   .and_then(|fs| fs.list_dir(rpath))
+                   .is_some()
+        }
+        Resolved::Dev { .. } => false,
+    };
+
+    if !exists { return -7; } // ENOENT
+
+    // Normalise: ensure trailing slash.
+    let mut norm = [0u8; CWD_MAX];
+    let bytes = path.as_bytes();
+    let len = bytes.len().min(CWD_MAX - 1);
+    norm[..len].copy_from_slice(&bytes[..len]);
+    let final_len = if norm[len.saturating_sub(1)] == b'/' {
+        len
+    } else if len < CWD_MAX - 1 {
+        norm[len] = b'/';
+        len + 1
+    } else {
+        len
+    };
+
+    // Write the new cwd into the current task.
+    unsafe {
+        let sched = &raw mut SCHED;
+        let idx   = CURRENT_TASK_IDX;
+        let task  = &raw mut (*sched).tasks[idx];
+        core::ptr::copy_nonoverlapping(norm.as_ptr(), (*task).cwd.as_mut_ptr(), final_len);
+        (*task).cwd_len = final_len;
+    }
+    0
 }

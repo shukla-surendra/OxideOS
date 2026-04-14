@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "coreutils"
+version = "0.1.0"
+dependencies = [
+ "oxide-rt",
+]
+
+[[package]]
 name = "hello-rust"
 version = "0.1.0"
 dependencies = [

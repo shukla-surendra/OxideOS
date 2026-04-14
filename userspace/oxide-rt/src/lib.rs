@@ -133,6 +133,9 @@ pub mod sys {
     pub const SLEEP:   u64 = 41;
     pub const PIPE:    u64 = 60;
     pub const READDIR: u64 = 70;
+    pub const MKDIR:   u64 = 71;
+    pub const CHDIR:   u64 = 72;
+    pub const GETCWD:  u64 = 73;
     pub const DUP2:    u64 = 81;
     pub const KILL:    u64 = 91;
     pub const MSGQ_CREATE:  u64 = 115;
@@ -324,6 +327,24 @@ pub fn write(fd: i32, buf: &[u8]) -> i64 {
 #[inline]
 pub fn read(fd: i32, buf: &mut [u8]) -> i64 {
     unsafe { raw::syscall3(sys::READ, fd as u64, buf.as_ptr() as u64, buf.len() as u64) }
+}
+
+/// Create a directory at `path`. Returns 0 on success.
+#[inline]
+pub fn mkdir(path: &str) -> i64 {
+    unsafe { raw::syscall2(sys::MKDIR, path.as_ptr() as u64, path.len() as u64) }
+}
+
+/// Change the current working directory. Returns 0 on success.
+#[inline]
+pub fn chdir(path: &str) -> i64 {
+    unsafe { raw::syscall2(sys::CHDIR, path.as_ptr() as u64, path.len() as u64) }
+}
+
+/// Get the current working directory into `buf`. Returns bytes written.
+#[inline]
+pub fn getcwd(buf: &mut [u8]) -> i64 {
+    unsafe { raw::syscall2(sys::GETCWD, buf.as_mut_ptr() as u64, buf.len() as u64) }
 }
 
 // ── Formatted printing ───────────────────────────────────────────────────────

@@ -97,11 +97,182 @@ impl FatFs {
 
 pub static mut FAT_FS: FatFs = FatFs::new();
 
+// ── Directory location ─────────────────────────────────────────────────────
+
+/// Identifies where a directory lives on the FAT16 volume.
+#[derive(Clone, Copy, Debug)]
+pub enum DirLoc {
+    /// The FAT16 root directory (fixed-size area, not in the data region).
+    Root,
+    /// A subdirectory stored in the data region; `first_cluster` is its start.
+    Subdir(u16),
+}
+
+/// Information about a single directory entry.
+pub struct DirEntryInfo {
+    pub name83:        [u8; 11],
+    pub first_cluster: u16,
+    pub size:          u32,
+    /// LBA of the 512-byte sector that contains this entry.
+    pub entry_sector:  u32,
+    /// Byte offset of the entry within that sector (multiple of 32).
+    pub entry_offset:  u32,
+    pub is_dir:        bool,
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /// Sector offset of a cluster's first sector in the data area.
 fn cluster_to_lba(bpb: &Bpb, cluster: u16) -> u32 {
     bpb.data_start_lba + (cluster as u32 - 2) * bpb.sectors_per_cluster as u32
+}
+
+/// Iterate all non-deleted, non-volume-label entries in a directory.
+/// Calls `f(&entry) -> bool`; returning `false` stops iteration.
+unsafe fn for_each_fat_entry(
+    bpb: &Bpb,
+    dir: DirLoc,
+    mut f: impl FnMut(&DirEntryInfo) -> bool,
+) {
+    let mut sector_buf = [0u8; 512];
+
+    match dir {
+        DirLoc::Root => {
+            let root_sectors = (bpb.root_entry_count as u32 * 32 + 511) / 512;
+            'outer: for s in 0..root_sectors {
+                let lba = bpb.root_dir_lba + s;
+                if !unsafe { read_sector_buf(lba, &mut sector_buf) } { break; }
+                for e in 0..16u32 {
+                    let off = (e * 32) as usize;
+                    if sector_buf[off] == 0x00 { break 'outer; }
+                    if sector_buf[off] == 0xE5 { continue; }
+                    let attr = sector_buf[off + 11];
+                    if attr & 0x08 != 0 { continue; } // volume label
+                    let mut n83 = [0u8; 11];
+                    n83.copy_from_slice(&sector_buf[off..off + 11]);
+                    let entry = DirEntryInfo {
+                        name83:        n83,
+                        first_cluster: u16::from_le_bytes([sector_buf[off+26], sector_buf[off+27]]),
+                        size:          u32::from_le_bytes([sector_buf[off+28], sector_buf[off+29], sector_buf[off+30], sector_buf[off+31]]),
+                        entry_sector:  lba,
+                        entry_offset:  e * 32,
+                        is_dir:        attr & 0x10 != 0,
+                    };
+                    if !f(&entry) { return; }
+                }
+            }
+        }
+
+        DirLoc::Subdir(first_cluster) => {
+            let mut cluster = first_cluster;
+            'chain: loop {
+                if cluster < 2 || cluster >= 0xFFF8 { break; }
+                let cluster_lba = cluster_to_lba(bpb, cluster);
+                for s in 0..bpb.sectors_per_cluster as u32 {
+                    let lba = cluster_lba + s;
+                    if !unsafe { read_sector_buf(lba, &mut sector_buf) } { break 'chain; }
+                    for e in 0..16u32 {
+                        let off = (e * 32) as usize;
+                        if sector_buf[off] == 0x00 { return; }
+                        if sector_buf[off] == 0xE5 { continue; }
+                        let attr = sector_buf[off + 11];
+                        if attr & 0x08 != 0 { continue; } // volume label
+                        let mut n83 = [0u8; 11];
+                        n83.copy_from_slice(&sector_buf[off..off + 11]);
+                        let entry = DirEntryInfo {
+                            name83:        n83,
+                            first_cluster: u16::from_le_bytes([sector_buf[off+26], sector_buf[off+27]]),
+                            size:          u32::from_le_bytes([sector_buf[off+28], sector_buf[off+29], sector_buf[off+30], sector_buf[off+31]]),
+                            entry_sector:  lba,
+                            entry_offset:  e * 32,
+                            is_dir:        attr & 0x10 != 0,
+                        };
+                        if !f(&entry) { return; }
+                    }
+                }
+                cluster = unsafe { fat_next(bpb, cluster) };
+            }
+        }
+    }
+}
+
+/// Strip the `/disk/` or `/disk` prefix from a FAT path, returning the
+/// volume-relative part (may be empty for the root, e.g. `/disk`).
+fn strip_disk_prefix(raw: &[u8]) -> &[u8] {
+    if raw.starts_with(b"/disk/") { &raw[6..] }
+    else if raw == b"/disk"       { b"" }
+    else if raw.starts_with(b"/") { &raw[1..] }
+    else                          { raw }
+}
+
+/// Convert a single path component (no slashes) to an 8.3 directory-name.
+fn component_to_83(part: &[u8]) -> Option<[u8; 11]> {
+    if part.is_empty() { return None; }
+    let (name_part, ext_part) = match part.iter().position(|&b| b == b'.') {
+        Some(dot) => (&part[..dot], &part[dot + 1..]),
+        None      => (part, &b""[..]),
+    };
+    if name_part.is_empty() { return None; }
+    let mut n83 = [b' '; 11];
+    for (i, &b) in name_part.iter().take(8).enumerate() {
+        n83[i] = b.to_ascii_uppercase();
+    }
+    for (i, &b) in ext_part.iter().take(3).enumerate() {
+        n83[8 + i] = b.to_ascii_uppercase();
+    }
+    Some(n83)
+}
+
+/// Resolve a sequence of path components starting from `start_dir`,
+/// returning the `DirLoc` of the final directory component, or `None`
+/// if any component is not a directory that exists.
+unsafe fn resolve_dir_components(bpb: &Bpb, start_dir: DirLoc, components: &[u8]) -> Option<DirLoc> {
+    if components.is_empty() { return Some(start_dir); }
+    let mut current = start_dir;
+    for part in components.split(|&b| b == b'/') {
+        if part.is_empty() { continue; }
+        if part == b"." { continue; }
+        if part == b".." {
+            // For simplicity, `..` from root stays at root.
+            // Full `..` traversal would require tracking parent clusters.
+            if let DirLoc::Root = current { continue; }
+            // Can't go up from a subdir without a parent tracker — not supported yet.
+            return None;
+        }
+        let n83 = component_to_83(part)?;
+        let mut found: Option<DirLoc> = None;
+        unsafe {
+            for_each_fat_entry(bpb, current, |e| {
+                if e.name83 == n83 {
+                    if e.is_dir {
+                        found = Some(DirLoc::Subdir(e.first_cluster));
+                    }
+                    return false; // stop
+                }
+                true
+            });
+        }
+        current = found?;
+    }
+    Some(current)
+}
+
+/// Resolve a full FAT path to `(parent_dir, filename_83)`.
+/// `raw_path` is the raw bytes as supplied to `open`/`mkdir`/etc.
+/// Returns `None` for invalid paths.
+unsafe fn resolve_parent(bpb: &Bpb, raw_path: &[u8]) -> Option<(DirLoc, [u8; 11])> {
+    let rel = strip_disk_prefix(raw_path);
+    if rel.is_empty() { return None; }
+
+    // Split at the last `/` to get (dir_part, file_name).
+    let (dir_bytes, file_bytes) = match rel.iter().rposition(|&b| b == b'/') {
+        Some(pos) => (&rel[..pos], &rel[pos + 1..]),
+        None      => (&b""[..], rel),
+    };
+
+    let parent = unsafe { resolve_dir_components(bpb, DirLoc::Root, dir_bytes)? };
+    let name83 = component_to_83(file_bytes)?;
+    Some((parent, name83))
 }
 
 /// Read one 512-byte sector into a stack buffer. Returns false on error.
@@ -234,41 +405,15 @@ pub fn is_fat_fd(fd: i32) -> bool {
     fd >= FAT_FD_BASE && fd < FAT_FD_BASE + FAT_FD_COUNT as i32
 }
 
-/// Build an 8.3 FAT directory-name from a raw path (strips /disk/ prefix).
-/// Returns the 11-byte name or None if the path is invalid.
-fn path_to_83(raw_path: &[u8]) -> Option<[u8; 11]> {
-    let path = if raw_path.starts_with(b"/disk/") {
-        &raw_path[6..]
-    } else if raw_path.starts_with(b"/") {
-        &raw_path[1..]
-    } else {
-        raw_path
-    };
-    if path.is_empty() { return None; }
-
-    let (name_part, ext_part) = match path.iter().position(|&b| b == b'.') {
-        Some(dot) => (&path[..dot], &path[dot + 1..]),
-        None      => (path, &b""[..]),
-    };
-
-    let mut dir_name = [b' '; 11];
-    for (i, &b) in name_part.iter().take(8).enumerate() {
-        dir_name[i] = b.to_ascii_uppercase();
-    }
-    for (i, &b) in ext_part.iter().take(3).enumerate() {
-        dir_name[8 + i] = b.to_ascii_uppercase();
-    }
-    Some(dir_name)
-}
-
 /// Open a file by path. Returns an FD ≥ 64 on success, negative on error.
 /// `flags` bits: O_RDONLY=0, O_WRONLY=1, O_RDWR=2, O_CREAT=0x40, O_TRUNC=0x200.
+/// Supports subdirectory paths (e.g. `/disk/bin/sh`).
 pub unsafe fn open(raw_path: &[u8], flags: u32) -> i64 {
     let fs = &raw mut FAT_FS;
     if !(*fs).ready { return -2; }
 
-    let dir_name = match path_to_83(raw_path) {
-        Some(n) => n,
+    let (parent_dir, dir_name) = match unsafe { resolve_parent(&(*fs).bpb, raw_path) } {
+        Some(r) => r,
         None    => return -22, // EINVAL
     };
 
@@ -277,88 +422,58 @@ pub unsafe fn open(raw_path: &[u8], flags: u32) -> i64 {
     let do_create = flags & crate::kernel::fs::O_CREAT  != 0;
     let do_trunc  = flags & crate::kernel::fs::O_TRUNC  != 0;
 
-    // Search root directory for an existing entry.
-    let root_sectors = ((*fs).bpb.root_entry_count as u32 * 32 + 511) / 512;
-    let mut buf = [0u8; 512];
-    let mut found_sector: u32    = 0;
-    let mut found_off:    u32    = 0;
-    let mut found_fc:     u16    = 0;
-    let mut found_size:   u32    = 0;
+    // Search parent directory for an existing file entry.
+    let mut found_sector: u32  = 0;
+    let mut found_off:    u32  = 0;
+    let mut found_fc:     u16  = 0;
+    let mut found_size:   u32  = 0;
     let mut found: bool = false;
 
-    'outer: for s in 0..root_sectors {
-        let lba = (*fs).bpb.root_dir_lba + s;
-        if !unsafe { read_sector_buf(lba, &mut buf) } { return -1; }
-        for e in 0..16u32 {
-            let off = (e * 32) as usize;
-            if buf[off] == 0x00 { break 'outer; }
-            if buf[off] == 0xE5 { continue; }
-            let attr = buf[off + 11];
-            if attr & 0x08 != 0 || attr & 0x10 != 0 { continue; }
-            if buf[off..off + 11] == dir_name {
-                found_sector = lba;
-                found_off    = off as u32;
-                found_fc     = u16::from_le_bytes([buf[off + 26], buf[off + 27]]);
-                found_size   = u32::from_le_bytes([buf[off + 28], buf[off + 29],
-                                                    buf[off + 30], buf[off + 31]]);
+    unsafe {
+        for_each_fat_entry(&(*fs).bpb, parent_dir, |e| {
+            if e.name83 == dir_name && !e.is_dir {
+                found_sector = e.entry_sector;
+                found_off    = e.entry_offset;
+                found_fc     = e.first_cluster;
+                found_size   = e.size;
                 found = true;
-                break 'outer;
+                return false; // stop
             }
-        }
+            true
+        });
     }
 
     if !found {
         if !do_create { return -7; } // ENOENT
-        // Create new entry in root directory.
+        // Create a new entry only in root (subdir creation for O_CREAT in subdir
+        // requires finding a free slot in that dir's cluster chain — full impl below).
         let new_cluster = unsafe { fat_alloc_cluster(&(*fs).bpb) };
         if new_cluster == 0 { return -28; } // ENOSPC
 
-        // Find a free slot (deleted 0xE5 or zeroed 0x00).
-        let mut created = false;
-        'create: for s in 0..root_sectors {
-            let lba = (*fs).bpb.root_dir_lba + s;
-            if !unsafe { read_sector_buf(lba, &mut buf) } { continue; }
-            for e in 0..16u32 {
-                let off = (e * 32) as usize;
-                if buf[off] == 0x00 || buf[off] == 0xE5 {
-                    buf[off..off + 11].copy_from_slice(&dir_name);
-                    buf[off + 11] = 0x20; // ATTR_ARCHIVE
-                    buf[off + 12..off + 26].fill(0);
-                    buf[off + 26] = (new_cluster & 0xFF) as u8;
-                    buf[off + 27] = (new_cluster >> 8) as u8;
-                    buf[off + 28..off + 32].fill(0); // size=0
-                    if !unsafe { write_sector_buf(lba, &buf) } { return -5; }
-                    found_sector = lba;
-                    found_off    = off as u32;
-                    found_fc     = new_cluster;
-                    found_size   = 0;
-                    created = true;
-                    break 'create;
-                }
-            }
-        }
-        if !created { return -28; } // ENOSPC (no dir slot)
+        let created = unsafe { create_dir_entry(&mut (*fs).bpb, parent_dir, &dir_name, 0x20, new_cluster, 0,
+                                                 &mut found_sector, &mut found_off) };
+        if !created { return -28; }
+        found_fc   = new_cluster;
+        found_size = 0;
         found = true;
     }
 
     // Truncate: free cluster chain and reset size.
     if do_trunc && writable && found_fc != 0 {
-        // Walk chain, freeing every cluster.
         let mut cl = found_fc;
         while cl >= 2 && cl < 0xFFF8 {
             let next = unsafe { fat_next(&(*fs).bpb, cl) };
             let _ = unsafe { fat_write_entry(&(*fs).bpb, cl, 0x0000) };
             cl = next;
         }
-        // Allocate one fresh cluster for write head.
         let new_cl = unsafe { fat_alloc_cluster(&(*fs).bpb) };
         found_fc   = new_cl;
         found_size = 0;
-        // Update dir entry.
+        let mut buf = [0u8; 512];
         if unsafe { read_sector_buf(found_sector, &mut buf) } {
             let off = found_off as usize;
             buf[off + 26] = (new_cl & 0xFF) as u8;
-            buf[off + 27] = (new_cl >> 8) as u8;
+            buf[off + 27] = (new_cl >> 8)   as u8;
             buf[off + 28..off + 32].fill(0);
             let _ = unsafe { write_sector_buf(found_sector, &buf) };
         }
@@ -369,19 +484,192 @@ pub unsafe fn open(raw_path: &[u8], flags: u32) -> i64 {
     for i in 0..FAT_FD_COUNT {
         let fd_slot = &raw mut (*fds)[i];
         if !(*fd_slot).active {
-            (*fd_slot).active            = true;
-            (*fd_slot).writable          = writable;
-            (*fd_slot).file_size         = found_size;
-            (*fd_slot).first_cluster     = found_fc;
-            (*fd_slot).cur_cluster       = found_fc;
-            (*fd_slot).cur_sector        = 0;
-            (*fd_slot).file_offset       = 0;
-            (*fd_slot).dir_entry_sector  = found_sector;
-            (*fd_slot).dir_entry_offset  = found_off;
+            (*fd_slot).active           = true;
+            (*fd_slot).writable         = writable;
+            (*fd_slot).file_size        = found_size;
+            (*fd_slot).first_cluster    = found_fc;
+            (*fd_slot).cur_cluster      = found_fc;
+            (*fd_slot).cur_sector       = 0;
+            (*fd_slot).file_offset      = 0;
+            (*fd_slot).dir_entry_sector = found_sector;
+            (*fd_slot).dir_entry_offset = found_off;
             return (FAT_FD_BASE + i as i32) as i64;
         }
     }
     -4 // ENOMEM: no free FD slots
+}
+
+/// Write a new 32-byte entry into a directory (root or subdir).
+/// `attr` is the FAT attribute byte (0x20 = file, 0x10 = dir).
+/// Writes back the sector/offset of the new entry into `sector_out`/`off_out`.
+/// Returns `true` on success.
+unsafe fn create_dir_entry(
+    bpb: &Bpb,
+    dir: DirLoc,
+    name83: &[u8; 11],
+    attr: u8,
+    first_cluster: u16,
+    size: u32,
+    sector_out: &mut u32,
+    off_out: &mut u32,
+) -> bool {
+    let mut buf = [0u8; 512];
+
+    let try_sector = |lba: u32, buf: &mut [u8; 512], sector_out: &mut u32, off_out: &mut u32| -> bool {
+        if !unsafe { read_sector_buf(lba, buf) } { return false; }
+        for e in 0..16u32 {
+            let off = (e * 32) as usize;
+            if buf[off] == 0x00 || buf[off] == 0xE5 {
+                buf[off..off + 11].copy_from_slice(name83);
+                buf[off + 11] = attr;
+                buf[off + 12..off + 26].fill(0);
+                buf[off + 26] = (first_cluster & 0xFF) as u8;
+                buf[off + 27] = (first_cluster >> 8)   as u8;
+                buf[off + 28] = (size       & 0xFF) as u8;
+                buf[off + 29] = ((size >>  8) & 0xFF) as u8;
+                buf[off + 30] = ((size >> 16) & 0xFF) as u8;
+                buf[off + 31] = ((size >> 24) & 0xFF) as u8;
+                if !unsafe { write_sector_buf(lba, buf) } { return false; }
+                *sector_out = lba;
+                *off_out    = e * 32;
+                return true;
+            }
+        }
+        false
+    };
+
+    match dir {
+        DirLoc::Root => {
+            let root_sectors = (bpb.root_entry_count as u32 * 32 + 511) / 512;
+            for s in 0..root_sectors {
+                let lba = bpb.root_dir_lba + s;
+                if try_sector(lba, &mut buf, sector_out, off_out) { return true; }
+            }
+            false
+        }
+        DirLoc::Subdir(first_cl) => {
+            let mut cluster = first_cl;
+            loop {
+                if cluster < 2 || cluster >= 0xFFF8 { break; }
+                let cluster_lba = cluster_to_lba(bpb, cluster);
+                for s in 0..bpb.sectors_per_cluster as u32 {
+                    let lba = cluster_lba + s;
+                    if try_sector(lba, &mut buf, sector_out, off_out) { return true; }
+                }
+                let next = unsafe { fat_next(bpb, cluster) };
+                if next >= 0xFFF8 || next == 0 {
+                    // Extend the directory with a new cluster.
+                    let new_cl = unsafe { fat_alloc_cluster(bpb) };
+                    if new_cl == 0 { return false; }
+                    let _ = unsafe { fat_write_entry(bpb, cluster, new_cl) };
+                    // Zero the new cluster so all entries start as 0x00.
+                    let new_lba = cluster_to_lba(bpb, new_cl);
+                    let zero = [0u8; 512];
+                    for s in 0..bpb.sectors_per_cluster as u32 {
+                        let _ = unsafe { write_sector_buf(new_lba + s, &zero) };
+                    }
+                    cluster = new_cl;
+                } else {
+                    cluster = next;
+                }
+            }
+            false
+        }
+    }
+}
+
+/// Check whether a path points to an existing directory on FAT.
+/// Returns `true` if the path resolves to a dir (or root `/disk`).
+pub unsafe fn is_directory(raw_path: &[u8]) -> bool {
+    let fs = &raw const FAT_FS;
+    if !(*fs).ready { return false; }
+
+    let rel = strip_disk_prefix(raw_path);
+    if rel.is_empty() { return true; } // `/disk` itself is the root
+
+    // Split into parent dir + final component.
+    let (dir_bytes, file_bytes) = match rel.iter().rposition(|&b| b == b'/') {
+        Some(pos) => (&rel[..pos], &rel[pos + 1..]),
+        None      => (&b""[..], rel),
+    };
+
+    let parent = match unsafe { resolve_dir_components(&(*fs).bpb, DirLoc::Root, dir_bytes) } {
+        Some(d) => d,
+        None    => return false,
+    };
+    let name83 = match component_to_83(file_bytes) {
+        Some(n) => n,
+        None    => return false,
+    };
+
+    let mut found = false;
+    unsafe {
+        for_each_fat_entry(&(*fs).bpb, parent, |e| {
+            if e.name83 == name83 && e.is_dir {
+                found = true;
+                return false;
+            }
+            true
+        });
+    }
+    found
+}
+
+/// Create a new subdirectory at `raw_path`.
+/// Returns 0 on success, negative on error.
+pub unsafe fn mkdir(raw_path: &[u8]) -> i64 {
+    let fs = &raw mut FAT_FS;
+    if !(*fs).ready { return -2; }
+
+    let (parent_dir, dir_name) = match unsafe { resolve_parent(&(*fs).bpb, raw_path) } {
+        Some(r) => r,
+        None    => return -22,
+    };
+
+    // Allocate a cluster for the new directory's data.
+    let new_cluster = unsafe { fat_alloc_cluster(&(*fs).bpb) };
+    if new_cluster == 0 { return -28; }
+
+    // Zero the new cluster.
+    let new_lba = cluster_to_lba(&(*fs).bpb, new_cluster);
+    let zero = [0u8; 512];
+    for s in 0..(*fs).bpb.sectors_per_cluster as u32 {
+        if !unsafe { write_sector_buf(new_lba + s, &zero) } { return -5; }
+    }
+
+    // Write `.` and `..` entries in the first sector of the new cluster.
+    let mut buf = [0u8; 512];
+    if !unsafe { read_sector_buf(new_lba, &mut buf) } { return -5; }
+
+    // `.` entry (points to self)
+    let dot: [u8; 11] = *b".          ";
+    buf[0..11].copy_from_slice(&dot);
+    buf[11] = 0x10; // ATTR_DIRECTORY
+    buf[12..26].fill(0);
+    buf[26] = (new_cluster & 0xFF) as u8;
+    buf[27] = (new_cluster >> 8)   as u8;
+    buf[28..32].fill(0);
+
+    // `..` entry (points to parent; 0 = root)
+    let dotdot: [u8; 11] = *b"..         ";
+    buf[32..43].copy_from_slice(&dotdot);
+    buf[43] = 0x10;
+    buf[44..58].fill(0);
+    let parent_cluster: u16 = match parent_dir { DirLoc::Subdir(cl) => cl, DirLoc::Root => 0 };
+    buf[58] = (parent_cluster & 0xFF) as u8;
+    buf[59] = (parent_cluster >> 8)   as u8;
+    buf[60..64].fill(0);
+
+    if !unsafe { write_sector_buf(new_lba, &buf) } { return -5; }
+
+    // Create an entry for the new dir in the parent directory.
+    let mut ent_sector = 0u32;
+    let mut ent_off    = 0u32;
+    if !unsafe { create_dir_entry(&(*fs).bpb, parent_dir, &dir_name, 0x10,
+                                   new_cluster, 0, &mut ent_sector, &mut ent_off) } {
+        return -28;
+    }
+    0
 }
 
 /// Flush the file size stored in the root-directory entry for `slot`.
@@ -559,68 +847,68 @@ fn fat83_to_string(name: &[u8], ext: &[u8]) -> String {
     s
 }
 
-/// List all entries in the FAT16 root directory.
-///
-/// Returns a `Vec` of `(name, is_directory)` pairs.  Volume-label and deleted
-/// entries are skipped.  Returns an empty Vec if the filesystem is not ready.
-/// Write FAT root-directory entries into `out` as `<name>\n` lines.
-/// Returns bytes written, or -2 if FAT is not ready.
-pub unsafe fn list_root_raw(out: &mut [u8]) -> i64 {
+/// Resolve the `DirLoc` for a given raw path (e.g. `/disk/bin` → Subdir(cluster)).
+/// `/disk` or empty relative path → `DirLoc::Root`.
+pub unsafe fn resolve_dir(raw_path: &[u8]) -> Option<DirLoc> {
+    let fs = &raw const FAT_FS;
+    if !(*fs).ready { return None; }
+    let rel = strip_disk_prefix(raw_path);
+    unsafe { resolve_dir_components(&(*fs).bpb, DirLoc::Root, rel) }
+}
+
+/// Write directory entries for `dir` into `out` as `<name>\n` lines
+/// (directories get a trailing `/`).  Returns bytes written or -2 if not ready.
+pub unsafe fn list_dir_raw(dir: DirLoc, out: &mut [u8]) -> i64 {
     let fs = &raw const FAT_FS;
     if !(*fs).ready { return -2; }
 
-    let bpb = &(*fs).bpb;
-    let root_sectors = (bpb.root_entry_count as u32 * 32 + 511) / 512;
-    let mut sector_buf = [0u8; 512];
     let mut written = 0usize;
-
-    'outer: for s in 0..root_sectors {
-        let lba = bpb.root_dir_lba + s;
-        if !unsafe { read_sector_buf(lba, &mut sector_buf) } { break; }
-        for e in 0..16u32 {
-            let off = (e * 32) as usize;
-            if sector_buf[off] == 0x00 { break 'outer; }
-            if sector_buf[off] == 0xE5 { continue; }
-            let attr = sector_buf[off + 11];
-            if attr & 0x08 != 0 { continue; } // volume label
-            let name = fat83_to_string(&sector_buf[off..off+8], &sector_buf[off+8..off+11]);
-            if name == "." || name == ".." { continue; }
+    unsafe {
+        for_each_fat_entry(&(*fs).bpb, dir, |e| {
+            let name = fat83_to_string(&e.name83[..8], &e.name83[8..11]);
+            if name == "." || name == ".." { return true; }
             let bytes = name.as_bytes();
-            let n = bytes.len().min(out.len().saturating_sub(written + 1));
-            if n == 0 { break 'outer; }
-            out[written..written + n].copy_from_slice(&bytes[..n]);
-            written += n;
-            if written < out.len() { out[written] = b'\n'; written += 1; }
-        }
+            let suffix: &[u8] = if e.is_dir { b"/" } else { b"" };
+            let needed = bytes.len() + suffix.len() + 1; // +1 for '\n'
+            if written + needed > out.len() { return false; }
+            out[written..written + bytes.len()].copy_from_slice(bytes);
+            written += bytes.len();
+            out[written..written + suffix.len()].copy_from_slice(suffix);
+            written += suffix.len();
+            out[written] = b'\n';
+            written += 1;
+            true
+        });
     }
     written as i64
 }
 
-pub unsafe fn list_root() -> Vec<(String, bool)> {
+/// Convenience: list the FAT root directory into a raw byte buffer.
+/// Kept for backward compatibility with callers that use the old API.
+pub unsafe fn list_root_raw(out: &mut [u8]) -> i64 {
+    unsafe { list_dir_raw(DirLoc::Root, out) }
+}
+
+/// List entries in `dir` as `Vec<(name, is_dir)>`.
+pub unsafe fn list_dir(dir: DirLoc) -> Vec<(String, bool)> {
     let mut entries: Vec<(String, bool)> = Vec::new();
     let fs = &raw const FAT_FS;
     if !(*fs).ready { return entries; }
 
-    let bpb = &(*fs).bpb;
-    let root_sectors = (bpb.root_entry_count as u32 * 32 + 511) / 512;
-    let mut buf = [0u8; 512];
-
-    'outer: for s in 0..root_sectors {
-        let lba = bpb.root_dir_lba + s;
-        if !unsafe { read_sector_buf(lba, &mut buf) } { break; }
-
-        for e in 0..16u32 {
-            let off = (e * 32) as usize;
-            if buf[off] == 0x00 { break 'outer; }  // end of directory
-            if buf[off] == 0xE5 { continue; }       // deleted entry
-            let attr = buf[off + 11];
-            if attr & 0x08 != 0 { continue; }       // volume label
-
-            let is_dir = attr & 0x10 != 0;
-            let name = fat83_to_string(&buf[off..off + 8], &buf[off + 8..off + 11]);
-            if name == "." || name == ".." { continue; }
-            entries.push((name, is_dir));
-        }
+    unsafe {
+        for_each_fat_entry(&(*fs).bpb, dir, |e| {
+            let name = fat83_to_string(&e.name83[..8], &e.name83[8..11]);
+            if name != "." && name != ".." {
+                entries.push((name, e.is_dir));
+            }
+            true
+        });
     }
     entries
+}
+
+/// Convenience: list the FAT root directory.
+/// Kept for backward compatibility.
+pub unsafe fn list_root() -> Vec<(String, bool)> {
+    unsafe { list_dir(DirLoc::Root) }
 }

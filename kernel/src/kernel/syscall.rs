@@ -215,6 +215,33 @@ impl SyscallRuntime for KernelRuntime {
         crate::kernel::vfs::vfs_readdir(path_str, buf)
     }
 
+    fn mkdir_impl(&mut self, path: &[u8]) -> i64 {
+        let path_str = match core::str::from_utf8(path) {
+            Ok(s)  => s,
+            Err(_) => return -22,
+        };
+        unsafe { crate::kernel::vfs::vfs_mkdir(path_str) }
+    }
+
+    fn chdir_impl(&mut self, path: &[u8]) -> i64 {
+        let path_str = match core::str::from_utf8(path) {
+            Ok(s)  => s,
+            Err(_) => return -22,
+        };
+        unsafe { crate::kernel::vfs::vfs_chdir(path_str) }
+    }
+
+    fn getcwd_impl(&mut self, buf: &mut [u8]) -> i64 {
+        unsafe {
+            let sched = &raw const crate::kernel::scheduler::SCHED;
+            let idx   = crate::kernel::scheduler::CURRENT_TASK_IDX;
+            let task  = &(*sched).tasks[idx];
+            let len   = task.cwd_len.min(buf.len());
+            buf[..len].copy_from_slice(&task.cwd[..len]);
+            len as i64
+        }
+    }
+
     fn dup2_impl(&mut self, old_fd: i32, new_fd: i32) -> i64 {
         unsafe {
             let sched = &raw mut crate::kernel::scheduler::SCHED;

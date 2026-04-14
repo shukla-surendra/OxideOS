@@ -1,0 +1,40 @@
+[package]
+name = "coreutils"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "ls"
+path = "src/ls.rs"
+
+[[bin]]
+name = "cat"
+path = "src/cat.rs"
+
+[[bin]]
+name = "ps"
+path = "src/ps.rs"
+
+[[bin]]
+name = "cp"
+path = "src/cp.rs"
+
+[[bin]]
+name = "mkdir"
+path = "src/mkdir.rs"
+
+[[bin]]
+name = "pwd"
+path = "src/pwd.rs"
+
+[dependencies]
+oxide-rt = { path = "../oxide-rt" }
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+strip = true
+
+[profile.dev]
+panic = "abort"

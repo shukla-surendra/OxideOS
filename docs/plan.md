@@ -349,11 +349,11 @@ $ wget http://example.com
 ✅ Phase 8.3   IPC message queues
 ✅ GUI         Start menu, taskbar, multi-terminal, shutdown/reboot
 
-🔧 NOW         Fix VirtualBox keyboard (replace scancode table with `pc-keyboard` crate)
-⬡  NEXT        Phase 4.2  Ctrl+C → SIGINT for foreground process
-⬡             Phase 2.3  FAT16 subdirectory support
-⬡             Phase 3.6  chdir/getcwd syscalls
-⬡             Phase 3.3  Standalone /bin/cat, /bin/ls, /bin/cp, /bin/ps
+✅ DONE         Fix VirtualBox keyboard (replaced scancode table with `pc-keyboard` crate)
+✅ DONE        Phase 4.2  Ctrl+C → SIGINT (0x03 via MapLettersToUnicode; terminal kills fg PID)
+✅ DONE        Phase 2.3  FAT16 subdirectory support (traverse, open, list, mkdir in subdirs)
+✅ DONE        Phase 3.6  chdir(72)/getcwd(73)/mkdir(71) syscalls; Task.cwd; fork copies cwd
+✅ DONE        Phase 3.3  Standalone /bin/ls, /bin/cat, /bin/ps, /bin/cp, /bin/mkdir, /bin/pwd
 ⬡             Phase 3.4  Text editor (/bin/edit)
 ⬡             Phase 4.3  TTY (canonical/raw mode)
 ⬡             Phase 5.2  mmap anonymous
