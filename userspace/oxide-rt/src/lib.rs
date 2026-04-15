@@ -902,6 +902,224 @@ pub fn comp_blit_shm(
     msgsnd(COMPOSITOR_QID, 5, &d); // MSG_BLIT_SHM = 5
 }
 
+// ── GUI process API ──────────────────────────────────────────────────────────
+//
+// These syscalls let a userspace program create its own window, draw into it,
+// and receive keyboard / mouse events — without sharing the compositor queue.
+//
+// # Lifecycle
+// ```
+// let win = gui_create("My App", 640, 480).unwrap();
+// loop {
+//     // draw
+//     gui_fill_rect(win, 0, 0, 640, 480, 0xFF1A1A2E);
+//     gui_draw_text(win, 10, 10, 0xFFFFFFFF, "Hello!");
+//     gui_present(win);
+//     // handle events
+//     while let Some(ev) = gui_poll_event(win) {
+//         if ev.is_close() { exit(0); }
+//     }
+//     sleep_ms(16);
+// }
+// ```
+
+// GUI syscall numbers (must match kernel/src/kernel/syscall_core.rs)
+mod gui_sys {
+    pub const GUI_CREATE:     u64 = 125;
+    pub const GUI_DESTROY:    u64 = 126;
+    pub const GUI_FILL_RECT:  u64 = 127;
+    pub const GUI_DRAW_TEXT:  u64 = 128;
+    pub const GUI_PRESENT:    u64 = 129;
+    pub const GUI_POLL_EVENT: u64 = 130;
+    pub const GUI_GET_SIZE:   u64 = 131;
+    pub const GUI_BLIT_SHM:   u64 = 132;
+}
+
+/// A raw GUI event as written by the kernel.
+///
+/// `kind` values:
+/// - 0 = key press (`data[0]` = ASCII byte)
+/// - 1 = mouse move (`data[0..2]` = x u16 LE, `data[2..4]` = y u16 LE)
+/// - 2 = mouse button (`data[0..2]` = x, `data[2..4]` = y, `data[4]` = button, `data[5]` = pressed)
+/// - 3 = focus change (`data[0]` = 1 gained / 0 lost)
+/// - 4 = close request
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct GuiEvent {
+    pub kind: u32,
+    pub data: [u8; 12],
+}
+
+impl GuiEvent {
+    pub const KEY:        u32 = 0;
+    pub const MOUSE_MOVE: u32 = 1;
+    pub const MOUSE_BTN:  u32 = 2;
+    pub const FOCUS:      u32 = 3;
+    pub const CLOSE:      u32 = 4;
+
+    const fn zero() -> Self { Self { kind: 0, data: [0; 12] } }
+
+    /// Returns the key byte if this is a key event.
+    #[inline]
+    pub fn as_key(&self) -> Option<u8> {
+        if self.kind == Self::KEY { Some(self.data[0]) } else { None }
+    }
+
+    /// Returns (x, y) if this is a mouse-move event.
+    #[inline]
+    pub fn as_mouse_move(&self) -> Option<(u16, u16)> {
+        if self.kind != Self::MOUSE_MOVE { return None; }
+        let x = u16::from_le_bytes([self.data[0], self.data[1]]);
+        let y = u16::from_le_bytes([self.data[2], self.data[3]]);
+        Some((x, y))
+    }
+
+    /// Returns (x, y, button, pressed) if this is a mouse-button event.
+    #[inline]
+    pub fn as_mouse_btn(&self) -> Option<(u16, u16, u8, bool)> {
+        if self.kind != Self::MOUSE_BTN { return None; }
+        let x       = u16::from_le_bytes([self.data[0], self.data[1]]);
+        let y       = u16::from_le_bytes([self.data[2], self.data[3]]);
+        let button  = self.data[4];
+        let pressed = self.data[5] != 0;
+        Some((x, y, button, pressed))
+    }
+
+    /// Returns `Some(true)` if focus gained, `Some(false)` if lost.
+    #[inline]
+    pub fn as_focus(&self) -> Option<bool> {
+        if self.kind == Self::FOCUS { Some(self.data[0] != 0) } else { None }
+    }
+
+    /// True if this is a close request.
+    #[inline]
+    pub fn is_close(&self) -> bool { self.kind == Self::CLOSE }
+}
+
+/// A handle to a GUI window.  Drop (or call `gui_destroy`) to remove it.
+#[derive(Copy, Clone)]
+pub struct GuiWindow {
+    pub id:     i32,
+    pub width:  u32,
+    pub height: u32,
+}
+
+/// Create a window titled `title` with `width` × `height` content area.
+/// Returns `None` if the kernel could not create the window.
+#[inline]
+pub fn gui_create(title: &str, width: u32, height: u32) -> Option<GuiWindow> {
+    let b = title.as_bytes();
+    // arg1=title_ptr, arg2=title_len, arg3=packed(w,h)
+    let packed_wh = (width as u64) | ((height as u64) << 32);
+    let r = unsafe {
+        raw::syscall3(gui_sys::GUI_CREATE, b.as_ptr() as u64, b.len() as u64, packed_wh)
+    };
+    if r < 0 { return None; }
+    // Read back the actual content size
+    let mut cw = 0u32;
+    let mut ch = 0u32;
+    let _ = unsafe {
+        raw::syscall4(gui_sys::GUI_GET_SIZE,
+            r as u64,
+            &mut cw as *mut u32 as u64,
+            &mut ch as *mut u32 as u64,
+            0)
+    };
+    if cw == 0 { cw = width; }
+    if ch == 0 { ch = height; }
+    Some(GuiWindow { id: r as i32, width: cw, height: ch })
+}
+
+/// Destroy the window, removing it from the screen.
+#[inline]
+pub fn gui_destroy(win: GuiWindow) {
+    unsafe { raw::syscall1(gui_sys::GUI_DESTROY, win.id as u64) };
+}
+
+/// Fill a rectangle in the window's content area with `color` (0xAARRGGBB).
+///
+/// Coordinates are relative to the window's top-left content corner.
+#[inline]
+pub fn gui_fill_rect(win: GuiWindow, x: u32, y: u32, w: u32, h: u32, color: u32) {
+    // arg1=win_id, arg2=packed(x,y), arg3=packed(w,h), arg4=color
+    let xy = (x as u64) | ((y as u64) << 32);
+    let wh = (w as u64) | ((h as u64) << 32);
+    unsafe {
+        raw::syscall4(gui_sys::GUI_FILL_RECT, win.id as u64, xy, wh, color as u64)
+    };
+}
+
+/// Draw UTF-8 text at `(x, y)` inside the window's content area.
+#[inline]
+pub fn gui_draw_text(win: GuiWindow, x: u32, y: u32, color: u32, text: &str) {
+    let b = text.as_bytes();
+    // arg1=win_id, arg2=packed(x,y), arg3=color, arg4=text_ptr, arg5=text_len
+    let xy = (x as u64) | ((y as u64) << 32);
+    unsafe {
+        raw::syscall5(gui_sys::GUI_DRAW_TEXT,
+            win.id as u64,
+            xy,
+            color as u64,
+            b.as_ptr() as u64,
+            b.len() as u64)
+    };
+}
+
+/// Signal that the current frame is complete and should be displayed.
+#[inline]
+pub fn gui_present(win: GuiWindow) {
+    unsafe { raw::syscall1(gui_sys::GUI_PRESENT, win.id as u64) };
+}
+
+/// Poll for the next pending event.  Returns `None` if no events are queued.
+#[inline]
+pub fn gui_poll_event(win: GuiWindow) -> Option<GuiEvent> {
+    let mut ev = GuiEvent::zero();
+    let r = unsafe {
+        raw::syscall2(gui_sys::GUI_POLL_EVENT,
+            win.id as u64,
+            &mut ev as *mut GuiEvent as u64)
+    };
+    if r == 0 { Some(ev) } else { None }
+}
+
+/// Query the content area dimensions.  Useful after window creation.
+#[inline]
+pub fn gui_get_size(win: GuiWindow) -> (u32, u32) {
+    let mut w = 0u32;
+    let mut h = 0u32;
+    unsafe {
+        raw::syscall3(gui_sys::GUI_GET_SIZE,
+            win.id as u64,
+            &mut w as *mut u32 as u64,
+            &mut h as *mut u32 as u64)
+    };
+    (w, h)
+}
+
+/// Blit a shared-memory ARGB framebuffer into the window.
+///
+/// `shm_id` is from `shmget()`.  Pixels are packed as 0xAARRGGBB u32 LE.
+/// Stride is assumed to be `src_w` pixels.
+#[inline]
+pub fn gui_blit_shm(
+    win: GuiWindow, shm_id: u32,
+    src_x: u32, src_y: u32, src_w: u32, src_h: u32,
+    dst_x: u32, dst_y: u32,
+) {
+    let src_xy = (src_x as u64) | ((src_y as u64) << 32);
+    let src_wh = (src_w as u64) | ((src_h as u64) << 32);
+    let dst_xy = (dst_x as u64) | ((dst_y as u64) << 32);
+    unsafe {
+        raw::syscall5(gui_sys::GUI_BLIT_SHM,
+            win.id as u64,
+            shm_id as u64,
+            src_xy,
+            src_wh,
+            dst_xy)
+    };
+}
+
 // ── Entry point & panic handler ──────────────────────────────────────────────
 
 unsafe extern "C" {

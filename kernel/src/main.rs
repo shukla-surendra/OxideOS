@@ -386,6 +386,12 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
     let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
     terminal::install_input_hooks();
 
+    // Initialize the per-process GUI subsystem.
+    unsafe { kernel::gui_proc::init(wm, graphics); }
+
+    // Track previous focus to push focus-change events.
+    let mut last_focused_id: Option<usize> = None;
+
     loop {
         // Poll keyboard directly each frame — fallback for VirtualBox where
         // IRQ1 may be unreliable or the output buffer fills without an interrupt.
@@ -411,6 +417,36 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             }
         }
 
+        // Route pending keyboard chars to the focused GUI-proc window (if any).
+        {
+            let focused_now = unsafe { (*wm).get_focused() };
+            unsafe {
+                while let Some(ch) = kernel::gui_proc::pop_pending_key() {
+                    if let Some(wid) = focused_now {
+                        if kernel::gui_proc::is_proc_window(wid as u32) {
+                            kernel::gui_proc::push_key_event(wid as u32, ch);
+                        }
+                    }
+                }
+            }
+            // Emit focus-change events when the focused window changes.
+            if focused_now != last_focused_id {
+                unsafe {
+                    if let Some(old) = last_focused_id {
+                        if kernel::gui_proc::is_proc_window(old as u32) {
+                            kernel::gui_proc::push_focus_event(old as u32, false);
+                        }
+                    }
+                    if let Some(new_id) = focused_now {
+                        if kernel::gui_proc::is_proc_window(new_id as u32) {
+                            kernel::gui_proc::push_focus_event(new_id as u32, true);
+                        }
+                    }
+                }
+                last_focused_id = focused_now;
+            }
+        }
+
         if last_cursor_pos.0 >= 0 {
             graphics.restore_cursor_area(last_cursor_pos.0, last_cursor_pos.1, &saved_pixels);
         }
@@ -429,6 +465,26 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                     needs_redraw = true;
                 }
                 last_cursor_pos = (mx, my);
+
+                // Forward mouse-move to focused GUI-proc window (content-relative).
+                unsafe {
+                    if let Some(wid) = (*wm).get_focused() {
+                        if kernel::gui_proc::is_proc_window(wid as u32) {
+                            const TB: u64 = 31;
+                            if let Some(win) = (*wm).get_window(wid) {
+                                let content_y = win.y + TB;
+                                let mx64 = mx as u64; let my64 = my as u64;
+                                if mx64 >= win.x && mx64 < win.x + win.width
+                                    && my64 >= content_y && my64 < win.y + win.height
+                                {
+                                    let rx = (mx64 - win.x).min(0xFFFF) as u16;
+                                    let ry = (my64 - content_y).min(0xFFFF) as u16;
+                                    kernel::gui_proc::push_mouse_move(wid as u32, rx, ry);
+                                }
+                            }
+                        }
+                    }
+                }
             }
             if left_button && !last_left_button {
                 // Start menu gets first pick — it handles its own button + popup.
@@ -460,6 +516,27 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                             unsafe { (*wm).handle_click(mx as u64, my as u64); }
                         }
                         needs_redraw = true;
+                    }
+                }
+            }
+            // Forward mouse-button events to the focused GUI-proc window.
+            if left_button != last_left_button {
+                unsafe {
+                    if let Some(wid) = (*wm).get_focused() {
+                        if kernel::gui_proc::is_proc_window(wid as u32) {
+                            const TB: u64 = 31;
+                            if let Some(win) = (*wm).get_window(wid) {
+                                let content_y = win.y + TB;
+                                let mx64 = mx as u64; let my64 = my as u64;
+                                if mx64 >= win.x && mx64 < win.x + win.width
+                                    && my64 >= content_y && my64 < win.y + win.height
+                                {
+                                    let rx = (mx64 - win.x).min(0xFFFF) as u16;
+                                    let ry = (my64 - content_y).min(0xFFFF) as u16;
+                                    kernel::gui_proc::push_mouse_btn(wid as u32, rx, ry, 0, left_button);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -533,13 +610,21 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
         // Blit the completed back buffer to the real framebuffer in one pass.
         graphics.present();
 
+        // If any GUI-proc called present this frame, force a redraw next frame.
+        if unsafe { kernel::gui_proc::take_present_flag() } {
+            needs_redraw = true;
+        }
+
         // Run the scheduler: give the next ready task one time slice (~20 ms).
         // Returns Some((pid, exit_code)) when a task permanently exits.
         if let Some((pid, exit_code)) = unsafe { kernel::scheduler::tick() } {
             for term in terminals.iter_mut() {
                 term.on_task_exit(pid, exit_code);
             }
+            // Clean up any GUI windows owned by the exited process.
+            unsafe { kernel::gui_proc::on_process_exit(pid as u32); }
             terminal_dirty = true;
+            needs_redraw   = true;
         }
 
         // Drain any pending task stdout every frame so output appears live.

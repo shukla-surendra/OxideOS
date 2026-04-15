@@ -8,5 +8,6 @@ members = [
     "wget",
     "edit",
     "nc",
+    "filemanager",
 ]
 resolver = "2"

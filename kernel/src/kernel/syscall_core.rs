@@ -68,6 +68,15 @@ pub enum Syscall {
     Shmget        = 110,
     Shmat         = 111,
     Shmdt         = 112,
+    // ── GUI syscalls (125–132) ───────────────────────────────────────────
+    GuiCreate     = 125,
+    GuiDestroy    = 126,
+    GuiFillRect   = 127,
+    GuiDrawText   = 128,
+    GuiPresent    = 129,
+    GuiPollEvent  = 130,
+    GuiGetSize    = 131,
+    GuiBlitShm    = 132,
     Invalid       = u64::MAX,
 }
 
@@ -127,6 +136,14 @@ impl Syscall {
             Self::Shmget        => "shmget",
             Self::Shmat         => "shmat",
             Self::Shmdt         => "shmdt",
+            Self::GuiCreate     => "gui_create",
+            Self::GuiDestroy    => "gui_destroy",
+            Self::GuiFillRect   => "gui_fill_rect",
+            Self::GuiDrawText   => "gui_draw_text",
+            Self::GuiPresent    => "gui_present",
+            Self::GuiPollEvent  => "gui_poll_event",
+            Self::GuiGetSize    => "gui_get_size",
+            Self::GuiBlitShm    => "gui_blit_shm",
             Self::Invalid       => "invalid",
         }
     }
@@ -188,6 +205,14 @@ impl From<u64> for Syscall {
             110 => Self::Shmget,
             111 => Self::Shmat,
             112 => Self::Shmdt,
+            125 => Self::GuiCreate,
+            126 => Self::GuiDestroy,
+            127 => Self::GuiFillRect,
+            128 => Self::GuiDrawText,
+            129 => Self::GuiPresent,
+            130 => Self::GuiPollEvent,
+            131 => Self::GuiGetSize,
+            132 => Self::GuiBlitShm,
             _  => Self::Invalid,
         }
     }
@@ -391,6 +416,28 @@ pub trait SyscallRuntime {
     fn msgrcv_wait(&mut self, _id: u32, _msg_out_ptr: u64) -> i64 { ENOSYS }
     /// Return the number of pending messages in the queue.
     fn msgq_len(&mut self, _id: u32) -> i64 { ENOSYS }
+
+    // ── GUI process syscalls ───────────────────────────────────────────────
+    /// Create a window for this process.  Returns window_id or negative error.
+    unsafe fn gui_create_impl(&mut self, _pid: u64, _title: &[u8], _w: u32, _h: u32) -> i64 { ENOSYS }
+    /// Destroy a window owned by this process.
+    fn gui_destroy_impl(&mut self, _pid: u64, _win_id: u32) -> i64 { ENOSYS }
+    /// Fill a rectangle in the window's content area (window-relative coords).
+    fn gui_fill_rect_impl(&mut self, _pid: u64, _win_id: u32,
+                          _x: u32, _y: u32, _w: u32, _h: u32, _color: u32) -> i64 { ENOSYS }
+    /// Draw text in the window's content area (window-relative coords).
+    unsafe fn gui_draw_text_impl(&mut self, _pid: u64, _win_id: u32,
+                                 _x: u32, _y: u32, _color: u32, _text: &[u8]) -> i64 { ENOSYS }
+    /// Signal that the process is done composing a frame.
+    fn gui_present_impl(&mut self, _pid: u64, _win_id: u32) -> i64 { ENOSYS }
+    /// Read the next pending GUI event.  Returns 0 on success, -EAGAIN if empty.
+    fn gui_poll_event_impl(&mut self, _pid: u64, _win_id: u32, _event_ptr: u64) -> i64 { ENOSYS }
+    /// Write the content-area width and height to `w_ptr` / `h_ptr`.
+    fn gui_get_size_impl(&mut self, _pid: u64, _win_id: u32, _w_ptr: u64, _h_ptr: u64) -> i64 { ENOSYS }
+    /// Blit a shared-memory framebuffer into the window.
+    fn gui_blit_shm_impl(&mut self, _pid: u64, _win_id: u32, _shm_id: u32,
+                         _sx: u32, _sy: u32, _sw: u32, _sh: u32,
+                         _dx: u32, _dy: u32) -> i64 { ENOSYS }
 }
 
 // ── Validation ─────────────────────────────────────────────────────────────
@@ -567,6 +614,55 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
         }
         Syscall::Shmdt => {
             let r = runtime.shmdt_impl(request.arg1);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        // ── GUI syscalls ─────────────────────────────────────────────────
+        Syscall::GuiCreate  => unsafe { sys_gui_create(runtime, request) },
+        Syscall::GuiDestroy => {
+            let pid = runtime.current_pid();
+            let r = runtime.gui_destroy_impl(pid, request.arg1 as u32);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::GuiFillRect => {
+            // Encoding: arg1=win_id, arg2=packed(x,y), arg3=packed(w,h), arg4=color
+            let win_id = request.arg1 as u32;
+            let x      = (request.arg2 & 0xFFFF_FFFF) as u32;
+            let y      = ((request.arg2 >> 32) & 0xFFFF_FFFF) as u32;
+            let w      = (request.arg3 & 0xFFFF_FFFF) as u32;
+            let h      = ((request.arg3 >> 32) & 0xFFFF_FFFF) as u32;
+            let color  = request.arg4 as u32;
+            let pid    = runtime.current_pid();
+            let r = runtime.gui_fill_rect_impl(pid, win_id, x, y, w, h, color);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::GuiDrawText => unsafe { sys_gui_draw_text(runtime, request) },
+        Syscall::GuiPresent  => {
+            let pid = runtime.current_pid();
+            let r = runtime.gui_present_impl(pid, request.arg1 as u32);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::GuiPollEvent => {
+            let pid = runtime.current_pid();
+            let r = runtime.gui_poll_event_impl(pid, request.arg1 as u32, request.arg2);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::GuiGetSize => {
+            let pid = runtime.current_pid();
+            let r = runtime.gui_get_size_impl(pid, request.arg1 as u32, request.arg2, request.arg3);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::GuiBlitShm => {
+            // arg1=win_id, arg2=shm_id, arg3=packed(sx,sy), arg4=packed(sw,sh), arg5=packed(dx,dy)
+            let win_id = request.arg1 as u32;
+            let shm_id = request.arg2 as u32;
+            let sx     = (request.arg3 & 0xFFFF_FFFF) as u32;
+            let sy     = ((request.arg3 >> 32) & 0xFFFF_FFFF) as u32;
+            let sw     = (request.arg4 & 0xFFFF_FFFF) as u32;
+            let sh     = ((request.arg4 >> 32) & 0xFFFF_FFFF) as u32;
+            let dx     = (request.arg5 & 0xFFFF_FFFF) as u32;
+            let dy     = ((request.arg5 >> 32) & 0xFFFF_FFFF) as u32;
+            let pid    = runtime.current_pid();
+            let r = runtime.gui_blit_shm_impl(pid, win_id, shm_id, sx, sy, sw, sh, dx, dy);
             if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
         }
         Syscall::Invalid       => SyscallResult::err(ENOSYS),
@@ -818,5 +914,45 @@ unsafe fn sys_msgrcv_wait<R: SyscallRuntime>(
 
 fn sys_msgq_len<R: SyscallRuntime>(runtime: &mut R, id: u32) -> SyscallResult {
     let r = runtime.msgq_len(id);
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+// ── GUI syscall helpers ────────────────────────────────────────────────────────
+
+/// GuiCreate: arg1=title_ptr, arg2=title_len, arg3=packed(w,h)
+unsafe fn sys_gui_create<R: SyscallRuntime>(
+    runtime: &mut R, request: SyscallRequest,
+) -> SyscallResult {
+    let title_ptr = request.arg1;
+    let title_len = request.arg2 as usize;
+    let width     = (request.arg3 & 0xFFFF_FFFF) as u32;
+    let height    = ((request.arg3 >> 32) & 0xFFFF_FFFF) as u32;
+
+    if let Err(e) = validate_user_range(title_ptr, title_len as u64) {
+        return SyscallResult::err(e);
+    }
+    let title = unsafe { slice::from_raw_parts(title_ptr as *const u8, title_len) };
+    let pid = runtime.current_pid();
+    let r = unsafe { runtime.gui_create_impl(pid, title, width, height) };
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+/// GuiDrawText: arg1=win_id, arg2=packed(x,y), arg3=color, arg4=text_ptr, arg5=text_len
+unsafe fn sys_gui_draw_text<R: SyscallRuntime>(
+    runtime: &mut R, request: SyscallRequest,
+) -> SyscallResult {
+    let win_id   = request.arg1 as u32;
+    let x        = (request.arg2 & 0xFFFF) as u32;
+    let y        = ((request.arg2 >> 32) & 0xFFFF) as u32;
+    let color    = request.arg3 as u32;
+    let text_ptr = request.arg4;
+    let text_len = request.arg5 as usize;
+
+    if let Err(e) = validate_user_range(text_ptr, text_len as u64) {
+        return SyscallResult::err(e);
+    }
+    let text = unsafe { slice::from_raw_parts(text_ptr as *const u8, text_len) };
+    let pid = runtime.current_pid();
+    let r = unsafe { runtime.gui_draw_text_impl(pid, win_id, x, y, color, text) };
     if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
 }

@@ -62,6 +62,9 @@ static mut ARROW_KEY_CALLBACK: Option<ArrowKeyCallback> = None;
 static CALLBACK_ENABLED:       AtomicBool               = AtomicBool::new(false);
 static ARROW_CALLBACK_ENABLED: AtomicBool               = AtomicBool::new(false);
 
+/// Secondary callback for GUI proc key routing (set by `gui_proc::init`).
+static mut GUI_KEY_CALLBACK: Option<unsafe fn(u8)> = None;
+
 pub unsafe fn register_key_callback(callback: KeyCallback) {
     unsafe { KEY_CALLBACK = Some(callback); }
     CALLBACK_ENABLED.store(true, Ordering::Relaxed);
@@ -70,6 +73,12 @@ pub unsafe fn register_key_callback(callback: KeyCallback) {
 pub unsafe fn register_arrow_key_callback(callback: ArrowKeyCallback) {
     unsafe { ARROW_KEY_CALLBACK = Some(callback); }
     ARROW_CALLBACK_ENABLED.store(true, Ordering::Relaxed);
+}
+
+/// Register a secondary key callback that is always called alongside `KEY_CALLBACK`.
+/// Used by `gui_proc` to buffer chars for GUI window event routing.
+pub unsafe fn register_gui_key_callback(callback: unsafe fn(u8)) {
+    unsafe { GUI_KEY_CALLBACK = Some(callback); }
 }
 
 // ============================================================================
@@ -219,6 +228,10 @@ unsafe fn dispatch_unicode(c: char) {
             if let Some(cb) = KEY_CALLBACK {
                 cb(byte);
             }
+        }
+        // Secondary GUI-proc routing callback
+        if let Some(gui_cb) = GUI_KEY_CALLBACK {
+            gui_cb(byte);
         }
     }
 }

@@ -98,6 +98,10 @@ pub static RM: &[u8] =
 pub static MV: &[u8] =
     include_bytes!("../../../userspace/bin/mv.elf");
 
+/// filemanager — GUI file manager with directory navigation.
+pub static FILEMANAGER: &[u8] =
+    include_bytes!("../../../userspace/bin/filemanager.elf");
+
 /// Look up a built-in program by name.
 pub fn find(name: &str) -> Option<&'static [u8]> {
     match name {
@@ -122,9 +126,10 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
         "wget"      => Some(WGET),
         "edit"      => Some(EDIT),
         "nc"        => Some(NC),
-        "rm"        => Some(RM),
-        "mv"        => Some(MV),
-        _           => None,
+        "rm"          => Some(RM),
+        "mv"          => Some(MV),
+        "filemanager" => Some(FILEMANAGER),
+        _             => None,
     }
 }
 
@@ -134,4 +139,5 @@ pub const NAMES: &[&str] = &[
     "fib", "primes", "countdown", "spinner", "filetest",
     "hello_rust", "sh", "terminal",
     "ls", "cat", "ps", "cp", "mkdir", "pwd", "wget", "edit", "nc", "rm", "mv",
+    "filemanager",
 ];

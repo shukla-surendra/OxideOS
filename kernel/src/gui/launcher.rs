@@ -43,24 +43,25 @@ struct Entry {
 
 const ENTRIES: &[Entry] = &[
     // ── Shell / terminal ──────────────────────────────────────
-    Entry { name: "terminal",  desc: "GUI Terminal (IPC)",   accent: 0xFF007ACC, section: 0 },
-    Entry { name: "sh",        desc: "Minimal Shell",        accent: 0xFF1A9A50, section: 0 },
+    Entry { name: "terminal",    desc: "GUI Terminal (IPC)",   accent: 0xFF007ACC, section: 0 },
+    Entry { name: "sh",          desc: "Minimal Shell",        accent: 0xFF1A9A50, section: 0 },
+    Entry { name: "filemanager", desc: "GUI File Manager",     accent: 0xFF8844CC, section: 0 },
     // ── Rust programs ─────────────────────────────────────────
-    Entry { name: "hello_rust",desc: "Hello from Rust",      accent: 0xFFCC6633, section: 1 },
-    Entry { name: "sysinfo",   desc: "System Information",   accent: 0xFF3399AA, section: 1 },
-    Entry { name: "fib",       desc: "Fibonacci Sequence",   accent: 0xFF2277CC, section: 1 },
-    Entry { name: "primes",    desc: "Primes up to 100",     accent: 0xFF227788, section: 1 },
+    Entry { name: "hello_rust",  desc: "Hello from Rust",      accent: 0xFFCC6633, section: 1 },
+    Entry { name: "sysinfo",     desc: "System Information",   accent: 0xFF3399AA, section: 1 },
+    Entry { name: "fib",         desc: "Fibonacci Sequence",   accent: 0xFF2277CC, section: 1 },
+    Entry { name: "primes",      desc: "Primes up to 100",     accent: 0xFF227788, section: 1 },
     // ── ASM demos ─────────────────────────────────────────────
-    Entry { name: "hello",     desc: "Hello World (asm)",    accent: 0xFF886644, section: 1 },
-    Entry { name: "counter",   desc: "Count 1 – 9",          accent: 0xFF446688, section: 1 },
-    Entry { name: "countdown", desc: "Countdown 10 → 1",     accent: 0xFF996633, section: 1 },
-    Entry { name: "spinner",   desc: "Spinner Animation",    accent: 0xFF886699, section: 1 },
-    Entry { name: "filetest",  desc: "File I/O Demo",        accent: 0xFF885533, section: 1 },
+    Entry { name: "hello",       desc: "Hello World (asm)",    accent: 0xFF886644, section: 1 },
+    Entry { name: "counter",     desc: "Count 1 – 9",          accent: 0xFF446688, section: 1 },
+    Entry { name: "countdown",   desc: "Countdown 10 → 1",     accent: 0xFF996633, section: 1 },
+    Entry { name: "spinner",     desc: "Spinner Animation",    accent: 0xFF886699, section: 1 },
+    Entry { name: "filetest",    desc: "File I/O Demo",        accent: 0xFF885533, section: 1 },
     // ── Interactive ───────────────────────────────────────────
-    Entry { name: "input",     desc: "Stdin Echo (Ctrl-C)",  accent: 0xFF558844, section: 2 },
+    Entry { name: "input",       desc: "Stdin Echo (Ctrl-C)",  accent: 0xFF558844, section: 2 },
 ];
 
-const SECTION_LABELS: &[&str] = &["Shell / Terminal", "Programs", "Interactive"];
+const SECTION_LABELS: &[&str] = &["Shell / Terminal / GUI", "Programs", "Interactive"];
 
 // ── Launcher application ──────────────────────────────────────────────────────
 

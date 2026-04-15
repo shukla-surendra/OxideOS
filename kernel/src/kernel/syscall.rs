@@ -730,6 +730,44 @@ impl SyscallRuntime for KernelRuntime {
     fn msgq_len(&mut self, id: u32) -> i64 {
         unsafe { crate::kernel::ipc::msgq_len(id) }
     }
+
+    // ── GUI process syscalls ───────────────────────────────────────────────
+
+    unsafe fn gui_create_impl(&mut self, pid: u64, title: &[u8], w: u32, h: u32) -> i64 {
+        unsafe { crate::kernel::gui_proc::create_window(pid as u32, title, w, h) }
+    }
+
+    fn gui_destroy_impl(&mut self, pid: u64, win_id: u32) -> i64 {
+        unsafe { crate::kernel::gui_proc::destroy_window(pid as u32, win_id) }
+    }
+
+    fn gui_fill_rect_impl(&mut self, pid: u64, win_id: u32,
+                          x: u32, y: u32, w: u32, h: u32, color: u32) -> i64 {
+        unsafe { crate::kernel::gui_proc::fill_rect(pid as u32, win_id, x, y, w, h, color) }
+    }
+
+    unsafe fn gui_draw_text_impl(&mut self, pid: u64, win_id: u32,
+                                 x: u32, y: u32, color: u32, text: &[u8]) -> i64 {
+        unsafe { crate::kernel::gui_proc::draw_text(pid as u32, win_id, x, y, color, text) }
+    }
+
+    fn gui_present_impl(&mut self, pid: u64, win_id: u32) -> i64 {
+        unsafe { crate::kernel::gui_proc::present(pid as u32, win_id) }
+    }
+
+    fn gui_poll_event_impl(&mut self, pid: u64, win_id: u32, event_ptr: u64) -> i64 {
+        unsafe { crate::kernel::gui_proc::poll_event(pid as u32, win_id, event_ptr) }
+    }
+
+    fn gui_get_size_impl(&mut self, pid: u64, win_id: u32, w_ptr: u64, h_ptr: u64) -> i64 {
+        unsafe { crate::kernel::gui_proc::get_size(pid as u32, win_id, w_ptr, h_ptr) }
+    }
+
+    fn gui_blit_shm_impl(&mut self, pid: u64, win_id: u32, shm_id: u32,
+                         sx: u32, sy: u32, sw: u32, sh: u32, dx: u32, dy: u32) -> i64 {
+        unsafe { crate::kernel::gui_proc::blit_shm(pid as u32, win_id, shm_id,
+                                                    sx, sy, sw, sh, dx, dy) }
+    }
 }
 
 // ── exec helpers (not part of the trait; called via exec_program) ─────────
