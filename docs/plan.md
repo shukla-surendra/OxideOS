@@ -301,6 +301,44 @@ $ wget http://example.com
 - IPC message queue implemented (`kernel/src/kernel/ipc.rs`)
 - Compositor protocol: CreateWindow, DrawRect, PresentCanvas, DestroyWindow
 
+### 8.4a Terminal Architecture Fix ← TOP PRIORITY
+
+**Problem:** `kernel/src/gui/terminal.rs` runs entirely in Ring 0 (kernel space).
+It directly accesses keyboard, RamFS, timers, and the graphics stack, and executes
+commands (ls, cat, mkdir, etc.) inside the kernel. A bug or panic there crashes the
+entire OS. This is the firmware/single-process model — wrong for a real OS.
+
+**Correct architecture (already partially built):**
+```
+Hardware (keyboard/framebuffer)
+       ↓  syscalls only
+  [KERNEL] — thin PTY/pipe layer
+       ↓  getchar / comp_* syscalls
+  [userspace/terminal]  ← GUI terminal emulator (Ring 3)
+       ↓  fork + pipe
+  [userspace/sh]        ← shell (Ring 3)
+       ↓  fork + exec
+  [userspace programs]  ← ls, cat, etc. (Ring 3)
+```
+
+**Steps:**
+1. **Demote `kernel/src/gui/terminal.rs`** to a panic/early-boot debug console only.
+   Remove all command handling, RamFS access, and feature additions from it.
+2. **Boot into `userspace/terminal` by default** — kernel launches it as the first
+   userspace process instead of running the kernel terminal.
+3. **Move remaining kernel-terminal built-ins into userspace** — any command still
+   handled inside `kernel/src/gui/terminal.rs` (e.g. `run`, `sysinfo`, `reboot`)
+   must become either a coreutil binary or a shell built-in.
+4. **Verify stdout routing** — programs spawned by `userspace/terminal` via
+   fork/exec must have their stdout piped back so output appears in the terminal
+   window. The `pipe`/`dup2` syscalls are already in place.
+
+**Files affected:**
+- `kernel/src/gui/terminal.rs` — strip to debug-only
+- `kernel/src/kernel/programs.rs` — remove kernel-side command dispatch
+- `userspace/terminal/src/main.rs` — promote to primary terminal
+- `userspace/sh/src/main.rs` — promote to primary shell
+
 ### 8.4 Userspace GUI applications ← TODO
 
 | App | Description |
@@ -354,6 +392,8 @@ $ wget http://example.com
 ✅ DONE        Phase 2.3  FAT16 subdirectory support (traverse, open, list, mkdir in subdirs)
 ✅ DONE        Phase 3.6  chdir(72)/getcwd(73)/mkdir(71) syscalls; Task.cwd; fork copies cwd
 ✅ DONE        Phase 3.3  Standalone /bin/ls, /bin/cat, /bin/ps, /bin/cp, /bin/mkdir, /bin/pwd
+
+🔴 TOP PRIORITY  Terminal Architecture Fix (see Phase 8.4a below)
 ⬡             Phase 3.4  Text editor (/bin/edit)
 ⬡             Phase 4.3  TTY (canonical/raw mode)
 ⬡             Phase 5.2  mmap anonymous
