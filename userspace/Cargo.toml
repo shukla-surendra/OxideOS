@@ -6,5 +6,7 @@ members = [
     "terminal",
     "coreutils",
     "wget",
+    "edit",
+    "nc",
 ]
 resolver = "2"

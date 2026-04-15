@@ -14,6 +14,8 @@
 //! | `/dev/…`   | DevNull  | (catch-all)
 //! | `/disk/…`  | FAT16    |
 //! | `/disk`     | FAT16    |
+//! | `/ext2/…`  | ext2     |
+//! | `/ext2`     | ext2     |
 //! | `/`         | RamFS    |
 
 use crate::kernel::fs::ramfs::FdBackend;
@@ -27,6 +29,8 @@ pub enum Resolved<'a> {
     /// Route to the FAT16 driver; `fat_path` is the full original path
     /// (the FAT driver strips the `/disk` prefix itself).
     Fat16 { fat_path: &'a [u8] },
+    /// Route to the ext2 driver on the secondary disk.
+    Ext2 { path: &'a [u8] },
     /// Route to a device-file backend.
     Dev { backend: FdBackend },
 }
@@ -49,6 +53,11 @@ pub fn resolve<'a>(path: &'a str) -> Resolved<'a> {
     // /disk or /disk/…  → FAT16
     if path == "/disk" || path.starts_with("/disk/") {
         return Resolved::Fat16 { fat_path: path.as_bytes() };
+    }
+
+    // /ext2 or /ext2/…  → ext2 on secondary disk
+    if path == "/ext2" || path.starts_with("/ext2/") {
+        return Resolved::Ext2 { path: path.as_bytes() };
     }
 
     // Everything else → RamFS
@@ -84,6 +93,13 @@ pub unsafe fn vfs_open(path: &str, flags: u32) -> i64 {
             (*fdt).open_fat(raw_fd as i32, writable)
         }
 
+        Resolved::Ext2 { path: ext2_path } => {
+            if !crate::kernel::ext2::is_ready() { return -19; } // ENODEV
+            let raw_fd = unsafe { crate::kernel::ext2::open(ext2_path) };
+            if raw_fd < 0 { return raw_fd; }
+            (*fdt).open_ext2(raw_fd as i32)
+        }
+
         Resolved::RamFS { path } => {
             match crate::kernel::fs::ramfs::RAMFS.get() {
                 Some(fs) => (*fdt).open(fs, path, flags),
@@ -112,6 +128,10 @@ pub fn vfs_readdir(path: &str, buf: &mut [u8]) -> i64 {
                 None      => -7, // ENOENT
             }
         }
+        Resolved::Ext2 { path: ext2_path } => {
+            if !crate::kernel::ext2::is_ready() { return -19; }
+            unsafe { crate::kernel::ext2::list_dir_raw(ext2_path, buf) }
+        }
         Resolved::RamFS { path } => {
             match unsafe { crate::kernel::fs::ramfs::RAMFS.get() } {
                 Some(fs) => fs.read_dir_raw(path, buf),
@@ -130,6 +150,7 @@ pub unsafe fn vfs_mkdir(path: &str) -> i64 {
             if !crate::kernel::ata::is_present() { return -19; }
             unsafe { crate::kernel::fat::mkdir(fat_path) }
         }
+        Resolved::Ext2 { .. } => -1, // EPERM: ext2 is read-only
         Resolved::RamFS { path } => {
             match unsafe { crate::kernel::fs::ramfs::RAMFS.get() } {
                 Some(fs) => fs.create_dir(path).map(|_| 0i64).unwrap_or(-1),
@@ -154,6 +175,11 @@ pub unsafe fn vfs_chdir(path: &str) -> i64 {
             // Root of disk ("/disk") is always valid; otherwise check.
             fat_path == b"/disk" || fat_path == b"/disk/"
             || unsafe { crate::kernel::fat::resolve_dir(fat_path).is_some() }
+        }
+        Resolved::Ext2 { path: ext2_path } => {
+            crate::kernel::ext2::is_ready()
+            && (ext2_path == b"/ext2" || ext2_path == b"/ext2/"
+                || unsafe { crate::kernel::ext2::is_dir(ext2_path) })
         }
         Resolved::RamFS { path: rpath } => {
             rpath == "/"
@@ -246,6 +272,35 @@ pub unsafe fn vfs_stat(path: &str, out: *mut FileStat) -> i64 {
                 // Seek to end to obtain file size.
                 let size = crate::kernel::fat::file_size(fd) as u64;
                 crate::kernel::fat::close(fd);
+                (*out).size = size;
+                (*out).kind = StatKind::File as u32;
+                (*out)._pad = 0;
+                0
+            }
+
+            Resolved::Ext2 { path: ext2_path } => {
+                if !crate::kernel::ext2::is_ready() { return -19; }
+                if ext2_path == b"/ext2" || ext2_path == b"/ext2/"
+                    || crate::kernel::ext2::is_dir(ext2_path)
+                {
+                    (*out).size = 0;
+                    (*out).kind = StatKind::Directory as u32;
+                    (*out)._pad = 0;
+                    return 0;
+                }
+                // Try opening as file to get its size.
+                let fd = crate::kernel::ext2::open(ext2_path);
+                if fd < 0 { return -7; }
+                let fd = fd as i32;
+                // Read all to count size (simple approach for now).
+                let mut tmp = [0u8; 512];
+                let mut size = 0u64;
+                loop {
+                    let n = crate::kernel::ext2::read_fd(fd, &mut tmp);
+                    if n <= 0 { break; }
+                    size += n as u64;
+                }
+                crate::kernel::ext2::close(fd);
                 (*out).size = size;
                 (*out).kind = StatKind::File as u32;
                 (*out)._pad = 0;

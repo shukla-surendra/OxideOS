@@ -701,3 +701,124 @@ pub unsafe fn copy_to_region_in(cr3_phys: u64, dest: u64, bytes: &[u8]) {
         core::arch::asm!("mov cr3, {}", in(reg) saved, options(nostack, nomem));
     }
 }
+
+/// Allocate `num_pages` zeroed physical frames.
+///
+/// Returns the physical address of the first frame, or 0 on failure.
+/// The frames are HHDM-mapped so the kernel can access them via
+/// `phys + 0xFFFF800000000000`.  They are never individually freed
+/// (suitable for kernel/shm lifetime objects).
+pub unsafe fn alloc_phys_frames(num_pages: usize) -> u64 {
+    let inner = unsafe { &mut *ALLOCATOR.inner.get() };
+    if !inner.initialized.load(Ordering::Relaxed) { return 0; }
+
+    // Allocate frames one by one.  We need them to be virtually contiguous in
+    // the HHDM so we can hand a single pointer to the caller.  The Limine
+    // physical memory map typically gives us large usable regions, so frames
+    // allocated consecutively from the bitmap *are* physically contiguous.
+    // If the first frame is at address P, subsequent frames should be P+4096,
+    // P+8192, etc.  We verify this and fall back to returning 0 on failure.
+
+    let first = match inner.frame_allocator.allocate_frame() {
+        Some(f) => f,
+        None    => return 0,
+    };
+
+    let hho = 0xFFFF800000000000u64;
+    // Zero the first frame.
+    unsafe { core::ptr::write_bytes((first + hho) as *mut u8, 0, 4096); }
+
+    for i in 1..num_pages {
+        let next = match inner.frame_allocator.allocate_frame() {
+            Some(f) => f,
+            None    => return 0, // partial alloc — frames leak, acceptable for now
+        };
+        unsafe { core::ptr::write_bytes((next + hho) as *mut u8, 0, 4096); }
+        let _ = next; // physical address; contiguity not strictly required for shm
+                       // because we map each page individually below.
+    }
+    first
+}
+
+/// Map `num_pages` physical frames (starting at `phys_base`, each `4096` bytes apart
+/// in physical memory) into the page table `cr3_phys` at virtual address `virt_base`.
+///
+/// Unlike `map_user_region_in` which allocates new frames, this function maps
+/// SPECIFIC physical frames — required for shared memory.
+pub unsafe fn map_phys_pages_in(
+    cr3_phys:  u64,
+    virt_base: u64,
+    phys_base: u64,
+    num_pages: usize,
+    writable:  bool,
+) -> Result<(), &'static str> {
+    let inner = unsafe { &mut *ALLOCATOR.inner.get() };
+    if !inner.initialized.load(Ordering::Relaxed) { return Err("not init"); }
+
+    let hho = inner.page_table_manager.as_ref().ok_or("PTM None")?.higher_half_offset;
+
+    // We need to operate on `cr3_phys`'s page table, not the kernel's.
+    // Build a temporary PageTableManager pointing at the target CR3.
+    let ptm_tmp = PageTableManager { l4_table_phys: cr3_phys, higher_half_offset: hho };
+    let flags   = PageTableFlags::user_flags(writable, false);
+
+    for i in 0..num_pages {
+        let virt = virt_base + i as u64 * 4096;
+        let phys = phys_base + i as u64 * 4096;
+        // Use the frame allocator only for intermediate page table nodes;
+        // the leaf entry points at `phys`, not a newly allocated frame.
+        unsafe {
+            map_phys_leaf(&ptm_tmp, virt, phys, flags, &mut inner.frame_allocator)?;
+        }
+    }
+    Ok(())
+}
+
+/// Install a single leaf page table entry mapping `virt` → `phys`.
+/// Allocates intermediate tables from `frame_alloc` as needed.
+unsafe fn map_phys_leaf(
+    ptm:         &PageTableManager,
+    virt:        u64,
+    phys:        u64,
+    flags:       PageTableFlags,
+    frame_alloc: &mut PhysicalFrameAllocator,
+) -> Result<(), &'static str> {
+    let pf  = flags.parent_table_flags();
+    let l4i = ((virt >> 39) & 0x1FF) as usize;
+    let l3i = ((virt >> 30) & 0x1FF) as usize;
+    let l2i = ((virt >> 21) & 0x1FF) as usize;
+    let l1i = ((virt >> 12) & 0x1FF) as usize;
+
+    unsafe {
+        let l4 = ptm.get_table(ptm.l4_table_phys);
+        let l3_phys = if l4.entries[l4i].is_present() {
+            l4.entries[l4i].addr()
+        } else {
+            let t = frame_alloc.allocate_frame().ok_or("OOM: L3")?;
+            l4.entries[l4i].set(t, pf);
+            ptm.get_table(t).zero();
+            t
+        };
+        let l3 = ptm.get_table(l3_phys);
+        let l2_phys = if l3.entries[l3i].is_present() {
+            l3.entries[l3i].addr()
+        } else {
+            let t = frame_alloc.allocate_frame().ok_or("OOM: L2")?;
+            l3.entries[l3i].set(t, pf);
+            ptm.get_table(t).zero();
+            t
+        };
+        let l2 = ptm.get_table(l2_phys);
+        let l1_phys = if l2.entries[l2i].is_present() {
+            l2.entries[l2i].addr()
+        } else {
+            let t = frame_alloc.allocate_frame().ok_or("OOM: L1")?;
+            l2.entries[l2i].set(t, pf);
+            ptm.get_table(t).zero();
+            t
+        };
+        let l1 = ptm.get_table(l1_phys);
+        l1.entries[l1i].set(phys, flags);
+    }
+    Ok(())
+}

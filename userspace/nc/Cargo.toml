@@ -1,0 +1,17 @@
+[package]
+name = "nc"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "nc"
+path = "src/main.rs"
+
+[dependencies]
+oxide-rt = { path = "../oxide-rt" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

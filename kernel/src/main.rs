@@ -31,7 +31,7 @@ use gui::start_menu::StartMenu;
 use core::ptr;
 
 use limine::BaseRevision;
-use limine::request::{FramebufferRequest, MemoryMapRequest, RequestsEndMarker, RequestsStartMarker};
+use limine::request::{FramebufferRequest, MemoryMapRequest, RsdpRequest, RequestsEndMarker, RequestsStartMarker};
 
 // ============================================================================
 // LIMINE REQUESTS
@@ -48,6 +48,10 @@ static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
 #[used]
 #[unsafe(link_section = ".requests")]
 static MEMORY_MAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
+
+#[used]
+#[unsafe(link_section = ".requests")]
+pub static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
 
 #[used]
 #[unsafe(link_section = ".requests_start_marker")]
@@ -180,6 +184,33 @@ unsafe extern "C" fn kmain() -> ! {
         crate::kernel::ata::init();
         crate::kernel::fat::init();
 
+        // Secondary ATA bus (for ext2 disk) — probe after primary is stable
+        crate::kernel::ata::init_secondary();
+
+        // MBR partition table — parse primary disk layout
+        crate::kernel::mbr::init();
+
+        // ext2 read-only filesystem on secondary disk
+        {
+            use crate::kernel::mbr::{PTYPE_LINUX};
+            let part_lba = unsafe {
+                use crate::kernel::mbr::MBR;
+                if !(*core::ptr::addr_of!(MBR)).whole_disk {
+                    let mut lba = 0u32;
+                    for entry in &(*core::ptr::addr_of!(MBR)).entries {
+                        if entry.partition_type == PTYPE_LINUX && entry.start_lba > 0 {
+                            lba = entry.start_lba;
+                            break;
+                        }
+                    }
+                    lba
+                } else {
+                    0 // treat whole secondary disk as ext2
+                }
+            };
+            crate::kernel::ext2::init(part_lba);
+        }
+
         // Network (optional — silently skipped if no RTL8139 is found)
         crate::kernel::net::init();
 
@@ -254,6 +285,20 @@ unsafe fn init_interrupt_system() {
     SERIAL_PORT.write_str("Step 7: Testing interrupt system...\n");
     test_64bit_interrupts();
     SERIAL_PORT.write_str("✓ 64-bit interrupt system fully operational\n");
+
+    SERIAL_PORT.write_str("Step 8: Enabling SYSCALL/SYSRET fast path...\n");
+    unsafe { crate::kernel::syscall_handler::init(); }
+    SERIAL_PORT.write_str("  ✓ SYSCALL/SYSRET enabled\n");
+
+    SERIAL_PORT.write_str("Step 9: Enabling SMEP (Supervisor Mode Execution Prevention)...\n");
+    unsafe {
+        // CR4.SMEP = bit 20 — prevents kernel from executing user-space pages.
+        let mut cr4: u64;
+        asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+        cr4 |= 1 << 20;
+        asm!("mov cr4, {}", in(reg) cr4, options(nomem, nostack, preserves_flags));
+    }
+    SERIAL_PORT.write_str("  ✓ SMEP enabled\n");
 }
 
 // ============================================================================
@@ -429,11 +474,6 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             last_right_button = right_button;
         }
 
-        // Let compositor process any draw commands from userspace terminal.
-        if unsafe { kernel::compositor::process_messages() } {
-            terminal_dirty = true;
-        }
-
         // Tick the launcher highlight animation; force redraw if it changed.
         if launcher_app.tick() {
             needs_redraw = true;
@@ -465,12 +505,24 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             needs_redraw   = false;
             terminal_dirty = false;
         } else if terminal_dirty {
-            // Redraw all terminal windows that may have changed.
+            // Redraw kernel-terminal windows that changed.
+            // Skip compositor-mode windows — the compositor overlays them below.
             for term in terminals.iter() {
-                unsafe { (*wm).draw_window(graphics, term.window_id()); }
-                term.draw(graphics, unsafe { &*wm });
+                if !term.is_compositor_mode() {
+                    unsafe { (*wm).draw_window(graphics, term.window_id()); }
+                    term.draw(graphics, unsafe { &*wm });
+                }
             }
             terminal_dirty = false;
+        }
+
+        // Process compositor IPC messages AFTER the draw section so that
+        // userspace-terminal output overlays the freshly-drawn window frames
+        // rather than being overwritten by them.
+        if unsafe { kernel::compositor::process_messages() } {
+            // Don't set terminal_dirty here — compositor content is already
+            // applied to the backbuffer and will be presented this frame.
+            // Kernel-terminal dirty redraws happen separately above.
         }
 
         if let Some((mx, my)) = cursor_pos {

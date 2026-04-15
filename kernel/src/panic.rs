@@ -1,8 +1,7 @@
 //! Enhanced Kernel Panic Handler
 //!
-//! This module handles kernel panics with proper message formatting
-//! and detailed error reporting.
-
+//! This module handles kernel panics with proper message formatting,
+//! detailed error reporting, and a Blue-Screen-of-Death framebuffer display.
 
 use core::panic::PanicInfo;
 use core::arch::asm;
@@ -76,6 +75,9 @@ pub fn panic_handler(info: &PanicInfo) -> ! {
         // Final log entry
         LOGGER.error("System halted due to kernel panic - restart required");
     }
+
+    // Draw BSoD on framebuffer (best effort — silently skips if not initialised).
+    draw_bsod(info);
 
     // Halt the CPU indefinitely
     halt_system();
@@ -215,6 +217,177 @@ unsafe fn print_hex64(mut value: u64) {
     for j in (0..16).rev() {
         SERIAL_PORT.write_byte(digits[j]);
     }
+}
+
+// ── BSoD framebuffer renderer ──────────────────────────────────────────────────
+
+/// 8×8 bitmap font (printable ASCII 32–126).
+/// We inline a tiny subset here so we don't depend on the GUI font module
+/// (which may not be available or may have panicked itself).
+fn bsod_glyph(ch: u8) -> [u8; 8] {
+    // Use the same ASCII_FONT from gui::fonts if accessible, otherwise a box.
+    crate::gui::fonts::ascii_glyph(ch)
+}
+
+/// Draw a single character directly to the framebuffer (no back-buffer).
+unsafe fn bsod_putchar(fb: *mut u32, pitch_px: usize, x: usize, y: usize, ch: u8, fg: u32, bg: u32) {
+    let glyph = bsod_glyph(ch);
+    for row in 0..8usize {
+        let bits = glyph[row];
+        for col in 0..8usize {
+            let color = if (bits >> (7 - col)) & 1 != 0 { fg } else { bg };
+            unsafe { fb.add((y + row) * pitch_px + x + col).write_volatile(color); }
+        }
+    }
+}
+
+/// Draw a string at (x, y) in 8×8 font directly to the framebuffer.
+unsafe fn bsod_puts(fb: *mut u32, pitch_px: usize, x: &mut usize, y: usize, s: &str, fg: u32, bg: u32) {
+    for &b in s.as_bytes() {
+        if b == b'\n' { break; }
+        unsafe { bsod_putchar(fb, pitch_px, *x, y, b, fg, bg); }
+        *x += 8;
+    }
+}
+
+/// Write a decimal number as ASCII.
+unsafe fn bsod_putu64(fb: *mut u32, pitch_px: usize, x: &mut usize, y: usize, mut v: u64, fg: u32, bg: u32) {
+    if v == 0 {
+        unsafe { bsod_putchar(fb, pitch_px, *x, y, b'0', fg, bg); }
+        *x += 8;
+        return;
+    }
+    let mut buf = [0u8; 20];
+    let mut i = 20usize;
+    while v > 0 && i > 0 {
+        i -= 1;
+        buf[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+    }
+    for &d in &buf[i..] {
+        unsafe { bsod_putchar(fb, pitch_px, *x, y, d, fg, bg); }
+        *x += 8;
+    }
+}
+
+/// Write a 64-bit hex number (16 digits, no prefix).
+unsafe fn bsod_hex64(fb: *mut u32, pitch_px: usize, x: &mut usize, y: usize, v: u64, fg: u32, bg: u32) {
+    let hex = b"0123456789ABCDEF";
+    for shift in (0..16).rev() {
+        let nibble = ((v >> (shift * 4)) & 0xF) as usize;
+        unsafe { bsod_putchar(fb, pitch_px, *x, y, hex[nibble], fg, bg); }
+        *x += 8;
+    }
+}
+
+/// Fill a rectangle directly on the framebuffer.
+unsafe fn bsod_fill(fb: *mut u32, pitch_px: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
+    for row in y..y+h {
+        for col in x..x+w {
+            unsafe { fb.add(row * pitch_px + col).write_volatile(color); }
+        }
+    }
+}
+
+/// Render a full Blue-Screen-of-Death on the framebuffer.
+fn draw_bsod(info: &PanicInfo) {
+    let pfb = unsafe { crate::gui::graphics::PANIC_FB };
+    let fb_info = match pfb { Some(f) => f, None => return };
+
+    let fb       = fb_info.addr;
+    let w        = fb_info.width  as usize;
+    let h        = fb_info.height as usize;
+    let pitch_px = (fb_info.pitch / 4) as usize;
+
+    // Palette
+    const BG:     u32 = 0xFF0000AA; // classic blue
+    const FG:     u32 = 0xFFFFFFFF;
+    const TITLE:  u32 = 0xFFAAAAAA;
+    const ACCENT: u32 = 0xFF00AAAA;
+
+    // Fill background.
+    unsafe { bsod_fill(fb, pitch_px, 0, 0, w, h, BG); }
+
+    let margin = 40usize;
+    let mut cy = margin;
+
+    // Sad face.
+    let msg0 = ":( OxideOS";
+    let mut cx = margin;
+    unsafe { bsod_puts(fb, pitch_px, &mut cx, cy, msg0, ACCENT, BG); }
+    cy += 20;
+
+    // Separator line.
+    unsafe { bsod_fill(fb, pitch_px, margin, cy, w - margin * 2, 2, ACCENT); }
+    cy += 12;
+
+    // Panic message.
+    let pmsg = "KERNEL PANIC";
+    cx = margin;
+    unsafe { bsod_puts(fb, pitch_px, &mut cx, cy, pmsg, FG, BG); }
+    cy += 20;
+
+    // Location: file:line.
+    if let Some(loc) = info.location() {
+        cx = margin;
+        unsafe { bsod_puts(fb, pitch_px, &mut cx, cy, "at ", TITLE, BG); }
+        unsafe { bsod_puts(fb, pitch_px, &mut cx, cy, loc.file(), FG, BG); }
+        unsafe { bsod_puts(fb, pitch_px, &mut cx, cy, ":", TITLE, BG); }
+        unsafe { bsod_putu64(fb, pitch_px, &mut cx, cy, loc.line() as u64, FG, BG); }
+        cy += 16;
+    }
+
+    cy += 8;
+
+    // Register dump.
+    #[cfg(target_arch = "x86_64")]
+    {
+        let (rax, rbx, rcx, rdx, rsi, rdi, rsp, rbp): (u64,u64,u64,u64,u64,u64,u64,u64);
+        unsafe {
+            core::arch::asm!(
+                "mov {rax}, rax",
+                "mov {rbx}, rbx",
+                "mov {rcx}, rcx",
+                "mov {rdx}, rdx",
+                rax = out(reg) rax,
+                rbx = out(reg) rbx,
+                rcx = out(reg) rcx,
+                rdx = out(reg) rdx,
+                options(nostack, nomem)
+            );
+            core::arch::asm!(
+                "mov {rsi}, rsi",
+                "mov {rdi}, rdi",
+                "mov {rsp}, rsp",
+                "mov {rbp}, rbp",
+                rsi = out(reg) rsi,
+                rdi = out(reg) rdi,
+                rsp = out(reg) rsp,
+                rbp = out(reg) rbp,
+                options(nostack, nomem)
+            );
+        }
+
+        let regs: [(&str, u64); 8] = [
+            ("RAX", rax), ("RBX", rbx), ("RCX", rcx), ("RDX", rdx),
+            ("RSI", rsi), ("RDI", rdi), ("RSP", rsp), ("RBP", rbp),
+        ];
+
+        for (i, (name, val)) in regs.iter().enumerate() {
+            cx = margin + (i % 2) * 300;
+            if i % 2 == 0 && i > 0 { cy += 14; }
+            unsafe {
+                bsod_puts(fb, pitch_px, &mut cx, cy, name, TITLE, BG);
+                bsod_puts(fb, pitch_px, &mut cx, cy, ": 0x", TITLE, BG);
+                bsod_hex64(fb, pitch_px, &mut cx, cy, *val, FG, BG);
+            }
+        }
+        cy += 20;
+    }
+
+    cy += 8;
+    cx = margin;
+    unsafe { bsod_puts(fb, pitch_px, &mut cx, cy, "System halted. Please restart.", ACCENT, BG); }
 }
 
 /// Halt the system safely

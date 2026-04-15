@@ -82,6 +82,22 @@ pub static PWD: &[u8] =
 pub static WGET: &[u8] =
     include_bytes!("../../../userspace/bin/wget.elf");
 
+/// edit — nano-like full-screen text editor (compositor IPC, Ctrl+S/Q).
+pub static EDIT: &[u8] =
+    include_bytes!("../../../userspace/bin/edit.elf");
+
+/// nc — minimal netcat: TCP/UDP listen and connect.
+pub static NC: &[u8] =
+    include_bytes!("../../../userspace/bin/nc.elf");
+
+/// rm — remove a file.
+pub static RM: &[u8] =
+    include_bytes!("../../../userspace/bin/rm.elf");
+
+/// mv — rename/move a file.
+pub static MV: &[u8] =
+    include_bytes!("../../../userspace/bin/mv.elf");
+
 /// Look up a built-in program by name.
 pub fn find(name: &str) -> Option<&'static [u8]> {
     match name {
@@ -104,6 +120,10 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
         "mkdir"     => Some(MKDIR),
         "pwd"       => Some(PWD),
         "wget"      => Some(WGET),
+        "edit"      => Some(EDIT),
+        "nc"        => Some(NC),
+        "rm"        => Some(RM),
+        "mv"        => Some(MV),
         _           => None,
     }
 }
@@ -113,5 +133,5 @@ pub const NAMES: &[&str] = &[
     "hello", "counter", "sysinfo", "input",
     "fib", "primes", "countdown", "spinner", "filetest",
     "hello_rust", "sh", "terminal",
-    "ls", "cat", "ps", "cp", "mkdir", "pwd", "wget",
+    "ls", "cat", "ps", "cp", "mkdir", "pwd", "wget", "edit", "nc", "rm", "mv",
 ];

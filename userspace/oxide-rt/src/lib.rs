@@ -184,6 +184,24 @@ pub mod raw {
         }
         ret
     }
+
+    #[inline(always)]
+    pub unsafe fn syscall5(nr: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> i64 {
+        let ret: i64;
+        unsafe {
+            core::arch::asm!(
+                "int 0x80",
+                inlateout("rax") nr => ret,
+                in("rdi") a1,
+                in("rsi") a2,
+                in("rdx") a3,
+                in("r10") a4,
+                in("r8")  a5,
+                options(nostack)
+            );
+        }
+        ret
+    }
 }
 
 // ── Syscall numbers ──────────────────────────────────────────────────────────
@@ -209,14 +227,22 @@ pub mod sys {
     pub const MKDIR:   u64 = 71;
     pub const CHDIR:   u64 = 72;
     pub const GETCWD:  u64 = 73;
-    pub const STAT:    u64 = 74;
-    pub const FSTAT:   u64 = 75;
+    pub const STAT:     u64 = 74;
+    pub const FSTAT:    u64 = 75;
+    pub const UNLINK:   u64 = 76;
+    pub const RENAME:   u64 = 77;
+    pub const TRUNCATE: u64 = 78;
     // Socket syscalls
     pub const SOCKET:       u64 = 100;
+    pub const BIND:         u64 = 101;
     pub const CONNECT:      u64 = 102;
+    pub const LISTEN:       u64 = 103;
+    pub const ACCEPT:       u64 = 104;
     pub const SEND:         u64 = 105;
     pub const RECV:         u64 = 106;
     pub const CLOSE_SOCKET: u64 = 107;
+    pub const SENDTO:       u64 = 108;
+    pub const RECVFROM:     u64 = 109;
     pub const DUP2:    u64 = 81;
     pub const KILL:    u64 = 91;
     pub const MSGQ_CREATE:  u64 = 115;
@@ -225,6 +251,172 @@ pub mod sys {
     pub const MSGQ_DESTROY: u64 = 118;
     pub const MSGRCV_WAIT:  u64 = 119;
     pub const MSGQ_LEN:     u64 = 120;
+    pub const IOCTL:        u64 = 92;
+    pub const SIGACTION:    u64 = 93;
+    pub const SIGRETURN:    u64 = 95;
+    pub const SHMGET:       u64 = 110;
+    pub const SHMAT:        u64 = 111;
+    pub const SHMDT:        u64 = 112;
+    pub const CHMOD:        u64 = 96;
+    pub const CHOWN:        u64 = 97;
+}
+
+// ── TTY / termios structs ─────────────────────────────────────────────────────
+
+/// POSIX termios (matching the kernel layout).
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct Termios {
+    pub c_iflag: u32,
+    pub c_oflag: u32,
+    pub c_cflag: u32,
+    pub c_lflag: u32,
+    pub c_line:  u8,
+    pub c_cc: [u8; 32],
+    _pad: [u8; 3],
+}
+
+impl Termios {
+    pub const fn zeroed() -> Self {
+        Self { c_iflag: 0, c_oflag: 0, c_cflag: 0, c_lflag: 0,
+               c_line: 0, c_cc: [0u8; 32], _pad: [0u8; 3] }
+    }
+}
+
+/// Terminal window size returned by TIOCGWINSZ.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct Winsize {
+    pub ws_row:    u16,
+    pub ws_col:    u16,
+    pub ws_xpixel: u16,
+    pub ws_ypixel: u16,
+}
+
+/// ioctl request codes.
+pub mod ioctl {
+    pub const TCGETS:     u64 = 0x5401;
+    pub const TCSETS:     u64 = 0x5402;
+    pub const TCSETSW:    u64 = 0x5403;
+    pub const TCSETSF:    u64 = 0x5404;
+    pub const TIOCGPGRP:  u64 = 0x540F;
+    pub const TIOCSPGRP:  u64 = 0x5410;
+    pub const TIOCGWINSZ: u64 = 0x5413;
+    pub const TIOCSWINSZ: u64 = 0x5414;
+}
+
+/// Perform an ioctl on `fd`. `arg` is typically a pointer to a struct.
+#[inline]
+pub fn ioctl(fd: i32, request: u64, arg: u64) -> i64 {
+    unsafe { raw::syscall3(sys::IOCTL, fd as u64, request, arg) }
+}
+
+// ── Signal handling ───────────────────────────────────────────────────────────
+
+/// Standard signal numbers.
+pub mod sig {
+    pub const SIGHUP:  u32 = 1;
+    pub const SIGINT:  u32 = 2;
+    pub const SIGQUIT: u32 = 3;
+    pub const SIGKILL: u32 = 9;
+    pub const SIGTERM: u32 = 15;
+    pub const SIGCHLD: u32 = 17;
+    pub const SIGCONT: u32 = 18;
+    pub const SIGSTOP: u32 = 19;
+}
+
+/// Default signal action (terminate the process for most signals).
+pub const SIG_DFL: u64 = 0;
+/// Ignore this signal.
+pub const SIG_IGN: u64 = 1;
+
+/// Type alias for a signal handler function pointer.
+pub type SigHandler = unsafe extern "C" fn(signum: i32);
+
+/// Register a signal handler for `signum`.
+/// `handler` is the user-space function to call, or `SIG_DFL`/`SIG_IGN`.
+/// Returns 0 on success, negative on error.
+#[inline]
+pub fn sigaction(signum: u32, handler: u64) -> i64 {
+    unsafe { raw::syscall3(sys::SIGACTION, signum as u64, handler, 0) }
+}
+
+/// Restore the context saved before a signal handler was called.
+/// Programs should not normally call this directly — the trampoline handles it.
+#[inline]
+pub fn sigreturn() -> i64 {
+    unsafe { raw::syscall1(sys::SIGRETURN, 0) }
+}
+
+/// Send signal `signum` to process `pid`. Returns 0 on success.
+#[inline]
+pub fn kill_signal(pid: u32, signum: u32) -> i64 {
+    unsafe { raw::syscall2(sys::KILL, pid as u64, signum as u64) }
+}
+
+// ── Shared memory ─────────────────────────────────────────────────────────────
+
+/// Create or open a shared memory segment identified by `key`.
+/// `size` is the minimum size in bytes.
+/// Returns the segment id (≥ 0) or a negative error code.
+#[inline]
+pub fn shmget(key: u32, size: usize) -> i64 {
+    unsafe { raw::syscall3(sys::SHMGET, key as u64, size as u64, 0x0200) } // IPC_CREAT
+}
+
+/// Attach shared memory segment `shmid` into this process.
+/// Returns the virtual address as a positive i64, or negative on error.
+#[inline]
+pub fn shmat(shmid: u32) -> i64 {
+    unsafe { raw::syscall2(sys::SHMAT, shmid as u64, 0) }
+}
+
+/// Detach the shared memory segment previously mapped at `addr`.
+#[inline]
+pub fn shmdt(addr: usize) -> i64 {
+    unsafe { raw::syscall1(sys::SHMDT, addr as u64) }
+}
+
+// ── File permissions ──────────────────────────────────────────────────────────
+
+/// Change permission bits on `path` (RamFS only for now).
+/// `mode` is a POSIX octal mode, e.g. `0o644`.
+#[inline]
+pub fn chmod(path: &str, mode: u16) -> i64 {
+    let b = path.as_bytes();
+    unsafe { raw::syscall3(sys::CHMOD, b.as_ptr() as u64, b.len() as u64, mode as u64) }
+}
+
+/// Change owner and group of `path`.
+#[inline]
+pub fn chown(path: &str, uid: u32, gid: u32) -> i64 {
+    let b = path.as_bytes();
+    unsafe { raw::syscall4(sys::CHOWN, b.as_ptr() as u64, b.len() as u64, uid as u64, gid as u64) }
+}
+
+/// Remove (unlink) a file at `path`.  Returns 0 on success.
+#[inline]
+pub fn unlink(path: &str) -> i64 {
+    let b = path.as_bytes();
+    unsafe { raw::syscall2(sys::UNLINK, b.as_ptr() as u64, b.len() as u64) }
+}
+
+/// Rename/move a file.  Returns 0 on success.
+#[inline]
+pub fn rename(old_path: &str, new_path: &str) -> i64 {
+    let ob = old_path.as_bytes();
+    let nb = new_path.as_bytes();
+    unsafe {
+        raw::syscall4(sys::RENAME,
+            ob.as_ptr() as u64, ob.len() as u64,
+            nb.as_ptr() as u64, nb.len() as u64)
+    }
+}
+
+/// Truncate an open file descriptor to `length` bytes.  Returns 0 on success.
+#[inline]
+pub fn truncate(fd: i32, length: u64) -> i64 {
+    unsafe { raw::syscall2(sys::TRUNCATE, fd as u64, length) }
 }
 
 // ── High-level wrappers ──────────────────────────────────────────────────────
@@ -546,6 +738,60 @@ pub fn close_socket(sfd: i64) -> i64 {
     unsafe { raw::syscall1(sys::CLOSE_SOCKET, sfd as u64) }
 }
 
+/// Bind a socket to a local address.
+#[inline]
+pub fn bind(sfd: i64, addr: &SockAddrIn) -> i64 {
+    unsafe {
+        raw::syscall3(sys::BIND,
+            sfd as u64,
+            addr as *const SockAddrIn as u64,
+            core::mem::size_of::<SockAddrIn>() as u64)
+    }
+}
+
+/// Put a TCP socket into passive listen mode.
+#[inline]
+pub fn listen(sfd: i64, backlog: i32) -> i64 {
+    unsafe { raw::syscall2(sys::LISTEN, sfd as u64, backlog as u64) }
+}
+
+/// Accept a connection on a listening TCP socket.
+/// Returns a new socket fd on success, -11 (EAGAIN) if no connection is ready.
+#[inline]
+pub fn accept(sfd: i64) -> i64 {
+    unsafe { raw::syscall1(sys::ACCEPT, sfd as u64) }
+}
+
+/// Send a datagram to a specific address (UDP).
+/// Kernel dispatch: arg1=sfd, arg2=buf, arg3=len, arg4=flags, arg5=addr_ptr (addr_len=16 implicit).
+#[inline]
+pub fn sendto(sfd: i64, buf: &[u8], addr: &SockAddrIn) -> i64 {
+    unsafe {
+        raw::syscall5(sys::SENDTO,
+            sfd as u64,
+            buf.as_ptr() as u64,
+            buf.len() as u64,
+            0u64, // flags
+            addr as *const SockAddrIn as u64)
+    }
+}
+
+/// Receive a datagram and optionally capture source address (UDP).
+/// Kernel dispatch: arg1=sfd, arg2=buf, arg3=len, arg4=flags, arg5=addr_ptr.
+/// If `src` is `Some`, the kernel fills it with the sender's address.
+#[inline]
+pub fn recvfrom(sfd: i64, buf: &mut [u8], src: Option<&mut SockAddrIn>) -> i64 {
+    let addr_ptr = src.map(|a| a as *mut SockAddrIn as u64).unwrap_or(0);
+    unsafe {
+        raw::syscall5(sys::RECVFROM,
+            sfd as u64,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+            0u64, // flags
+            addr_ptr)
+    }
+}
+
 // ── Formatted printing ───────────────────────────────────────────────────────
 
 /// A zero-allocation `Write` sink that flushes to the console byte-by-byte
@@ -631,6 +877,29 @@ pub fn comp_draw_text(x: u32, y: u32, color: u32, text: &str) {
 /// Signal to the compositor that the current frame is complete.
 pub fn comp_present() {
     msgsnd(COMPOSITOR_QID, MSG_PRESENT, &[]);
+}
+
+/// Blit an ARGB framebuffer stored in shared memory segment `shmid` to the window.
+///
+/// `src_x/y` — top-left in the shm buffer; `src_w/h` — size of the region to blit.
+/// `dst_x/y` — top-left in the window content area.
+/// `stride`  — bytes per row in the shm buffer (typically `src_width * 4`).
+pub fn comp_blit_shm(
+    shmid: u32,
+    src_x: u32, src_y: u32, src_w: u32, src_h: u32,
+    dst_x: u32, dst_y: u32,
+    stride: u32,
+) {
+    let mut d = [0u8; 32];
+    u32_le(shmid,  &mut d, 0);
+    u32_le(src_x,  &mut d, 4);
+    u32_le(src_y,  &mut d, 8);
+    u32_le(src_w,  &mut d, 12);
+    u32_le(src_h,  &mut d, 16);
+    u32_le(dst_x,  &mut d, 20);
+    u32_le(dst_y,  &mut d, 24);
+    u32_le(stride, &mut d, 28);
+    msgsnd(COMPOSITOR_QID, 5, &d); // MSG_BLIT_SHM = 5
 }
 
 // ── Entry point & panic handler ──────────────────────────────────────────────

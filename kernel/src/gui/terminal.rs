@@ -92,26 +92,28 @@ fn push_vt100(suffix: u8) {
 /// Pick a colour for a terminal history line based on its prefix/content.
 fn line_color(line: &str) -> u32 {
     if line.starts_with("[info]") || line.starts_with("[ok]") {
-        0xFF40C8A0  // teal — informational
+        0xFF4EC9B0  // teal
     } else if line.starts_with("[error]") || line.starts_with("error:") {
-        0xFFFF5050  // red — errors
+        0xFFF14C4C  // red
     } else if line.starts_with("[warn]") {
-        0xFFFFB030  // amber — warnings
-    } else if line.starts_with('>') {
-        0xFF8090B0  // dim slate — echoed commands
-    } else if line.starts_with("  ") {
-        0xFF607898  // dim — directory listings / indented
-    } else if line.starts_with("exited") {
-        0xFF60A070  // green — exit messages
-    } else if line.starts_with("spawned") {
-        0xFF40C870  // bright green — spawn confirmation
-    } else if line.starts_with(' ') && line.contains('/') {
-        0xFF5090C0  // blue — paths
+        0xFFDDBB00  // amber
+    } else if line.starts_with("> ") {
+        0xFF608060  // dim green — echoed command
+    } else if line.starts_with("  ") && !line.trim().is_empty() {
+        0xFF888888  // medium gray — indented output / ls entries
+    } else if line.starts_with("exited") || line.starts_with("spawned") {
+        0xFF4EC9B0  // teal — process lifecycle
+    } else if line.starts_with('[') && line.contains("] exited") {
+        0xFF888888  // dim — background exit
     } else if line.starts_with("  ___") || line.starts_with(" / _")
-           || line.starts_with("| |")  || line.starts_with(" \\___") {
-        0xFF007ACC  // brand blue — ASCII art banner
+           || line.starts_with("| |")  || line.starts_with(" \\___")
+           || line.starts_with(" \\___")|| line.starts_with("| (_)")
+           || line.starts_with(" \\___"){
+        0xFF4EC9B0  // teal — ASCII art banner
+    } else if line.is_empty() {
+        0xFF0C0C0C  // background — blank lines
     } else {
-        0xFFCCDCEC  // default: light blue-white
+        0xFFCCCCCC  // default: light gray
     }
 }
 
@@ -155,6 +157,11 @@ pub struct TerminalApp {
     passthrough_input: String,
     /// Lines scrolled back from the bottom (0 = follow tail).
     scroll_offset:    usize,
+    /// When true the compositor (userspace terminal) owns this window's content
+    /// area. draw() becomes a no-op so it never overwrites compositor output.
+    /// The kernel terminal stays as a fallback — if the userspace process exits
+    /// this is cleared and the kernel terminal takes over automatically.
+    compositor_mode:  bool,
 }
 
 impl TerminalApp {
@@ -171,9 +178,22 @@ impl TerminalApp {
             fg_pid:           None,
             passthrough_input: String::new(),
             scroll_offset:    0,
+            compositor_mode:  false,
         };
         t.print_banner();
         t
+    }
+
+    /// Hand this window's content area over to the compositor.
+    /// While enabled, draw() is suppressed so the compositor output is never
+    /// overwritten. If the userspace process exits, on_task_exit() clears this
+    /// automatically and the kernel terminal fallback takes over.
+    pub fn set_compositor_mode(&mut self, enabled: bool) {
+        self.compositor_mode = enabled;
+    }
+
+    pub fn is_compositor_mode(&self) -> bool {
+        self.compositor_mode
     }
 
     /// Resolve a path relative to cwd.  Handles `..` and leading `/`.
@@ -247,6 +267,8 @@ impl TerminalApp {
     /// Called by the main loop when a task exits.
     /// Drains any remaining stdout and shows the exit status.
     pub fn on_task_exit(&mut self, pid: u8, exit_code: i64) {
+        let was_compositor_fg = self.compositor_mode && self.fg_pid == Some(pid);
+
         // Final drain of any buffered output
         let mut lines: Vec<String> = Vec::new();
         crate::kernel::scheduler::output_drain_task(
@@ -260,6 +282,14 @@ impl TerminalApp {
         }
         if exit_code != 0 {
             self.push_line(&format!("[pid {}] exited: {}", pid, exit_code));
+        }
+
+        // If the userspace terminal process died, hand the window back to the
+        // kernel terminal so the user still has a working shell.
+        if was_compositor_fg {
+            self.compositor_mode = false;
+            self.push_line("[info] Userspace terminal exited — kernel terminal active.");
+            self.push_line("[info] Type 'run terminal' to relaunch, or use built-in commands.");
         }
     }
 
@@ -347,112 +377,191 @@ impl TerminalApp {
 
     // ── Drawing ─────────────────────────────────────────────────────────────
     //
-    // The terminal looks like a real shell: a single full-area text surface.
-    // History lines fill from top; the prompt + input appear as the last line.
-    // No separate "chat box" — everything is inline text on a dark background.
+    // Layout (top → bottom inside the WM window):
+    //   [Title bar — drawn by WindowManager]
+    //   [Status bar  18px] — brand name left, uptime right
+    //   [1px separator]
+    //   [History lines …] — scrollable, newest at bottom
+    //   [Prompt + input  ]  — last row, no box
+    //
+    // A 6px scrollbar track lives on the right edge of the text area.
+    // A 2px focus accent runs on the left edge.
 
     pub fn draw(&self, graphics: &Graphics, wm: &WindowManager) {
+        // Compositor owns this window's content — never overwrite it.
+        if self.compositor_mode { return; }
         if !wm.is_window_visible(self.window_id) { return; }
         let Some(window) = wm.get_window(self.window_id) else { return; };
 
         let is_focused = wm.get_focused() == Some(self.window_id);
 
-        // Content area (below title bar, small inset).
-        let cx = window.x + 4;
-        let cy = window.y + 31;                             // title bar height = 30 + 1px line
-        let cw = window.width.saturating_sub(8);
-        let ch = window.height.saturating_sub(31 + 4);
+        // ── Geometry ──────────────────────────────────────────────────────
+        let cx = window.x + 2;
+        let cy = window.y + 31;
+        let cw = window.width.saturating_sub(4);
+        let ch = window.height.saturating_sub(33);
 
-        // Full dark terminal background — no borders or boxes.
-        graphics.fill_rect(cx, cy, cw, ch, 0xFF0C1014);
+        // ── Colour palette (VS Code Dark+ / Windows Terminal) ─────────────
+        const BG:         u32 = 0xFF0C0C0C;
+        const STATUS_BG:  u32 = 0xFF1A1A1A;
+        const STATUS_SEP: u32 = 0xFF2A2A2A;
+        const C_BRAND:    u32 = 0xFF4EC9B0; // teal
+        const C_UPTIME:   u32 = 0xFF555555;
+        const C_CWD_COL:  u32 = 0xFF569CD6; // blue path
+        const C_DIM:      u32 = 0xFF4A4A4A;
+        const C_SCROLL:   u32 = 0xFF3A3A3A; // scrollbar thumb
+        const C_SCROLL_T: u32 = 0xFF191919; // scrollbar track
+        const C_INPUT:    u32 = 0xFFE8E8E8; // typed text
+        const C_CURSOR:   u32 = 0xFFFFFFFF;
+        const C_PASS:     u32 = 0xFF3A3A3A; // passthrough label
 
-        // Thin focus indicator on the left edge (like a cursor line in some terminals).
-        if is_focused {
-            graphics.fill_rect(cx, cy, 2, ch, 0xFF007ACC);
+        // ── Status bar ────────────────────────────────────────────────────
+        const SBAR_H: u64 = 18;
+        graphics.fill_rect(cx, cy, cw, SBAR_H, STATUS_BG);
+        graphics.fill_rect(cx, cy + SBAR_H, cw, 1, STATUS_SEP);
+
+        fonts::draw_string(graphics, cx + 8, cy + 3, "OxideOS Terminal", C_BRAND);
+
+        // Uptime HH:MM:SS on the right
+        let ticks = unsafe { timer::get_ticks() };
+        let secs  = ticks / 100;
+        let mut tbuf = [0u8; 8];
+        tbuf[0] = b'0' + ((secs / 3600 / 10) % 10) as u8;
+        tbuf[1] = b'0' + ((secs / 3600)      % 10) as u8;
+        tbuf[2] = b':';
+        tbuf[3] = b'0' + ((secs / 60 / 10)   % 6)  as u8;
+        tbuf[4] = b'0' + ((secs / 60)         % 10) as u8;
+        tbuf[5] = b':';
+        tbuf[6] = b'0' + ((secs / 10)         % 6)  as u8;
+        tbuf[7] = b'0' + (secs                % 10) as u8;
+        if let Ok(ts) = core::str::from_utf8(&tbuf) {
+            let rx = cx + cw.saturating_sub(ts.len() as u64 * CHAR_WIDTH + 8);
+            fonts::draw_string(graphics, rx, cy + 3, ts, C_UPTIME);
         }
 
-        let text_x = cx + 6;
-        let max_cols = (cw.saturating_sub(12) / CHAR_WIDTH).max(4) as usize;
+        // ── Text area ─────────────────────────────────────────────────────
+        const SB_W:   u64 = 6;  // scrollbar width
+        const ACC_W:  u64 = 2;  // left focus accent width
+        const MARGIN: u64 = 6;  // left text margin (after accent)
 
-        // The bottom line is reserved for the prompt+input (or running indicator).
-        // All lines above it show history.
-        let total_lines   = (ch / LINE_HEIGHT).max(2) as usize;
-        let history_lines = total_lines - 1;   // one line for the input row
+        let text_top = cy + SBAR_H + 1;
+        let text_h   = ch.saturating_sub(SBAR_H + 1);
 
-        // ── History ────────────────────────────────────────────────────────
-        let end_idx   = self.history.len().saturating_sub(self.scroll_offset);
-        let start_idx = end_idx.saturating_sub(history_lines);
+        graphics.fill_rect(cx, text_top, cw, text_h, BG);
 
-        // Scroll-back indicator (top line when scrolled)
-        if self.scroll_offset > 0 {
+        // Focus accent (left edge)
+        let accent_col = if is_focused { C_BRAND } else { 0xFF1E1E1E };
+        graphics.fill_rect(cx, text_top, ACC_W, text_h, accent_col);
+
+        // Scrollbar track
+        graphics.fill_rect(cx + cw - SB_W, text_top, SB_W, text_h, C_SCROLL_T);
+
+        // Usable text column metrics
+        let text_x   = cx + ACC_W + MARGIN;
+        let usable_w = cw.saturating_sub(ACC_W + MARGIN + SB_W + 2);
+        let max_cols = (usable_w / CHAR_WIDTH).max(4) as usize;
+
+        let total_rows   = (text_h / LINE_HEIGHT).max(2) as usize;
+        let history_rows = total_rows.saturating_sub(1); // last row = prompt
+
+        // ── Scroll-back banner ────────────────────────────────────────────
+        let banner_row = if self.scroll_offset > 0 {
             let above = self.history.len()
-                .saturating_sub(history_lines + self.scroll_offset);
-            let msg = format!("-- {} more lines above -- (PgDn to scroll down)",
+                .saturating_sub(history_rows + self.scroll_offset);
+            let msg = format!(" \u{2191} {} lines above  (PgDn to scroll down) ",
                               above + self.scroll_offset);
-            let row_y = cy + 2;
-            graphics.fill_rect(cx, row_y, cw, LINE_HEIGHT, 0xFF141C20);
-            fonts::draw_string(graphics, text_x, row_y + 2, &msg, 0xFF607080);
-            // Show one fewer history line to make room.
-            let hist_start = end_idx.saturating_sub(history_lines - 1);
-            for (row, line) in self.history.iter()
-                .skip(hist_start).take(history_lines - 1).enumerate()
-            {
-                let y = cy + 2 + (row as u64 + 1) * LINE_HEIGHT;
-                fonts::draw_string(graphics, text_x, y, line, line_color(line));
-            }
+            graphics.fill_rect(cx + ACC_W, text_top, cw.saturating_sub(ACC_W + SB_W), LINE_HEIGHT, 0xFF181828);
+            let d = if msg.len() > max_cols { &msg[..max_cols] } else { msg.as_str() };
+            fonts::draw_string(graphics, text_x, text_top + 2, d, 0xFF555580);
+            1usize // first history row is taken by the banner
         } else {
-            for (row, line) in self.history.iter()
-                .skip(start_idx).take(history_lines).enumerate()
-            {
-                let y = cy + 2 + row as u64 * LINE_HEIGHT;
-                fonts::draw_string(graphics, text_x, y, line, line_color(line));
-            }
+            0usize
+        };
+
+        // ── History ───────────────────────────────────────────────────────
+        let end_idx   = self.history.len().saturating_sub(self.scroll_offset);
+        let avail_rows = history_rows.saturating_sub(banner_row);
+        let start_idx = end_idx.saturating_sub(avail_rows);
+
+        for (i, line) in self.history.iter().skip(start_idx).take(avail_rows).enumerate() {
+            let row = banner_row + i;
+            let y   = text_top + row as u64 * LINE_HEIGHT + 2;
+            let col = line_color(line);
+            let d   = if line.len() > max_cols { &line[..max_cols] } else { line.as_str() };
+            fonts::draw_string(graphics, text_x, y, d, col);
         }
 
-        // ── Prompt / input line (bottom row) ───────────────────────────────
-        let input_row_y = cy + ch - LINE_HEIGHT - 2;
+        // ── Scrollbar thumb ───────────────────────────────────────────────
+        if self.history.len() > history_rows {
+            let total      = self.history.len() as u64;
+            let vis        = history_rows as u64;
+            let thumb_h    = (text_h * vis / total).max(12).min(text_h);
+            let scroll_max = total.saturating_sub(vis);
+            let at_bottom  = scroll_max.saturating_sub(self.scroll_offset as u64);
+            let thumb_top  = if scroll_max > 0 {
+                text_top + (text_h - thumb_h) * at_bottom / scroll_max
+            } else {
+                text_top + text_h - thumb_h
+            };
+            graphics.fill_rect(cx + cw - SB_W + 1, thumb_top, SB_W - 2, thumb_h, C_SCROLL);
+        }
 
-        // Subtle highlight on the active input line.
-        graphics.fill_rect(cx, input_row_y, cw, LINE_HEIGHT + 2, 0xFF101820);
+        // ── Prompt / input (always last row) ──────────────────────────────
+        let prompt_row_y = text_top + history_rows as u64 * LINE_HEIGHT + 2;
 
         if self.passthrough_mode {
-            // Running a foreground program — show dim prompt prefix + typed echo buffer.
-            let pid_prefix = match self.fg_pid {
-                Some(pid) => format!("[{}]$ ", pid),
-                None      => String::from("$ "),
+            // A program owns stdin — show dim PID label + typed echo
+            let label: String = match self.fg_pid {
+                Some(p) => format!("[{}] ", p),
+                None    => String::new(),
             };
-            let prefix_cols = pid_prefix.len();
-            let avail_echo  = max_cols.saturating_sub(prefix_cols);
-            // Trim echo to visible portion (tail so the most-recently typed chars show)
-            let echo_str  = &self.passthrough_input;
-            let echo_start = echo_str.len().saturating_sub(avail_echo);
-            let echo_vis   = &echo_str[echo_start..];
-            fonts::draw_string(graphics, text_x, input_row_y + 2,
-                               &pid_prefix, 0xFF506070); // dim slate prefix
-            let echo_x = text_x + prefix_cols as u64 * CHAR_WIDTH;
-            fonts::draw_string(graphics, echo_x, input_row_y + 2,
-                               echo_vis, 0xFFDDEEFF);    // near-white echo text
-            // Block cursor at end of echo
+            let label_len = label.len();
+            fonts::draw_string(graphics, text_x, prompt_row_y, &label, C_PASS);
+
+            let echo_x    = text_x + label_len as u64 * CHAR_WIDTH;
+            let avail     = max_cols.saturating_sub(label_len);
+            let raw       = &self.passthrough_input;
+            let eo        = raw.len().saturating_sub(avail);
+            let vis_echo  = &raw[eo..];
+            fonts::draw_string(graphics, echo_x, prompt_row_y, vis_echo, C_INPUT);
+
+            // Thin I-beam cursor at end of echo
             if is_focused {
-                let cur_x = echo_x + echo_vis.len() as u64 * CHAR_WIDTH;
-                graphics.fill_rect(cur_x, input_row_y + 1, CHAR_WIDTH, LINE_HEIGHT, 0xFF506070);
+                let cur_x = echo_x + vis_echo.len() as u64 * CHAR_WIDTH;
+                graphics.fill_rect(cur_x, prompt_row_y - 1, 2, LINE_HEIGHT, C_BRAND);
             }
         } else {
-            // Prompt: "oxide:<cwd>$ " — green like bash.
+            // ── Bash-style multi-colour prompt: oxide : path $ ─────────────
             let short_cwd = if self.cwd == "/" || self.cwd.is_empty() {
-                String::from("~")
+                "~"
             } else {
-                String::from(self.cwd.trim_end_matches('/'))
+                self.cwd.trim_end_matches('/')
             };
-            let prompt     = format!("oxide:{}$ ", short_cwd);
-            let prompt_len = prompt.len() as u64;
-            fonts::draw_string(graphics, text_x, input_row_y + 2,
-                               &prompt, 0xFF33DD66);   // bright green
 
-            // Input text — scrolls to keep cursor visible.
-            let avail_cols  = max_cols.saturating_sub(prompt.len());
-            let win_start = if self.cursor_pos > avail_cols {
-                self.cursor_pos - avail_cols
+            let mut px = text_x;
+
+            // "oxide" in teal
+            fonts::draw_string(graphics, px, prompt_row_y, "oxide", C_BRAND);
+            px += 5 * CHAR_WIDTH;
+
+            // ":" in dim
+            fonts::draw_string(graphics, px, prompt_row_y, ":", C_DIM);
+            px += CHAR_WIDTH;
+
+            // path in blue
+            fonts::draw_string(graphics, px, prompt_row_y, short_cwd, C_CWD_COL);
+            px += short_cwd.len() as u64 * CHAR_WIDTH;
+
+            // "$ " in default
+            fonts::draw_string(graphics, px, prompt_row_y, "$ ", 0xFFCCCCCC);
+            px += 2 * CHAR_WIDTH;
+
+            let prompt_cols = 5 + 1 + short_cwd.len() + 2;
+            let avail_input = max_cols.saturating_sub(prompt_cols);
+
+            // Scroll window so cursor stays visible
+            let win_start = if self.cursor_pos > avail_input {
+                self.cursor_pos - avail_input
             } else {
                 0
             };
@@ -461,28 +570,25 @@ impl TerminalApp {
                 while s > 0 && !self.input.is_char_boundary(s) { s -= 1; }
                 s
             };
-            let visible_slice = &self.input[win_start..];
-            let display: String = if visible_slice.len() > avail_cols {
-                String::from(&visible_slice[..avail_cols])
+            let vis_slice: &str = &self.input[win_start..];
+            let display: &str = if vis_slice.len() > avail_input {
+                &vis_slice[..avail_input]
             } else {
-                String::from(visible_slice)
+                vis_slice
             };
 
-            let input_text_x = text_x + prompt_len * CHAR_WIDTH;
-            fonts::draw_string(graphics, input_text_x, input_row_y + 2,
-                               &display, 0xFFDDEEFF);  // near-white text
+            fonts::draw_string(graphics, px, prompt_row_y, display, C_INPUT);
 
-            // Block cursor: draw a filled rectangle behind the character at cursor.
+            // Block cursor
             if is_focused {
-                let chars_before  = self.cursor_pos.saturating_sub(win_start);
-                let cursor_x      = input_text_x + chars_before as u64 * CHAR_WIDTH;
-                // Filled block cursor.
-                graphics.fill_rect(cursor_x, input_row_y + 1, CHAR_WIDTH, LINE_HEIGHT, 0xFF007ACC);
-                // Character on top of cursor (in background colour so it's readable).
+                let chars_before = self.cursor_pos.saturating_sub(win_start);
+                let cur_x        = px + chars_before as u64 * CHAR_WIDTH;
+                graphics.fill_rect(cur_x, prompt_row_y - 1, CHAR_WIDTH, LINE_HEIGHT, C_CURSOR);
+                // Char under cursor in BG so it stays readable
                 if let Some(ch) = self.input[self.cursor_pos..].chars().next() {
                     let mut buf = [0u8; 4];
                     let s = ch.encode_utf8(&mut buf);
-                    fonts::draw_string(graphics, cursor_x, input_row_y + 2, s, 0xFF0C1014);
+                    fonts::draw_string(graphics, cur_x, prompt_row_y, s, BG);
                 }
             }
         }
@@ -569,7 +675,8 @@ impl TerminalApp {
         self.push_line("| |_| | >  <  | |  | |_| || |_| |___) |");
         self.push_line(" \\___/ /_/\\_\\ |_|  |_____| \\___/|____/");
         self.push_line("");
-        self.push_line("[info] Type 'help' for commands. Tab completes.");
+        self.push_line("[info] Type 'help' for commands  |  Tab to complete  |  PgUp/PgDn to scroll");
+        self.push_line("[info] Run programs with: run <name>   List programs: run");
         self.push_line("");
     }
 

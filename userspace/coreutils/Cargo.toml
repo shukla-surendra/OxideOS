@@ -27,6 +27,14 @@ path = "src/mkdir.rs"
 name = "pwd"
 path = "src/pwd.rs"
 
+[[bin]]
+name = "rm"
+path = "src/rm.rs"
+
+[[bin]]
+name = "mv"
+path = "src/mv.rs"
+
 [dependencies]
 oxide-rt = { path = "../oxide-rt" }
 

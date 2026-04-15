@@ -43,7 +43,67 @@ pub enum TaskState {
     Dead(i64),               // exit code (pages already freed)
 }
 
+impl TaskState {
+    pub fn exit_code(self) -> Option<i64> {
+        if let TaskState::Dead(code) = self { Some(code) } else { None }
+    }
+}
+
 pub const CWD_MAX: usize = 128;
+
+/// Number of signal slots (POSIX requires at least 32).
+pub const NSIG: usize = 32;
+
+/// SIG_DFL — use the default action for this signal (0).
+pub const SIG_DFL: u64 = 0;
+/// SIG_IGN — ignore this signal (1).
+pub const SIG_IGN: u64 = 1;
+
+// Common signal numbers (POSIX).
+pub const SIGHUP:  u8 = 1;
+pub const SIGINT:  u8 = 2;
+pub const SIGQUIT: u8 = 3;
+pub const SIGKILL: u8 = 9;
+pub const SIGTERM: u8 = 15;
+pub const SIGCHLD: u8 = 17;
+pub const SIGCONT: u8 = 18;
+pub const SIGSTOP: u8 = 19;
+
+/// Virtual address of the signal-return trampoline page mapped into every process.
+/// Sits between the stack (tops at 0x0080_0000) and the heap base (0x0100_0000).
+pub const USER_SIGTRAMP: u64 = 0x0090_0000;
+
+/// Trampoline machine code: `mov rax, 95; int 0x80; ud2`
+/// When a signal handler returns, it `ret`s here, which calls SIGRETURN.
+pub const SIGTRAMP_BYTES: &[u8] = &[
+    0x48, 0xc7, 0xc0, 95, 0, 0, 0,  // mov rax, 95
+    0xcd, 0x80,                       // int 0x80
+    0x0f, 0x0b,                       // ud2 (should not reach here)
+];
+
+/// Signal frame saved on the user stack during signal delivery.
+/// The kernel pushes this before jumping to the handler; SIGRETURN pops it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SignalFrame {
+    pub rip:    u64,
+    pub rax:    u64,
+    pub rbx:    u64,
+    pub rcx:    u64,
+    pub rdx:    u64,
+    pub rsi:    u64,
+    pub rdi:    u64,
+    pub r8:     u64,
+    pub r9:     u64,
+    pub r10:    u64,
+    pub r11:    u64,
+    pub r12:    u64,
+    pub r13:    u64,
+    pub r14:    u64,
+    pub r15:    u64,
+    pub rbp:    u64,
+    pub rflags: u64,
+}
 
 pub struct Task {
     pub state:      TaskState,
@@ -68,6 +128,13 @@ pub struct Task {
     /// Current working directory (null-terminated UTF-8 path).
     pub cwd:        [u8; CWD_MAX],
     pub cwd_len:    usize,
+    /// Bitmask of pending signals (bit N = signal N+1 is pending).
+    pub pending_signals: u32,
+    /// Per-signal handler addresses (index = signal number).
+    /// 0 (SIG_DFL) = default action; 1 (SIG_IGN) = ignore.
+    pub signal_handlers: [u64; NSIG],
+    /// Shared memory attachments for this process.
+    pub shm_attaches: [crate::kernel::shm::ShmAttach; crate::kernel::shm::MAX_ATTACH],
 }
 
 impl Task {
@@ -91,6 +158,9 @@ impl Task {
             fd_table:   FdTable::new(),
             cwd,
             cwd_len:    1, // "/"
+            pending_signals: 0,
+            signal_handlers: [0u64; NSIG],
+            shm_attaches: [const { crate::kernel::shm::ShmAttach::empty() }; crate::kernel::shm::MAX_ATTACH],
         }
     }
 
@@ -227,17 +297,25 @@ pub unsafe fn spawn(code: &[u8], name: &str) -> Result<u8, &'static str> {
     let pid  = (slot + 1) as u8;
     let task = &raw mut (*sched).tasks[slot];
 
-    (*task).state      = TaskState::Ready;
-    (*task).first_run  = true;
-    (*task).ctx        = TaskContext::zeroed();
-    (*task).entry      = entry;
-    (*task).cr3        = cr3;
-    (*task).pid        = pid;
-    (*task).parent_pid = 0;
-    (*task).heap_end   = 0;
-    (*task).mmap_end   = 0;
-    (*task).output_len = 0;
-    (*task).fd_table   = FdTable::new();
+    (*task).state           = TaskState::Ready;
+    (*task).first_run       = true;
+    (*task).ctx             = TaskContext::zeroed();
+    (*task).entry           = entry;
+    (*task).cr3             = cr3;
+    (*task).pid             = pid;
+    (*task).parent_pid      = 0;
+    (*task).heap_end        = 0;
+    (*task).mmap_end        = 0;
+    (*task).output_len      = 0;
+    (*task).fd_table        = FdTable::new();
+    (*task).pending_signals = 0;
+    (*task).signal_handlers = [0u64; NSIG];
+    (*task).shm_attaches    = [const { crate::kernel::shm::ShmAttach::empty() }; crate::kernel::shm::MAX_ATTACH];
+
+    // Map the signal-return trampoline page (read + execute, not writable).
+    if paging_allocator::map_user_region_in(cr3, USER_SIGTRAMP, 1, false, true).is_ok() {
+        paging_allocator::copy_to_region_in(cr3, USER_SIGTRAMP, SIGTRAMP_BYTES);
+    }
 
     let bytes = name.as_bytes();
     let len   = bytes.len().min(16);
@@ -323,6 +401,22 @@ pub unsafe fn tick() -> Option<(u8, i64)> {
     let idx = chosen?;
     (*sched).current     = idx;
     CURRENT_TASK_IDX     = idx;
+
+    // Deliver any pending signals before the task runs.
+    if (*sched).tasks[idx].pending_signals != 0 {
+        if unsafe { deliver_pending_signals(idx) } {
+            // Task was killed by default action — reap it.
+            let pid = (*sched).tasks[idx].pid;
+            let cr3 = (*sched).tasks[idx].cr3;
+            if cr3 != 0 {
+                paging_allocator::free_user_page_table(cr3);
+                (*sched).tasks[idx].cr3 = 0;
+            }
+            return Some((pid, (*sched).tasks[idx].state
+                .exit_code().unwrap_or(-1)));
+        }
+    }
+
     (*sched).tasks[idx].state = TaskState::Running;
     (*sched).slice_remaining  = TICKS_PER_SLICE;
 
@@ -394,16 +488,124 @@ pub unsafe fn sleep_task(wake_tick: u64, mut ctx: TaskContext) -> ! {
     crate::kernel::user_mode::exit_to_kernel(EXIT_SLEEPING)
 }
 
-/// Forcibly terminate the task with the given pid.  Returns `false` if not found.
-pub unsafe fn kill(pid: u8) -> bool {
+/// Send `signum` to the task with the given pid.
+///
+/// SIGKILL kills immediately; all other signals set a pending bit for delivery
+/// before the next time the task runs.  Returns `false` if pid not found.
+pub unsafe fn send_signal(pid: u8, signum: u8) -> bool {
+    if signum == 0 || signum as usize >= NSIG { return false; }
     let sched = &raw mut SCHED;
     for i in 0..MAX_TASKS {
-        if (*sched).tasks[i].pid == pid
-            && !matches!((*sched).tasks[i].state, TaskState::Empty | TaskState::Dead(_))
-        {
-            (*sched).tasks[i].state = TaskState::Dead(-1);
+        let task = &raw mut (*sched).tasks[i];
+        if (*task).pid != pid { continue; }
+        if matches!((*task).state, TaskState::Empty | TaskState::Dead(_)) { break; }
+
+        if signum == SIGKILL {
+            // SIGKILL cannot be caught or ignored — kill immediately.
+            (*task).state = TaskState::Dead(128 + signum as i64);
             return true;
         }
+
+        // Set the pending bit.
+        (*task).pending_signals |= 1u32 << (signum as u32 - 1);
+        // If the task is sleeping, wake it so it can process the signal.
+        if matches!((*task).state, TaskState::Sleeping(_)) {
+            (*task).state = TaskState::Ready;
+        }
+        return true;
+    }
+    false
+}
+
+/// Forcibly terminate the task with the given pid (sends SIGKILL).
+/// Kept for backward compatibility; callers can also use `send_signal`.
+pub unsafe fn kill(pid: u8) -> bool {
+    unsafe { send_signal(pid, SIGKILL) }
+}
+
+/// Deliver any pending signals for the task at `idx`.
+///
+/// Called from `tick()` just before running the task.
+/// Returns `true` if the task was killed by a default-action signal.
+unsafe fn deliver_pending_signals(idx: usize) -> bool {
+    let sched = &raw mut SCHED;
+    let task  = &raw mut (*sched).tasks[idx];
+
+    while (*task).pending_signals != 0 {
+        // Find lowest set bit (signal number = bit position + 1).
+        let bit    = (*task).pending_signals.trailing_zeros();
+        let signum = (bit + 1) as u8;
+        (*task).pending_signals &= !(1u32 << bit);
+
+        let handler = if (signum as usize) < NSIG {
+            (*task).signal_handlers[signum as usize]
+        } else {
+            SIG_DFL
+        };
+
+        if handler == SIG_IGN {
+            continue; // explicitly ignored
+        }
+
+        if handler == SIG_DFL {
+            // Default action: most signals terminate the process.
+            match signum {
+                SIGCHLD | SIGCONT => continue, // default = ignore
+                _ => {
+                    (*task).state = TaskState::Dead(128 + signum as i64);
+                    return true;
+                }
+            }
+        }
+
+        // User-defined handler: set up a signal frame on the user stack.
+        let cr3 = (*task).cr3;
+        let rsp = (*task).ctx.rsp;
+
+        // Push trampoline address (return address for the handler).
+        let rsp = rsp - 8;
+        let tramp = USER_SIGTRAMP;
+        paging_allocator::copy_to_region_in(
+            cr3, rsp, &tramp.to_ne_bytes());
+
+        // Push SignalFrame below that.
+        let frame = SignalFrame {
+            rip:    (*task).ctx.rip,
+            rax:    (*task).ctx.rax,
+            rbx:    (*task).ctx.rbx,
+            rcx:    (*task).ctx.rcx,
+            rdx:    (*task).ctx.rdx,
+            rsi:    (*task).ctx.rsi,
+            rdi:    (*task).ctx.rdi,
+            r8:     (*task).ctx.r8,
+            r9:     (*task).ctx.r9,
+            r10:    (*task).ctx.r10,
+            r11:    (*task).ctx.r11,
+            r12:    (*task).ctx.r12,
+            r13:    (*task).ctx.r13,
+            r14:    (*task).ctx.r14,
+            r15:    (*task).ctx.r15,
+            rbp:    (*task).ctx.rbp,
+            rflags: (*task).ctx.rflags,
+        };
+        let frame_size = core::mem::size_of::<SignalFrame>() as u64;
+        let rsp = rsp - frame_size;
+        // Align to 16 bytes as required by the System V ABI.
+        let rsp = rsp & !0xF;
+
+        let frame_bytes = core::slice::from_raw_parts(
+            &frame as *const SignalFrame as *const u8,
+            frame_size as usize,
+        );
+        paging_allocator::copy_to_region_in(cr3, rsp, frame_bytes);
+
+        // Redirect execution to the handler.
+        (*task).ctx.rsp = rsp;
+        (*task).ctx.rip = handler;
+        (*task).ctx.rdi = signum as u64; // first argument: signal number
+
+        // Only deliver one signal per tick to avoid stack overflow.
+        break;
     }
     false
 }
@@ -435,14 +637,15 @@ pub unsafe fn fork_task(
     let parent_pid = (*sched).tasks[parent_idx].pid;
 
     // Copy all task fields from parent; override the child-specific ones.
-    let parent_fd    = (*sched).tasks[parent_idx].fd_table;
-    let parent_heap  = (*sched).tasks[parent_idx].heap_end;
-    let parent_mmap  = (*sched).tasks[parent_idx].mmap_end;
-    let parent_entry = (*sched).tasks[parent_idx].entry;
-    let parent_name  = (*sched).tasks[parent_idx].name;
-    let parent_nlen  = (*sched).tasks[parent_idx].name_len;
-    let parent_cwd   = (*sched).tasks[parent_idx].cwd;
-    let parent_cwdl  = (*sched).tasks[parent_idx].cwd_len;
+    let parent_fd      = (*sched).tasks[parent_idx].fd_table;
+    let parent_heap    = (*sched).tasks[parent_idx].heap_end;
+    let parent_mmap    = (*sched).tasks[parent_idx].mmap_end;
+    let parent_entry   = (*sched).tasks[parent_idx].entry;
+    let parent_name    = (*sched).tasks[parent_idx].name;
+    let parent_nlen    = (*sched).tasks[parent_idx].name_len;
+    let parent_cwd     = (*sched).tasks[parent_idx].cwd;
+    let parent_cwdl    = (*sched).tasks[parent_idx].cwd_len;
+    let parent_sighand = (*sched).tasks[parent_idx].signal_handlers;
 
     let child = &raw mut (*sched).tasks[child_slot];
     (*child).state      = TaskState::Ready;
@@ -456,8 +659,12 @@ pub unsafe fn fork_task(
     (*child).mmap_end   = parent_mmap;
     (*child).output_len = 0;
     (*child).fd_table   = parent_fd;
-    (*child).cwd        = parent_cwd;
-    (*child).cwd_len    = parent_cwdl;
+    (*child).cwd             = parent_cwd;
+    (*child).cwd_len         = parent_cwdl;
+    // Children inherit signal handlers but start with clean pending mask and shm.
+    (*child).pending_signals = 0;
+    (*child).signal_handlers = parent_sighand;
+    (*child).shm_attaches    = [const { crate::kernel::shm::ShmAttach::empty() }; crate::kernel::shm::MAX_ATTACH];
     // Addref every pipe end the child inherited so reference counts stay correct.
     for slot in &(*child).fd_table.entries {
         if let Some(e) = slot {

@@ -236,8 +236,8 @@ impl SyscallRuntime for KernelRuntime {
         }
     }
 
-    fn kill_pid(&mut self, pid: u64) -> i64 {
-        let ok = unsafe { crate::kernel::scheduler::kill(pid as u8) };
+    fn kill_pid_sig(&mut self, pid: u64, signum: u8) -> i64 {
+        let ok = unsafe { crate::kernel::scheduler::send_signal(pid as u8, signum) };
         if ok { 0 } else { -3 }
     }
 
@@ -247,8 +247,20 @@ impl SyscallRuntime for KernelRuntime {
         unsafe { crate::kernel::net::socket::sys_socket(domain, type_, proto) }
     }
 
+    unsafe fn bind_impl(&mut self, sfd: u64, addr_ptr: u64, addr_len: usize) -> i64 {
+        unsafe { crate::kernel::net::socket::sys_bind(sfd as i64, addr_ptr as *const u8, addr_len) }
+    }
+
     unsafe fn connect_impl(&mut self, sfd: u64, addr_ptr: u64, addr_len: usize) -> i64 {
         unsafe { crate::kernel::net::socket::sys_connect(sfd as i64, addr_ptr as *const u8, addr_len) }
+    }
+
+    fn listen_impl(&mut self, sfd: u64, backlog: i32) -> i64 {
+        unsafe { crate::kernel::net::socket::sys_listen(sfd as i64, backlog) }
+    }
+
+    fn accept_impl(&mut self, sfd: u64) -> i64 {
+        unsafe { crate::kernel::net::socket::sys_accept(sfd as i64) }
     }
 
     unsafe fn send_impl(&mut self, sfd: u64, buf_ptr: u64, len: usize, flags: u32) -> i64 {
@@ -261,6 +273,22 @@ impl SyscallRuntime for KernelRuntime {
 
     fn close_socket_impl(&mut self, sfd: u64) -> i64 {
         unsafe { crate::kernel::net::socket::sys_close_socket(sfd as i64) }
+    }
+
+    unsafe fn sendto_impl(&mut self, sfd: u64, buf_ptr: u64, len: usize, flags: u32,
+                          addr_ptr: u64, addr_len: usize) -> i64 {
+        unsafe { crate::kernel::net::socket::sys_sendto(
+            sfd as i64, buf_ptr as *const u8, len, flags,
+            addr_ptr as *const u8, addr_len,
+        )}
+    }
+
+    unsafe fn recvfrom_impl(&mut self, sfd: u64, buf_ptr: u64, len: usize, flags: u32,
+                            addr_ptr: u64, addr_len_ptr: u64) -> i64 {
+        unsafe { crate::kernel::net::socket::sys_recvfrom(
+            sfd as i64, buf_ptr as *mut u8, len, flags,
+            addr_ptr as *mut u8, addr_len_ptr as *mut u32,
+        )}
     }
 
     fn readdir_impl(&mut self, path: &[u8], buf: &mut [u8]) -> i64 {
@@ -359,6 +387,13 @@ impl SyscallRuntime for KernelRuntime {
                     (*out)._pad = 0;
                     0
                 }
+                FdBackend::Ext2 => {
+                    // For fstat on ext2 fd, return size 0 (we'd need to seek to get it).
+                    (*out).size = 0;
+                    (*out).kind = StatKind::File as u32;
+                    (*out)._pad = 0;
+                    0
+                }
             }
         }
     }
@@ -369,6 +404,209 @@ impl SyscallRuntime for KernelRuntime {
             let idx   = crate::kernel::scheduler::CURRENT_TASK_IDX;
             (*sched).tasks[idx].fd_table.dup2(old_fd, new_fd)
         }
+    }
+
+    fn ioctl_impl(&mut self, fd: i32, request: u64, arg: u64) -> i64 {
+        unsafe { crate::kernel::tty::ioctl(fd, request, arg) }
+    }
+
+    fn chmod_impl(&mut self, path: &[u8], mode: u16) -> i64 {
+        let path_str = match core::str::from_utf8(path) {
+            Ok(s)  => s,
+            Err(_) => return -22,
+        };
+        match unsafe { crate::kernel::fs::ramfs::RAMFS.get() } {
+            None     => -2,
+            Some(fs) => {
+                match fs.resolve(path_str) {
+                    None      => -7, // ENOENT
+                    Some(idx) => {
+                        let fs_mut = unsafe {
+                            &mut *(fs as *const _ as *mut crate::kernel::fs::ramfs::RamFs)
+                        };
+                        fs_mut.inodes[idx].mode = mode;
+                        0
+                    }
+                }
+            }
+        }
+    }
+
+    fn chown_impl(&mut self, path: &[u8], uid: u32, gid: u32) -> i64 {
+        let path_str = match core::str::from_utf8(path) {
+            Ok(s)  => s,
+            Err(_) => return -22,
+        };
+        match unsafe { crate::kernel::fs::ramfs::RAMFS.get() } {
+            None     => -2,
+            Some(fs) => {
+                match fs.resolve(path_str) {
+                    None      => -7,
+                    Some(idx) => {
+                        let fs_mut = unsafe {
+                            &mut *(fs as *const _ as *mut crate::kernel::fs::ramfs::RamFs)
+                        };
+                        fs_mut.inodes[idx].uid = uid;
+                        fs_mut.inodes[idx].gid = gid;
+                        0
+                    }
+                }
+            }
+        }
+    }
+
+    fn unlink_impl(&mut self, path: &[u8]) -> i64 {
+        let path_str = match core::str::from_utf8(path) { Ok(s) => s, Err(_) => return -22 };
+        match unsafe { crate::kernel::fs::ramfs::RAMFS.get() } {
+            None => -2,
+            Some(fs) => {
+                match fs.remove_file(path_str) {
+                    Ok(removed_idx) => {
+                        // Fix up open FD tables in all tasks.
+                        unsafe {
+                            use crate::kernel::scheduler::SCHED;
+                            for task in (*core::ptr::addr_of_mut!(SCHED)).tasks.iter_mut() {
+                                task.fd_table.on_inode_removed(removed_idx);
+                            }
+                        }
+                        0
+                    }
+                    Err(e) => e,
+                }
+            }
+        }
+    }
+
+    fn rename_impl(&mut self, old_path: &[u8], new_path: &[u8]) -> i64 {
+        let old = match core::str::from_utf8(old_path) { Ok(s) => s, Err(_) => return -22 };
+        let new = match core::str::from_utf8(new_path) { Ok(s) => s, Err(_) => return -22 };
+        match unsafe { crate::kernel::fs::ramfs::RAMFS.get() } {
+            None => -2,
+            Some(fs) => match fs.rename(old, new) { Ok(()) => 0, Err(e) => e },
+        }
+    }
+
+    fn truncate_impl(&mut self, fd: i32, length: u64) -> i64 {
+        unsafe {
+            use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+            use crate::kernel::fs::ramfs::{FdBackend, RAMFS};
+
+            if fd < 0 || fd as usize >= crate::kernel::fs::ramfs::MAX_FD { return -9; }
+            let sched = &raw const SCHED;
+            let idx   = CURRENT_TASK_IDX;
+            let entry = match (*sched).tasks[idx].fd_table.entries[fd as usize] {
+                None    => return -9,
+                Some(e) => e,
+            };
+            match entry.backend {
+                FdBackend::RamFS => {
+                    if let Some(fs) = RAMFS.get() {
+                        fs.truncate_by_idx(entry.inode_idx, length as usize);
+                        0
+                    } else { -2 }
+                }
+                _ => -38, // ENOTSOCK — not a regular file
+            }
+        }
+    }
+
+    fn shmget_impl(&mut self, key: u32, size: u64, flags: u32) -> i64 {
+        unsafe { crate::kernel::shm::shmget(key, size, flags) }
+    }
+
+    fn shmat_impl(&mut self, shmid: u32, _addr_hint: u64) -> i64 {
+        unsafe {
+            use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+            let sched = &raw mut SCHED;
+            let idx   = CURRENT_TASK_IDX;
+            let cr3   = (*sched).tasks[idx].cr3;
+            let att   = &raw mut (*sched).tasks[idx].shm_attaches;
+            crate::kernel::shm::shmat(shmid, &mut *att, cr3)
+        }
+    }
+
+    fn shmdt_impl(&mut self, addr: u64) -> i64 {
+        unsafe {
+            use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+            let sched = &raw mut SCHED;
+            let idx   = CURRENT_TASK_IDX;
+            let att   = &raw mut (*sched).tasks[idx].shm_attaches;
+            crate::kernel::shm::shmdt(addr, &mut *att)
+        }
+    }
+
+    fn sigaction_impl(&mut self, signum: u32, handler: u64, old_ptr: u64) -> i64 {
+        use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX, NSIG};
+        if signum == 0 || signum as usize >= NSIG { return -22; } // EINVAL
+        unsafe {
+            let sched = &raw mut SCHED;
+            let idx   = CURRENT_TASK_IDX;
+            let prev  = (*sched).tasks[idx].signal_handlers[signum as usize];
+            if old_ptr != 0 {
+                if let Err(_) = crate::kernel::syscall_core::validate_user_range(old_ptr, 8) {
+                    return -14; // EFAULT
+                }
+                core::ptr::write_unaligned(old_ptr as *mut u64, prev);
+            }
+            (*sched).tasks[idx].signal_handlers[signum as usize] = handler;
+        }
+        0
+    }
+
+    fn sigreturn_impl(&mut self) -> i64 {
+        use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX, SignalFrame};
+        use crate::kernel::paging_allocator;
+        unsafe {
+            let sched = &raw mut SCHED;
+            let idx   = CURRENT_TASK_IDX;
+            let task  = &raw mut (*sched).tasks[idx];
+            let cr3   = (*task).cr3;
+
+            // RSP currently points at the saved SignalFrame.
+            let rsp = (*task).ctx.rsp;
+            let frame_size = core::mem::size_of::<SignalFrame>() as u64;
+
+            // Read the frame from user memory via a temporary CR3 switch.
+            let mut frame = SignalFrame {
+                rip: 0, rax: 0, rbx: 0, rcx: 0, rdx: 0,
+                rsi: 0, rdi: 0, r8:  0, r9:  0, r10: 0,
+                r11: 0, r12: 0, r13: 0, r14: 0, r15: 0,
+                rbp: 0, rflags: 0,
+            };
+            {
+                let saved_cr3: u64;
+                core::arch::asm!("mov {}, cr3", out(reg) saved_cr3, options(nostack, nomem));
+                core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, nomem));
+                core::ptr::copy_nonoverlapping(
+                    rsp as *const u8,
+                    &raw mut frame as *mut u8,
+                    frame_size as usize,
+                );
+                core::arch::asm!("mov cr3, {}", in(reg) saved_cr3, options(nostack, nomem));
+            }
+
+            // Restore all general-purpose registers and RIP.
+            (*task).ctx.rip    = frame.rip;
+            (*task).ctx.rax    = frame.rax;
+            (*task).ctx.rbx    = frame.rbx;
+            (*task).ctx.rcx    = frame.rcx;
+            (*task).ctx.rdx    = frame.rdx;
+            (*task).ctx.rsi    = frame.rsi;
+            (*task).ctx.rdi    = frame.rdi;
+            (*task).ctx.r8     = frame.r8;
+            (*task).ctx.r9     = frame.r9;
+            (*task).ctx.r10    = frame.r10;
+            (*task).ctx.r11    = frame.r11;
+            (*task).ctx.r12    = frame.r12;
+            (*task).ctx.r13    = frame.r13;
+            (*task).ctx.r14    = frame.r14;
+            (*task).ctx.r15    = frame.r15;
+            (*task).ctx.rbp    = frame.rbp;
+            (*task).ctx.rflags = frame.rflags;
+            // Pop frame + return address (8 bytes) off the stack.
+            (*task).ctx.rsp    = rsp + frame_size + 8;
+        }
+        0
     }
 
     fn fs_open(&mut self, path: &[u8], flags: u32) -> i64 {

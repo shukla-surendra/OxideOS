@@ -250,7 +250,27 @@ unsafe fn dispatch_raw_key(kc: KeyCode) {
         return;
     }
 
-    // Navigation keys → arrow callback
+    // Navigation keys → push VT100 escape sequences to stdin so userspace
+    // programs (text editors, readline, etc.) can read arrow keys as \x1B[A/B/C/D.
+    // Also fire the kernel arrow-key callback for kernel-side widgets.
+    let vt100: Option<&[u8]> = match kc {
+        KeyCode::ArrowUp    => Some(b"\x1B[A"),
+        KeyCode::ArrowDown  => Some(b"\x1B[B"),
+        KeyCode::ArrowRight => Some(b"\x1B[C"),
+        KeyCode::ArrowLeft  => Some(b"\x1B[D"),
+        KeyCode::PageUp     => Some(b"\x1B[5~"),
+        KeyCode::PageDown   => Some(b"\x1B[6~"),
+        KeyCode::Home       => Some(b"\x1B[H"),
+        KeyCode::End        => Some(b"\x1B[F"),
+        KeyCode::Delete     => Some(b"\x1B[3~"),
+        _                   => None,
+    };
+    if let Some(seq) = vt100 {
+        for &byte in seq {
+            crate::kernel::stdin::push(byte);
+        }
+    }
+
     if ARROW_CALLBACK_ENABLED.load(Ordering::Relaxed) {
         unsafe {
             if let Some(cb) = ARROW_KEY_CALLBACK {

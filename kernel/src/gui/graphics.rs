@@ -4,6 +4,22 @@ extern crate alloc;
 use limine::framebuffer::Framebuffer;
 use crate::kernel::serial::SERIAL_PORT;
 
+// ── Panic framebuffer ─────────────────────────────────────────────────────────
+//
+// Stored once at Graphics::new() time so the panic handler can draw a BSoD
+// without needing access to the Graphics object.
+#[derive(Clone, Copy)]
+pub struct PanicFb {
+    pub addr:   *mut u32,
+    pub width:  u64,
+    pub height: u64,
+    pub pitch:  u64, // in bytes
+}
+unsafe impl Send for PanicFb {}
+unsafe impl Sync for PanicFb {}
+
+pub static mut PANIC_FB: Option<PanicFb> = None;
+
 /// Selects which procedural wallpaper to render on the desktop.
 #[derive(Clone, Copy, PartialEq)]
 pub enum BackgroundStyle {
@@ -65,12 +81,25 @@ impl Graphics {
         let back_ptr = back_vec.as_mut_ptr();
         core::mem::forget(back_vec);
 
+        let fb_addr = framebuffer.addr();
+        let fb_pitch = framebuffer.pitch();
+
+        // Publish for the panic handler.
+        unsafe {
+            PANIC_FB = Some(PanicFb {
+                addr:   fb_addr as *mut u32,
+                width,
+                height,
+                pitch:  fb_pitch,
+            });
+        }
+
         Self {
-            framebuffer_addr: framebuffer.addr(),
+            framebuffer_addr: fb_addr,
             back_buffer: back_ptr,
             width,
             height,
-            pitch: framebuffer.pitch(),
+            pitch: fb_pitch,
         }
     }
 

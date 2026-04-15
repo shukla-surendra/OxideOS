@@ -186,11 +186,13 @@ pub unsafe fn read_sector(lba: u32, buf: &mut [u8; 512]) -> bool {
     if !unsafe { wait_not_busy() } { return false; }
     if !unsafe { wait_drq()      } { return false; }
 
-    // Read 256 words = 512 bytes
-    let words = unsafe {
-        core::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u16, 256)
-    };
-    for w in words.iter_mut() { *w = unsafe { inw(PORT_DATA) }; }
+    // Read 256 words = 512 bytes.
+    // Write via raw byte pointer to avoid alignment requirement on u16 slices.
+    for i in 0..256usize {
+        let word = unsafe { inw(PORT_DATA) };
+        buf[i * 2]     = (word & 0xFF) as u8;
+        buf[i * 2 + 1] = (word >> 8)   as u8;
+    }
     true
 }
 
@@ -212,18 +214,153 @@ pub unsafe fn write_sector(lba: u32, buf: &[u8; 512]) -> bool {
 
     if !unsafe { wait_drq() } { return false; }
 
-    let words = unsafe {
-        core::slice::from_raw_parts(buf.as_ptr() as *const u16, 256)
-    };
-    for w in words.iter() { unsafe { outw(PORT_DATA, *w); } }
+    // Write 256 words = 512 bytes.
+    // Read via byte pairs to avoid alignment requirement on u16 slices.
+    for i in 0..256usize {
+        let lo = buf[i * 2]     as u16;
+        let hi = buf[i * 2 + 1] as u16;
+        unsafe { outw(PORT_DATA, lo | (hi << 8)); }
+    }
 
     // Flush write cache
     unsafe { outb(PORT_STATCMD, CMD_FLUSH); }
     unsafe { wait_not_busy() }
 }
 
-/// Secondary disk presence (stub — OxideOS only supports one disk).
-pub fn is_present_sec() -> bool { false }
+// ── Secondary bus (0x170) ─────────────────────────────────────────────────
 
-/// Read a sector from the secondary disk (stub — always fails).
-pub unsafe fn read_sector_sec(_lba: u32, _buf: &mut [u8; 512]) -> bool { false }
+const SEC_DATA:    u16 = 0x170;
+const SEC_ERR:     u16 = 0x171;
+const SEC_SECNT:   u16 = 0x172;
+const SEC_LBA0:    u16 = 0x173;
+const SEC_LBA1:    u16 = 0x174;
+const SEC_LBA2:    u16 = 0x175;
+const SEC_DRVHD:   u16 = 0x176;
+const SEC_STATCMD: u16 = 0x177;
+const SEC_CTRL:    u16 = 0x376;
+
+static mut SEC_DISK_PRESENT: bool = false;
+static mut SEC_DISK_SECTORS: u32  = 0;
+
+unsafe fn sec_wait_not_busy() -> bool {
+    for _ in 0..1_000_000u32 {
+        if unsafe { inb(SEC_STATCMD) } & SR_BSY == 0 { return true; }
+    }
+    false
+}
+
+unsafe fn sec_wait_drq() -> bool {
+    for _ in 0..1_000_000u32 {
+        let s = unsafe { inb(SEC_STATCMD) };
+        if s & SR_ERR != 0 { return false; }
+        if s & SR_DRQ != 0 { return true;  }
+    }
+    false
+}
+
+/// Initialise the secondary ATA bus (0x170) and detect master drive.
+/// Call after `init()`.
+pub unsafe fn init_secondary() {
+    // Disable IRQ, soft-reset secondary bus.
+    unsafe {
+        outb(SEC_CTRL, 0x02);
+        outb(SEC_CTRL, 0x06);
+        for _ in 0..20 { let _ = inb(SEC_CTRL); }
+        outb(SEC_CTRL, 0x02);
+    }
+
+    // Wait for BSY to clear.
+    let mut found = false;
+    for _ in 0..10_000_000u32 {
+        if unsafe { inb(SEC_STATCMD) } & SR_BSY == 0 { found = true; break; }
+    }
+    if !found {
+        unsafe { SERIAL_PORT.write_str("ATA-sec: reset timeout\n"); }
+        return;
+    }
+
+    // Select master on secondary.
+    unsafe {
+        outb(SEC_DRVHD, 0xA0);
+        for _ in 0..4 { let _ = inb(SEC_CTRL); } // 400 ns delay
+    }
+
+    let status = unsafe { inb(SEC_STATCMD) };
+    if status == 0xFF {
+        unsafe { SERIAL_PORT.write_str("ATA-sec: no controller\n"); }
+        return;
+    }
+
+    // IDENTIFY
+    unsafe {
+        outb(SEC_SECNT,   0);
+        outb(SEC_LBA0,    0);
+        outb(SEC_LBA1,    0);
+        outb(SEC_LBA2,    0);
+        outb(SEC_STATCMD, CMD_IDENTIFY);
+        for _ in 0..4 { let _ = inb(SEC_CTRL); }
+    }
+
+    let status = unsafe { inb(SEC_STATCMD) };
+    if status == 0 {
+        unsafe { SERIAL_PORT.write_str("ATA-sec: no disk\n"); }
+        return;
+    }
+
+    if !unsafe { sec_wait_not_busy() } {
+        unsafe { SERIAL_PORT.write_str("ATA-sec: BSY timeout\n"); }
+        return;
+    }
+
+    // ATAPI check
+    if unsafe { inb(SEC_LBA1) } != 0 || unsafe { inb(SEC_LBA2) } != 0 {
+        unsafe { SERIAL_PORT.write_str("ATA-sec: ATAPI — skip\n"); }
+        return;
+    }
+
+    if !unsafe { sec_wait_drq() } {
+        unsafe { SERIAL_PORT.write_str("ATA-sec: DRQ timeout\n"); }
+        return;
+    }
+
+    let mut id = [0u16; 256];
+    for w in id.iter_mut() { *w = unsafe { inw(SEC_DATA) }; }
+
+    unsafe {
+        SEC_DISK_SECTORS = (id[60] as u32) | ((id[61] as u32) << 16);
+        SEC_DISK_PRESENT = true;
+        SERIAL_PORT.write_str("ATA-sec: disk detected, sectors=");
+        SERIAL_PORT.write_decimal(SEC_DISK_SECTORS);
+        SERIAL_PORT.write_str("\n");
+    }
+}
+
+/// Secondary disk presence.
+pub fn is_present_sec() -> bool { unsafe { SEC_DISK_PRESENT } }
+
+/// Read one 512-byte sector from the secondary disk into `buf`.
+pub unsafe fn read_sector_sec(lba: u32, buf: &mut [u8; 512]) -> bool {
+    if !unsafe { SEC_DISK_PRESENT } { return false; }
+    if !unsafe { sec_wait_not_busy() } { return false; }
+
+    unsafe {
+        outb(SEC_DRVHD,   0xE0 | ((lba >> 24) as u8 & 0x0F));
+        outb(SEC_ERR,     0x00);
+        outb(SEC_SECNT,   1);
+        outb(SEC_LBA0,    (lba       & 0xFF) as u8);
+        outb(SEC_LBA1,    (lba >> 8  & 0xFF) as u8);
+        outb(SEC_LBA2,    (lba >> 16 & 0xFF) as u8);
+        outb(SEC_STATCMD, CMD_READ);
+        for _ in 0..4 { let _ = inb(SEC_CTRL); } // 400 ns
+    }
+
+    if !unsafe { sec_wait_not_busy() } { return false; }
+    if !unsafe { sec_wait_drq()      } { return false; }
+
+    for i in 0..256usize {
+        let word = unsafe { inw(SEC_DATA) };
+        buf[i * 2]     = (word & 0xFF) as u8;
+        buf[i * 2 + 1] = (word >> 8)   as u8;
+    }
+    true
+}

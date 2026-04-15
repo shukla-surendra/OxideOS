@@ -25,6 +25,10 @@ const MSG_FILL_RECT:  u32 = 1;
 const MSG_DRAW_TEXT:  u32 = 2;
 const MSG_PRESENT:    u32 = 3;
 const MSG_CLEAR_RECT: u32 = 4;
+/// Blit a shared-memory framebuffer into the window.
+/// Payload: shmid u32, src_x u32, src_y u32, src_w u32, src_h u32,
+///          dst_x u32, dst_y u32, stride u32 (bytes per row in shm).
+const MSG_BLIT_SHM:   u32 = 5;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -155,6 +159,46 @@ fn process_one(gfx: &Graphics, msg: &super::ipc::Message) {
             let ah = h.min(ch.saturating_sub(y));
             if aw > 0 && ah > 0 {
                 gfx.fill_rect(ax, ay, aw, ah, bg);
+            }
+        }
+
+        MSG_BLIT_SHM => {
+            // payload: shmid, src_x, src_y, src_w, src_h, dst_x, dst_y, stride
+            if msg.size < 32 { return; }
+            let shmid  = read_u32(&msg.data, 0) as usize;
+            let src_x  = read_u32(&msg.data, 4) as u64;
+            let src_y  = read_u32(&msg.data, 8) as u64;
+            let src_w  = read_u32(&msg.data, 12) as u64;
+            let src_h  = read_u32(&msg.data, 16) as u64;
+            let dst_x  = read_u32(&msg.data, 20) as u64;
+            let dst_y  = read_u32(&msg.data, 24) as u64;
+            let stride = read_u32(&msg.data, 28) as u64; // bytes per row
+
+            // Get the shm segment's physical base address.
+            // The kernel can read it directly via the HHDM mapping.
+            let phys = crate::kernel::shm::seg_phys_base(shmid);
+            if phys == 0 { return; }
+
+            const HHDM: u64 = 0xFFFF800000000000;
+            let base_ptr = (phys + HHDM) as *const u32;
+
+            // Clip blit rect to content area.
+            let blit_w = src_w.min(cw.saturating_sub(dst_x));
+            let blit_h = src_h.min(ch.saturating_sub(dst_y));
+            if blit_w == 0 || blit_h == 0 { return; }
+
+            // Blit row by row into the framebuffer.
+            let stride_px = stride / 4; // stride in pixels (u32 ARGB)
+            for row in 0..blit_h {
+                let sy = src_y + row;
+                let dy = dst_y + row;
+                let src_row_ptr = unsafe { base_ptr.add((sy * stride_px + src_x) as usize) };
+                let ax = cx + dst_x;
+                let ay = cy + dy;
+                for col in 0..blit_w {
+                    let pixel = unsafe { src_row_ptr.add(col as usize).read_volatile() };
+                    gfx.put_pixel(ax + col, ay, pixel);
+                }
             }
         }
 

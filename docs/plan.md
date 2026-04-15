@@ -393,19 +393,35 @@ Hardware (keyboard/framebuffer)
 ✅ DONE        Phase 3.6  chdir(72)/getcwd(73)/mkdir(71) syscalls; Task.cwd; fork copies cwd
 ✅ DONE        Phase 3.3  Standalone /bin/ls, /bin/cat, /bin/ps, /bin/cp, /bin/mkdir, /bin/pwd
 
-🔴 TOP PRIORITY  Terminal Architecture Fix (see Phase 8.4a below)
-⬡             Phase 3.4  Text editor (/bin/edit)
-⬡             Phase 4.3  TTY (canonical/raw mode)
-⬡             Phase 5.2  mmap anonymous
-⬡             Phase 6.2  ext2 read-only driver
-⬡             Phase 6.3  MBR partition table
-⬡             Phase 9.1  fast syscall (SYSCALL/SYSRET)
-⬡             Phase 7.1  virtio-net driver (use virtio-drivers crate)
-⬡             Phase 7.2  smoltcp integration
-⬡             Phase 7.3  Socket syscalls
-⬡             Phase 8.2  Shared memory
-⬡             Phase 8.1  Userspace compositor
-⬡             Phase 9.2  SMEP/SMAP
+✅ DONE         Terminal Architecture Fix (Phase 8.4a) — userspace terminal is default at boot; kernel terminal is fallback only
+✅ DONE        Phase 3.4  Text editor (/bin/edit) — nano-like, VT100, compositor IPC
+✅ DONE        Phase 4.3  TTY (tty.rs, termios, ioctl=92, TCGETS/TCSETS/TIOCGWINSZ)
+✅ DONE        Phase 6.2  ext2 read-only driver — superblock, BGDT, inodes, direct blocks
+✅ DONE        Phase 6.3  MBR partition table — parse 4 entries, detect Linux (0x83) part
+✅ DONE        Phase 9.1  fast syscall (SYSCALL/SYSRET) — STAR/LSTAR/FMASK MSRs
+✅ DONE        Phase 9.2  SMEP — CR4 bit 20 enabled at boot
+✅ DONE        Phase 5.2  mmap anonymous — map_user_region_in at 0x0800_0000, no free needed
+✅ DONE        Phase 4.1  Full signal delivery — pending_signals bitmask, signal_handlers[32],
+                           sigaction(93)/sigreturn(95) syscalls, trampoline at 0x0090_0000,
+                           SignalFrame on user stack, kill now sends pending sig not immediate kill
+✅ DONE        Phase 8.2  Shared memory — shmget(110)/shmat(111)/shmdt(112); physical frame
+                           sharing via map_phys_pages_in; up to 16 segs × 1 MB; per-task attach table
+✅ DONE        Makefile   ext2-disk target (mke2fs); EXT2_FLAG in run-x86_64/gui/bios targets
+✅ DONE        Phase 8.1  Userspace compositor extension — MSG_BLIT_SHM(5) blits shm ARGB
+                           buffer directly to window; comp_blit_shm() in oxide-rt
+✅ DONE        Phase 6.4  File permissions — mode/uid/gid on RamFS INode; chmod(96)/chown(97) syscalls
+✅ DONE        Phase 7.3  Socket syscalls — bind(101)/listen(103)/accept(104)/sendto(108)/recvfrom(109)
+                           wired in syscall_core + KernelRuntime + oxide-rt wrappers;
+                           /bin/nc interactive netcat (TCP listen/connect, UDP send/listen)
+✅ DONE        Phase 9.5  Crash dump — BSoD framebuffer renderer on panic; PanicFb global in
+                           graphics.rs stores FB pointer; draw_bsod() renders regs, location,
+                           blue screen; ascii_glyph() in fonts.rs bypasses GUI layer
+✅ DONE        Phase 9.4  ACPI proper — RsdpRequest Limine query; walk RSDT/XSDT→FADT;
+                           read PM1a_CNT_BLK port; use (SLP_TYP<<10)|SLP_EN for S5 shutdown
+✅ DONE        Coreutils  unlink(76)/rename(77)/truncate(78) syscalls; /bin/rm, /bin/mv
+                           added to syscall_core + KernelRuntime + oxide-rt + programs.rs
+⬡             Phase 7.1  virtio-net driver (use virtio-drivers crate) [RTL8139 already implemented]
+⬡             Phase 7.2  smoltcp integration [already fully implemented in stack.rs]
 ⬡             Phase 9.3  SMP
 ```
 

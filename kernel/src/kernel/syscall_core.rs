@@ -38,20 +38,36 @@ pub enum Syscall {
     Getcwd        = 73,
     Stat          = 74,
     Fstat         = 75,
+    Unlink        = 76,
+    Rename        = 77,
+    Truncate      = 78,
     Dup2          = 81,
     Kill          = 91,
-    // ── Socket syscalls (100–107) ────────────────────────────────────────
+    Ioctl         = 92,
+    Sigaction     = 93,
+    Sigreturn     = 95,
+    Chmod         = 96,
+    Chown         = 97,
+    // ── Socket syscalls (100–109) ────────────────────────────────────────
     Socket        = 100,
+    Bind          = 101,
     Connect       = 102,
+    Listen        = 103,
+    Accept        = 104,
     Send          = 105,
     Recv          = 106,
     CloseSocket   = 107,
+    Sendto        = 108,
+    Recvfrom      = 109,
     MsgqCreate    = 115,
     Msgsnd        = 116,
     Msgrcv        = 117,
     MsgqDestroy   = 118,
     MsgrcvWait    = 119,
     MsgqLen       = 120,
+    Shmget        = 110,
+    Shmat         = 111,
+    Shmdt         = 112,
     Invalid       = u64::MAX,
 }
 
@@ -82,19 +98,35 @@ impl Syscall {
             Self::Getcwd        => "getcwd",
             Self::Stat          => "stat",
             Self::Fstat         => "fstat",
+            Self::Unlink        => "unlink",
+            Self::Rename        => "rename",
+            Self::Truncate      => "truncate",
             Self::Dup2          => "dup2",
             Self::Kill          => "kill",
+            Self::Ioctl         => "ioctl",
+            Self::Sigaction     => "sigaction",
+            Self::Sigreturn     => "sigreturn",
+            Self::Chmod         => "chmod",
+            Self::Chown         => "chown",
             Self::Socket        => "socket",
+            Self::Bind          => "bind",
             Self::Connect       => "connect",
+            Self::Listen        => "listen",
+            Self::Accept        => "accept",
             Self::Send          => "send",
             Self::Recv          => "recv",
             Self::CloseSocket   => "close_socket",
+            Self::Sendto        => "sendto",
+            Self::Recvfrom      => "recvfrom",
             Self::MsgqCreate    => "msgq_create",
             Self::Msgsnd        => "msgsnd",
             Self::Msgrcv        => "msgrcv",
             Self::MsgqDestroy   => "msgq_destroy",
             Self::MsgrcvWait    => "msgrcv_wait",
             Self::MsgqLen       => "msgq_len",
+            Self::Shmget        => "shmget",
+            Self::Shmat         => "shmat",
+            Self::Shmdt         => "shmdt",
             Self::Invalid       => "invalid",
         }
     }
@@ -127,19 +159,35 @@ impl From<u64> for Syscall {
             73 => Self::Getcwd,
             74 => Self::Stat,
             75 => Self::Fstat,
+            76 => Self::Unlink,
+            77 => Self::Rename,
+            78 => Self::Truncate,
             81 => Self::Dup2,
             91 => Self::Kill,
+            92 => Self::Ioctl,
+            93 => Self::Sigaction,
+            95 => Self::Sigreturn,
+            96 => Self::Chmod,
+            97 => Self::Chown,
             100 => Self::Socket,
+            101 => Self::Bind,
             102 => Self::Connect,
+            103 => Self::Listen,
+            104 => Self::Accept,
             105 => Self::Send,
             106 => Self::Recv,
             107 => Self::CloseSocket,
+            108 => Self::Sendto,
+            109 => Self::Recvfrom,
             115 => Self::MsgqCreate,
             116 => Self::Msgsnd,
             117 => Self::Msgrcv,
             118 => Self::MsgqDestroy,
             119 => Self::MsgrcvWait,
             120 => Self::MsgqLen,
+            110 => Self::Shmget,
+            111 => Self::Shmat,
+            112 => Self::Shmdt,
             _  => Self::Invalid,
         }
     }
@@ -241,15 +289,48 @@ pub trait SyscallRuntime {
     /// Unmap a previously mapped region. No-op stub (returns 0).
     fn munmap_impl(&mut self, _addr: u64, _len: u64) -> i64 { 0 }
 
-    /// Terminate the process with the given PID.  Returns 0 on success.
-    fn kill_pid(&mut self, _pid: u64) -> i64 { ENOSYS }
+    /// Send `signum` to the process with the given PID.  Returns 0 on success.
+    fn kill_pid_sig(&mut self, _pid: u64, _signum: u8) -> i64 { ENOSYS }
+
+    /// Perform a device-specific control operation.
+    /// `fd`: file descriptor (0=stdin, 1=stdout), `request`: ioctl code, `arg`: pointer/value.
+    fn ioctl_impl(&mut self, _fd: i32, _request: u64, _arg: u64) -> i64 { ENOSYS }
+
+    /// Register a signal handler. `handler` = user fn ptr, `SIG_DFL` (0), or `SIG_IGN` (1).
+    /// If `old_ptr` is non-zero it receives the previous handler address.
+    fn sigaction_impl(&mut self, _signum: u32, _handler: u64, _old_ptr: u64) -> i64 { ENOSYS }
+
+    /// Restore the pre-signal execution context (called by the trampoline after a handler returns).
+    fn sigreturn_impl(&mut self) -> i64 { ENOSYS }
+
+    // ── File permission syscalls ───────────────────────────────────────────
+    /// Change permission bits on a file at `path`.  `mode` is the POSIX mode (e.g. 0o644).
+    fn chmod_impl(&mut self, _path: &[u8], _mode: u16) -> i64 { ENOSYS }
+    /// Change owner/group of a file at `path`.
+    fn chown_impl(&mut self, _path: &[u8], _uid: u32, _gid: u32) -> i64 { ENOSYS }
+
+    // ── Shared memory syscalls ─────────────────────────────────────────────
+    /// Create or open a shared memory segment. Returns a shm-id ≥ 0 or negative error.
+    fn shmget_impl(&mut self, _key: u32, _size: u64, _flags: u32) -> i64 { ENOSYS }
+    /// Attach a shared memory segment into the calling process's address space.
+    /// Returns the virtual address on success, or a negative error.
+    fn shmat_impl(&mut self, _shmid: u32, _addr_hint: u64) -> i64 { ENOSYS }
+    /// Detach a shared memory segment previously attached at `addr`.
+    fn shmdt_impl(&mut self, _addr: u64) -> i64 { ENOSYS }
 
     // ── Socket syscalls ────────────────────────────────────────────────────
     fn socket_impl(&mut self, _domain: u32, _type_: u32, _proto: u32) -> i64 { ENOSYS }
+    unsafe fn bind_impl(&mut self, _sfd: u64, _addr_ptr: u64, _addr_len: usize) -> i64 { ENOSYS }
     unsafe fn connect_impl(&mut self, _sfd: u64, _addr_ptr: u64, _addr_len: usize) -> i64 { ENOSYS }
+    fn listen_impl(&mut self, _sfd: u64, _backlog: i32) -> i64 { ENOSYS }
+    fn accept_impl(&mut self, _sfd: u64) -> i64 { ENOSYS }
     unsafe fn send_impl(&mut self, _sfd: u64, _buf_ptr: u64, _len: usize, _flags: u32) -> i64 { ENOSYS }
     unsafe fn recv_impl(&mut self, _sfd: u64, _buf_ptr: u64, _len: usize, _flags: u32) -> i64 { ENOSYS }
     fn close_socket_impl(&mut self, _sfd: u64) -> i64 { ENOSYS }
+    unsafe fn sendto_impl(&mut self, _sfd: u64, _buf_ptr: u64, _len: usize, _flags: u32,
+                          _addr_ptr: u64, _addr_len: usize) -> i64 { ENOSYS }
+    unsafe fn recvfrom_impl(&mut self, _sfd: u64, _buf_ptr: u64, _len: usize, _flags: u32,
+                            _addr_ptr: u64, _addr_len_ptr: u64) -> i64 { ENOSYS }
 
     /// Fill `buf` with newline-separated directory entries under `path`.
     /// Each entry is `<name>\n` for files, `<name>/\n` for directories.
@@ -271,6 +352,15 @@ pub trait SyscallRuntime {
 
     /// Stat an open file descriptor.  Writes a `FileStat` into `buf_ptr`.
     fn fstat_impl(&mut self, _fd: i32, _buf_ptr: u64) -> i64 { ENOSYS }
+
+    /// Remove a file at `path`.
+    fn unlink_impl(&mut self, _path: &[u8]) -> i64 { ENOSYS }
+
+    /// Rename/move a file from `old_path` to `new_path`.
+    fn rename_impl(&mut self, _old_path: &[u8], _new_path: &[u8]) -> i64 { ENOSYS }
+
+    /// Truncate an open file descriptor to `length` bytes.
+    fn truncate_impl(&mut self, _fd: i32, _length: u64) -> i64 { ENOSYS }
 
     /// Duplicate `old_fd` to `new_fd`.  Returns `new_fd` on success.
     fn dup2_impl(&mut self, _old_fd: i32, _new_fd: i32) -> i64 { ENOSYS }
@@ -367,15 +457,76 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
             let r = runtime.fstat_impl(request.arg1 as i32, request.arg2);
             if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
         }
+        Syscall::Unlink => unsafe {
+            if let Err(e) = validate_user_range(request.arg1, request.arg2) {
+                return SyscallResult::err(e);
+            }
+            let path = slice::from_raw_parts(request.arg1 as *const u8, request.arg2 as usize);
+            let r = runtime.unlink_impl(path);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Rename => unsafe {
+            // arg1=old_ptr, arg2=old_len, arg3=new_ptr, arg4=new_len
+            if let Err(e) = validate_user_range(request.arg1, request.arg2) { return SyscallResult::err(e); }
+            if let Err(e) = validate_user_range(request.arg3, request.arg4) { return SyscallResult::err(e); }
+            let old_path = slice::from_raw_parts(request.arg1 as *const u8, request.arg2 as usize);
+            let new_path = slice::from_raw_parts(request.arg3 as *const u8, request.arg4 as usize);
+            let r = runtime.rename_impl(old_path, new_path);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Truncate => {
+            let r = runtime.truncate_impl(request.arg1 as i32, request.arg2);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
         Syscall::Dup2          => sys_dup2(runtime, request.arg1 as i32, request.arg2 as i32),
-        Syscall::Kill          => sys_kill(runtime, request.arg1),
+        Syscall::Kill          => sys_kill(runtime, request.arg1, request.arg2),
+        Syscall::Ioctl         => {
+            let r = runtime.ioctl_impl(request.arg1 as i32, request.arg2, request.arg3);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Sigaction     => {
+            let r = runtime.sigaction_impl(request.arg1 as u32, request.arg2, request.arg3);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Sigreturn     => {
+            let r = runtime.sigreturn_impl();
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Chmod => unsafe {
+            if let Err(e) = validate_user_range(request.arg1, request.arg2) {
+                return SyscallResult::err(e);
+            }
+            let path = slice::from_raw_parts(request.arg1 as *const u8, request.arg2 as usize);
+            let r = runtime.chmod_impl(path, request.arg3 as u16);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Chown => unsafe {
+            if let Err(e) = validate_user_range(request.arg1, request.arg2) {
+                return SyscallResult::err(e);
+            }
+            let path = slice::from_raw_parts(request.arg1 as *const u8, request.arg2 as usize);
+            let r = runtime.chown_impl(path, request.arg3 as u32, request.arg4 as u32);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
         // ── Socket syscalls ──────────────────────────────────────────────
         Syscall::Socket => {
             let r = runtime.socket_impl(request.arg1 as u32, request.arg2 as u32, request.arg3 as u32);
             if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
         }
+        Syscall::Bind => unsafe {
+            let r = runtime.bind_impl(request.arg1, request.arg2, request.arg3 as usize);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
         Syscall::Connect => unsafe {
             let r = runtime.connect_impl(request.arg1, request.arg2, request.arg3 as usize);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Listen => {
+            let r = runtime.listen_impl(request.arg1, request.arg2 as i32);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Accept => {
+            let r = runtime.accept_impl(request.arg1);
             if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
         }
         Syscall::Send => unsafe {
@@ -390,12 +541,34 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
             let r = runtime.close_socket_impl(request.arg1);
             if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
         }
+        Syscall::Sendto => unsafe {
+            let r = runtime.sendto_impl(request.arg1, request.arg2, request.arg3 as usize,
+                                        request.arg4 as u32, request.arg5, 16);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Recvfrom => unsafe {
+            let r = runtime.recvfrom_impl(request.arg1, request.arg2, request.arg3 as usize,
+                                          request.arg4 as u32, request.arg5, 0);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
         Syscall::MsgqCreate    => sys_msgq_create(runtime, request.arg1 as u32),
         Syscall::Msgsnd        => unsafe { sys_msgsnd(runtime, request.arg1 as u32, request.arg2 as u32, request.arg3, request.arg4) },
         Syscall::Msgrcv        => unsafe { sys_msgrcv(runtime, request.arg1 as u32, request.arg2) },
         Syscall::MsgqDestroy   => sys_msgq_destroy(runtime, request.arg1 as u32),
         Syscall::MsgrcvWait    => unsafe { sys_msgrcv_wait(runtime, request.arg1 as u32, request.arg2) },
         Syscall::MsgqLen       => sys_msgq_len(runtime, request.arg1 as u32),
+        Syscall::Shmget => {
+            let r = runtime.shmget_impl(request.arg1 as u32, request.arg2, request.arg3 as u32);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Shmat => {
+            let r = runtime.shmat_impl(request.arg1 as u32, request.arg2);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Shmdt => {
+            let r = runtime.shmdt_impl(request.arg1);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
         Syscall::Invalid       => SyscallResult::err(ENOSYS),
     }
 }
@@ -539,8 +712,10 @@ fn sys_brk<R: SyscallRuntime>(runtime: &mut R, new_end: u64) -> SyscallResult {
     if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
 }
 
-fn sys_kill<R: SyscallRuntime>(runtime: &mut R, pid: u64) -> SyscallResult {
-    let r = runtime.kill_pid(pid);
+fn sys_kill<R: SyscallRuntime>(runtime: &mut R, pid: u64, signum: u64) -> SyscallResult {
+    // arg2 = 0 is treated as SIGKILL for backward compatibility.
+    let sig = if signum == 0 { 9 } else { signum };
+    let r = runtime.kill_pid_sig(pid, sig as u8);
     if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
 }
 

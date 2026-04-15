@@ -45,6 +45,12 @@ pub struct INode {
     pub kind: NodeKind,
     /// File content (always empty for directories).
     pub data: Vec<u8>,
+    /// POSIX permission bits (e.g. 0o644 for rw-r--r--).
+    pub mode: u16,
+    /// Owner user ID.
+    pub uid: u32,
+    /// Owner group ID.
+    pub gid: u32,
 }
 
 // ── FD backend tag ────────────────────────────────────────────────────────
@@ -55,6 +61,8 @@ pub enum FdBackend {
     RamFS,
     /// FAT16 disk file; `raw_fd` is the internal FAT slot (FAT_FD_BASE + i).
     Fat16,
+    /// ext2 disk file (read-only); `raw_fd` is the ext2 slot (EXT2_FD_BASE + i).
+    Ext2,
     /// Anonymous pipe end; `raw_fd` is the pipe's raw fd, `writable` tells direction.
     Pipe,
     /// /dev/null — writes discard, reads return EOF.
@@ -165,6 +173,21 @@ impl FdTable {
         }
     }
 
+    /// Allocate one FD slot backed by an ext2 raw fd (read-only).
+    pub fn open_ext2(&mut self, ext2_raw_fd: i32) -> i64 {
+        match self.alloc_fd() {
+            None     => -24, // EMFILE
+            Some(fd) => {
+                self.entries[fd] = Some(FdEntry {
+                    backend: FdBackend::Ext2,
+                    inode_idx: 0, raw_fd: ext2_raw_fd, offset: 0,
+                    writable: false, append: false,
+                });
+                fd as i64
+            }
+        }
+    }
+
     /// Allocate one FD slot for a /dev file.
     pub fn open_dev(&mut self, backend: FdBackend) -> i64 {
         match self.alloc_fd() {
@@ -190,6 +213,7 @@ impl FdTable {
                 match e.backend {
                     FdBackend::Pipe  => unsafe { crate::kernel::pipe::close(e.raw_fd); }
                     FdBackend::Fat16 => unsafe { crate::kernel::fat::close(e.raw_fd); }
+                    FdBackend::Ext2  => unsafe { crate::kernel::ext2::close(e.raw_fd); }
                     _ => {}
                 }
                 0
@@ -210,6 +234,9 @@ impl FdTable {
             }
             FdBackend::Fat16 => {
                 return unsafe { crate::kernel::fat::read_fd(entry.raw_fd, buf) };
+            }
+            FdBackend::Ext2 => {
+                return unsafe { crate::kernel::ext2::read_fd(entry.raw_fd, buf) };
             }
             FdBackend::DevNull => return 0,
             FdBackend::DevTty  => {
@@ -248,6 +275,9 @@ impl FdTable {
             }
             FdBackend::Fat16 => {
                 return unsafe { crate::kernel::fat::write_fd(entry.raw_fd, buf) };
+            }
+            FdBackend::Ext2 => {
+                return EACCES; // ext2 is read-only
             }
             FdBackend::DevNull | FdBackend::DevTty => {
                 // DevNull discards; DevTty mirrors to the output capture path
@@ -338,6 +368,9 @@ impl RamFs {
             parent_idx: ROOT_PARENT,
             kind:       NodeKind::Directory,
             data:       Vec::new(),
+            mode:       0o755,
+            uid:        0,
+            gid:        0,
         });
 
         // Standard directories
@@ -402,6 +435,9 @@ impl RamFs {
             parent_idx,
             kind:       NodeKind::Directory,
             data:       Vec::new(),
+            mode:       0o755,
+            uid:        0,
+            gid:        0,
         });
         Ok(idx)
     }
@@ -457,6 +493,9 @@ impl RamFs {
             parent_idx,
             kind:       NodeKind::File,
             data:       Vec::new(),
+            mode:       0o644,
+            uid:        0,
+            gid:        0,
         });
         Ok(idx)
     }
@@ -507,6 +546,58 @@ impl RamFs {
         }
         self.inodes.remove(idx);
         Ok(idx)
+    }
+
+    /// Rename a file from `old_path` to `new_path`.
+    /// Moves the file to a different directory if needed.
+    pub fn rename(&mut self, old_path: &str, new_path: &str) -> Result<(), i64> {
+        // Validate source.
+        let _ = self.resolve(old_path).ok_or(ENOENT)?;
+        if self.inodes[self.resolve(old_path).unwrap()].kind == NodeKind::Directory {
+            return Err(EISDIR);
+        }
+
+        // If destination already exists, remove it first.
+        if self.resolve(new_path).is_some() {
+            let _ = self.remove_file(new_path)?;
+        }
+
+        // Re-resolve source (index may have changed after removal).
+        let idx = self.resolve(old_path).ok_or(ENOENT)?;
+
+        // Parse new path into (parent_dir, name).
+        let (new_dir, new_name) = Self::split_path(new_path).ok_or(EINVAL)?;
+        let new_parent = if new_dir == "/" || new_dir.is_empty() {
+            0usize // root
+        } else {
+            self.resolve(new_dir).ok_or(ENOENT)?
+        };
+
+        // Update the inode in-place.
+        self.inodes[idx].name  = String::from(new_name);
+        self.inodes[idx].parent_idx = new_parent;
+        Ok(())
+    }
+
+    /// Truncate a file to `length` bytes.
+    pub fn truncate(&mut self, path: &str, length: usize) -> Result<(), i64> {
+        let idx = self.resolve(path).ok_or(ENOENT)?;
+        if self.inodes[idx].kind == NodeKind::Directory { return Err(EISDIR); }
+        self.inodes[idx].data.truncate(length);
+        if length > self.inodes[idx].data.len() {
+            self.inodes[idx].data.resize(length, 0);
+        }
+        Ok(())
+    }
+
+    /// Truncate an already-open inode by index.
+    pub fn truncate_by_idx(&mut self, inode_idx: usize, length: usize) {
+        if inode_idx < self.inodes.len() {
+            self.inodes[inode_idx].data.truncate(length);
+            if length > self.inodes[inode_idx].data.len() {
+                self.inodes[inode_idx].data.resize(length, 0);
+            }
+        }
     }
 
     /// Returns `true` if the path exists.

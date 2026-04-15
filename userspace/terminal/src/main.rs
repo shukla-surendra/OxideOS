@@ -68,6 +68,11 @@ const PROGRAMS: &[(&str, &str)] = &[
     ("input",      "Echo stdin characters (Ctrl-C to quit)"),
     ("filetest",   "RamFS file create/write/read demo"),
     ("sh",         "Minimal shell with fork/exec/waitpid"),
+    ("edit",       "Full-screen text editor (Ctrl+S save, Ctrl+Q quit)"),
+    ("ls",         "List directory contents"),
+    ("cat",        "Print file contents"),
+    ("ps",         "Show running processes"),
+    ("wget",       "Minimal HTTP GET client"),
 ];
 
 // ── Tiny heap-free string ─────────────────────────────────────────────────────
@@ -740,16 +745,13 @@ pub extern "C" fn oxide_main() {
 
     loop {
         let Some(c) = getchar() else {
-            // Update status bar every ~100 frames (~1 second) even when idle.
             frame_tick += 1;
-            if frame_tick % 100 == 0 {
-                draw_status_bar(my_pid);
-                comp_present();
-            }
-            if term.dirty {
-                redraw_full(&term, my_pid);
-                term.dirty = false;
-            }
+            // Always redraw every frame so the kernel compositor always has
+            // fresh content to overlay onto the window (the kernel may clear
+            // the content area on window drag/resize and needs us to refill it).
+            redraw_full(&term, my_pid);
+            term.dirty = false;
+            let _ = frame_tick; // suppress unused warning
             sleep_ms(10);
             continue;
         };

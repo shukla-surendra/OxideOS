@@ -180,6 +180,18 @@ pub const ASCII_FONT: [[u8; 8]; 128] = [
     [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
 ];
 
+/// Return the 8-byte bitmap for a printable ASCII byte (falls back to a box for unknowns).
+/// Used by the panic BSoD renderer which cannot use the full Graphics API.
+pub fn ascii_glyph(ch: u8) -> [u8; 8] {
+    let idx = ch as usize;
+    if idx < 128 {
+        ASCII_FONT[idx]
+    } else {
+        // Solid box for non-ASCII.
+        [0xFF, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0xFF]
+    }
+}
+
 pub fn draw_char(graphics: &Graphics, x: u64, y: u64, ch: char, color: u32) {
     let char_code = ch as usize;
     if char_code >= 128 {

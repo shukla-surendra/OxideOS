@@ -21,6 +21,9 @@ override IMAGE_NAME  := oxide_os-$(KARCH)
 override DISK_IMAGE  := oxide_disk.img
 # Size of the FAT16 disk image in 512-byte sectors (4 MB = 8192 sectors).
 override DISK_SECTORS := 8192
+# ext2 secondary disk image (32 MB).
+override EXT2_IMAGE  := oxide_ext2.img
+override EXT2_SIZE_MB := 32
 
 .PHONY: all
 all: $(IMAGE_NAME).iso
@@ -37,6 +40,17 @@ $(DISK_IMAGE):
 	dd if=/dev/zero bs=512 count=$(DISK_SECTORS) of=$(DISK_IMAGE)
 	mformat -i $(DISK_IMAGE) -F -v OXIDEDISK ::
 
+# Create a blank ext2 disk image for the secondary IDE drive.
+# Requires e2fsprogs (mke2fs).  Run once; not rebuilt automatically.
+# Usage: make ext2-disk
+# Then populate with: sudo mount -o loop oxide_ext2.img /mnt && sudo cp files /mnt/ && sudo umount /mnt
+.PHONY: ext2-disk
+ext2-disk: $(EXT2_IMAGE)
+
+$(EXT2_IMAGE):
+	dd if=/dev/zero bs=1M count=$(EXT2_SIZE_MB) of=$(EXT2_IMAGE)
+	mke2fs -t ext2 -L OXIDEEXT2 $(EXT2_IMAGE)
+
 .PHONY: run
 run: run-$(KARCH)
 
@@ -46,9 +60,10 @@ run-gui: run-gui-$(KARCH)
 .PHONY: run-hdd
 run-hdd: run-hdd-$(KARCH)
 
-# Optional ATA disk flag — only passed when the image exists.
-comma     := ,
-DISK_FLAG := $(if $(wildcard $(DISK_IMAGE)),-drive file=$(DISK_IMAGE)$(comma)format=raw$(comma)if=ide)
+# Optional ATA disk flags — only passed when the images exist.
+comma      := ,
+DISK_FLAG  := $(if $(wildcard $(DISK_IMAGE)),-drive file=$(DISK_IMAGE)$(comma)format=raw$(comma)if=ide$(comma)index=0)
+EXT2_FLAG  := $(if $(wildcard $(EXT2_IMAGE)),-drive file=$(EXT2_IMAGE)$(comma)format=raw$(comma)if=ide$(comma)index=1)
 
 .PHONY: run-x86_64
 run-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
@@ -59,6 +74,7 @@ run-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
 		$(DISK_FLAG) \
+		$(EXT2_FLAG) \
 		$(NETFLAGS) \
 		$(QEMUFLAGS)
 
@@ -74,6 +90,7 @@ run-gui-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NA
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
 		$(DISK_FLAG) \
+		$(EXT2_FLAG) \
 		-display sdl,grab-on-hover=on \
 		$(NETFLAGS) \
 		$(QEMUFLAGS)
@@ -197,7 +214,8 @@ run-bios: $(IMAGE_NAME).iso
 		-serial stdio \
 		-cdrom $(IMAGE_NAME).iso \
 		-boot d \
-		$(if $(wildcard $(DISK_IMAGE)),-drive file=$(DISK_IMAGE)$(comma)format=raw$(comma)if=ide) \
+		$(DISK_FLAG) \
+		$(EXT2_FLAG) \
 		$(NETFLAGS) \
 		$(QEMUFLAGS)
 
@@ -317,6 +335,10 @@ clean:
 .PHONY: clean-disk
 clean-disk:
 	rm -f $(DISK_IMAGE)
+
+.PHONY: clean-ext2
+clean-ext2:
+	rm -f $(EXT2_IMAGE)
 
 .PHONY: distclean
 distclean: clean
