@@ -190,3 +190,88 @@ pub unsafe fn vfs_chdir(path: &str) -> i64 {
     }
     0
 }
+
+// ── VFS stat ─────────────────────────────────────────────────────────────────
+
+/// Kind returned by `vfs_stat`.
+#[repr(u32)]
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum StatKind {
+    File      = 0,
+    Directory = 1,
+    Device    = 2,
+}
+
+/// Minimal file metadata returned by the `stat` syscall.
+#[repr(C)]
+pub struct FileStat {
+    /// File size in bytes (0 for directories and device files).
+    pub size: u64,
+    /// Entry type: 0=file, 1=directory, 2=device.
+    pub kind: u32,
+    pub _pad: u32,
+}
+
+/// Return metadata for `path`.  Writes into `*out` and returns 0 on success,
+/// or a negative error code if the path does not exist.
+pub unsafe fn vfs_stat(path: &str, out: *mut FileStat) -> i64 {
+    unsafe {
+        match resolve(path) {
+            Resolved::Dev { .. } => {
+                (*out).size = 0;
+                (*out).kind = StatKind::Device as u32;
+                (*out)._pad = 0;
+                0
+            }
+
+            Resolved::Fat16 { fat_path } => {
+                if !crate::kernel::ata::is_present() { return -19; }
+                // Try as a directory first, then as a file.
+                if fat_path == b"/disk" || fat_path == b"/disk/" {
+                    (*out).size = 0;
+                    (*out).kind = StatKind::Directory as u32;
+                    (*out)._pad = 0;
+                    return 0;
+                }
+                if crate::kernel::fat::resolve_dir(fat_path).is_some() {
+                    (*out).size = 0;
+                    (*out).kind = StatKind::Directory as u32;
+                    (*out)._pad = 0;
+                    return 0;
+                }
+                // Not a directory — try opening as a file to get its size.
+                let fd = crate::kernel::fat::open(fat_path, 0);
+                if fd < 0 { return -7; } // ENOENT
+                let fd = fd as i32;
+                // Seek to end to obtain file size.
+                let size = crate::kernel::fat::file_size(fd) as u64;
+                crate::kernel::fat::close(fd);
+                (*out).size = size;
+                (*out).kind = StatKind::File as u32;
+                (*out)._pad = 0;
+                0
+            }
+
+            Resolved::RamFS { path: rpath } => {
+                match crate::kernel::fs::ramfs::RAMFS.get() {
+                    None => -2,
+                    Some(fs) => {
+                        if let Some(data) = fs.read_file(rpath) {
+                            (*out).size = data.len() as u64;
+                            (*out).kind = StatKind::File as u32;
+                            (*out)._pad = 0;
+                            0
+                        } else if fs.list_dir(rpath).is_some() {
+                            (*out).size = 0;
+                            (*out).kind = StatKind::Directory as u32;
+                            (*out)._pad = 0;
+                            0
+                        } else {
+                            -7 // ENOENT
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

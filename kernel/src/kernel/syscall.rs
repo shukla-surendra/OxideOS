@@ -202,9 +202,65 @@ impl SyscallRuntime for KernelRuntime {
         }
     }
 
+    fn mmap_anon(&mut self, _hint: u64, len: u64) -> i64 {
+        if len == 0 { return -22; } // EINVAL
+        unsafe {
+            use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+            use crate::kernel::paging_allocator as pa;
+
+            /// Start of the anonymous-mmap virtual address region (128 MB).
+            /// Heap starts at 16 MB (USER_HEAP_BASE) and grows up; mmap area
+            /// starts at 128 MB so the two regions don't collide.
+            const USER_MMAP_BASE: u64 = 0x0800_0000;
+            const PAGE_SIZE: u64 = 4096;
+
+            let sched = &raw mut SCHED;
+            let idx   = CURRENT_TASK_IDX;
+            let cr3   = (*sched).tasks[idx].cr3;
+
+            let base = {
+                let end = (*sched).tasks[idx].mmap_end;
+                if end == 0 { USER_MMAP_BASE } else { end }
+            };
+
+            // Round length up to whole pages.
+            let pages = ((len + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+
+            if pa::map_user_region_in(cr3, base, pages, true, false).is_err() {
+                return -12; // ENOMEM
+            }
+
+            let new_end = base + pages as u64 * PAGE_SIZE;
+            (*sched).tasks[idx].mmap_end = new_end;
+            base as i64
+        }
+    }
+
     fn kill_pid(&mut self, pid: u64) -> i64 {
         let ok = unsafe { crate::kernel::scheduler::kill(pid as u8) };
         if ok { 0 } else { -3 }
+    }
+
+    // ── Socket syscalls ────────────────────────────────────────────────────
+
+    fn socket_impl(&mut self, domain: u32, type_: u32, proto: u32) -> i64 {
+        unsafe { crate::kernel::net::socket::sys_socket(domain, type_, proto) }
+    }
+
+    unsafe fn connect_impl(&mut self, sfd: u64, addr_ptr: u64, addr_len: usize) -> i64 {
+        unsafe { crate::kernel::net::socket::sys_connect(sfd as i64, addr_ptr as *const u8, addr_len) }
+    }
+
+    unsafe fn send_impl(&mut self, sfd: u64, buf_ptr: u64, len: usize, flags: u32) -> i64 {
+        unsafe { crate::kernel::net::socket::sys_send(sfd as i64, buf_ptr as *const u8, len, flags) }
+    }
+
+    unsafe fn recv_impl(&mut self, sfd: u64, buf_ptr: u64, len: usize, flags: u32) -> i64 {
+        unsafe { crate::kernel::net::socket::sys_recv(sfd as i64, buf_ptr as *mut u8, len, flags) }
+    }
+
+    fn close_socket_impl(&mut self, sfd: u64) -> i64 {
+        unsafe { crate::kernel::net::socket::sys_close_socket(sfd as i64) }
     }
 
     fn readdir_impl(&mut self, path: &[u8], buf: &mut [u8]) -> i64 {
@@ -239,6 +295,71 @@ impl SyscallRuntime for KernelRuntime {
             let len   = task.cwd_len.min(buf.len());
             buf[..len].copy_from_slice(&task.cwd[..len]);
             len as i64
+        }
+    }
+
+    fn stat_impl(&mut self, path: &[u8], buf_ptr: u64) -> i64 {
+        let path_str = match core::str::from_utf8(path) {
+            Ok(s)  => s,
+            Err(_) => return -22, // EINVAL
+        };
+        unsafe {
+            crate::kernel::vfs::vfs_stat(
+                path_str,
+                buf_ptr as *mut crate::kernel::vfs::FileStat,
+            )
+        }
+    }
+
+    fn fstat_impl(&mut self, fd: i32, buf_ptr: u64) -> i64 {
+        unsafe {
+            use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+            use crate::kernel::fs::ramfs::FdBackend;
+            use crate::kernel::vfs::{FileStat, StatKind};
+
+            if fd < 0 || fd as usize >= crate::kernel::fs::ramfs::MAX_FD { return -9; }
+            let sched = &raw const SCHED;
+            let idx   = CURRENT_TASK_IDX;
+            let entry = match (*sched).tasks[idx].fd_table.entries[fd as usize] {
+                None    => return -9, // EBADF
+                Some(e) => e,
+            };
+            let out = buf_ptr as *mut FileStat;
+
+            match entry.backend {
+                FdBackend::DevNull | FdBackend::DevTty => {
+                    (*out).size = 0;
+                    (*out).kind = StatKind::Device as u32;
+                    (*out)._pad = 0;
+                    0
+                }
+                FdBackend::Fat16 => {
+                    let size = crate::kernel::fat::file_size(entry.raw_fd) as u64;
+                    (*out).size = size;
+                    (*out).kind = StatKind::File as u32;
+                    (*out)._pad = 0;
+                    0
+                }
+                FdBackend::RamFS => {
+                    let size = match crate::kernel::fs::ramfs::RAMFS.get() {
+                        Some(fs) => {
+                            let inode = &fs.inodes[entry.inode_idx];
+                            inode.data.len() as u64
+                        }
+                        None => 0,
+                    };
+                    (*out).size = size;
+                    (*out).kind = StatKind::File as u32;
+                    (*out)._pad = 0;
+                    0
+                }
+                FdBackend::Pipe => {
+                    (*out).size = 0;
+                    (*out).kind = StatKind::File as u32;
+                    (*out)._pad = 0;
+                    0
+                }
+            }
         }
     }
 

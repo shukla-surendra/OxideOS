@@ -405,6 +405,16 @@ pub fn is_fat_fd(fd: i32) -> bool {
     fd >= FAT_FD_BASE && fd < FAT_FD_BASE + FAT_FD_COUNT as i32
 }
 
+/// Return the size (in bytes) of the open file `fd`.  Returns 0 if `fd` is invalid.
+pub fn file_size(fd: i32) -> u32 {
+    if !is_fat_fd(fd) { return 0; }
+    let slot = (fd - FAT_FD_BASE) as usize;
+    unsafe {
+        let fs = &raw const FAT_FS;
+        (*fs).fds[slot].file_size
+    }
+}
+
 /// Open a file by path. Returns an FD ≥ 64 on success, negative on error.
 /// `flags` bits: O_RDONLY=0, O_WRONLY=1, O_RDWR=2, O_CREAT=0x40, O_TRUNC=0x200.
 /// Supports subdirectory paths (e.g. `/disk/bin/sh`).

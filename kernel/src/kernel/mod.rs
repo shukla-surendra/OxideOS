@@ -25,3 +25,6 @@ pub mod ipc;
 pub mod compositor;
 pub mod vfs;
 pub mod shutdown;
+pub mod net;
+pub mod mbr;
+pub mod ext2;

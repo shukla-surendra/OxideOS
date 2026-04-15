@@ -21,7 +21,78 @@
 
 #![no_std]
 
+extern crate alloc;
+
 use core::fmt::{self, Write};
+
+// ── Global bump allocator ─────────────────────────────────────────────────────
+//
+// Provides a `#[global_allocator]` for all OxideOS user-space programs so they
+// can freely use `alloc::vec::Vec`, `alloc::string::String`, `Box`, etc.
+//
+// Strategy: simple bump allocator backed by the `brk` syscall.
+// Memory is never individually freed; the kernel reclaims everything on exit.
+// Alignment is always satisfied by rounding the bump pointer up.
+
+use core::alloc::{GlobalAlloc, Layout};
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+struct BumpAlloc;
+
+/// Virtual address of the next free byte in the heap.
+/// Value 0 means "not yet initialised — call brk(0) on first use".
+static HEAP_PTR: AtomicUsize = AtomicUsize::new(0);
+
+unsafe impl GlobalAlloc for BumpAlloc {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let align = layout.align();
+        let size  = layout.size();
+        if size == 0 { return align as *mut u8; }   // ZST: return non-null
+
+        // Lazy-initialise: ask the kernel for the current break.
+        let current = {
+            let c = HEAP_PTR.load(Ordering::Relaxed);
+            if c == 0 {
+                let base = unsafe { raw::syscall1(sys::BRK, 0) };
+                if base <= 0 { return core::ptr::null_mut(); }
+                HEAP_PTR.store(base as usize, Ordering::Relaxed);
+                base as usize
+            } else {
+                c
+            }
+        };
+
+        // Align the bump pointer up.
+        let aligned  = (current + align - 1) & !(align - 1);
+        let new_end  = aligned + size;
+
+        // Extend the kernel's heap break to cover the new allocation.
+        let result = unsafe { raw::syscall1(sys::BRK, new_end as u64) };
+        if result < new_end as i64 {
+            return core::ptr::null_mut();           // OOM
+        }
+
+        HEAP_PTR.store(new_end, Ordering::Relaxed);
+        aligned as *mut u8
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+        // Bump allocator — individual frees are no-ops.
+        // All memory is reclaimed when the process exits.
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: BumpAlloc = BumpAlloc;
+
+// Re-export the most common alloc types so programs can write
+// `use oxide_rt::alloc_prelude::*` instead of `extern crate alloc`.
+pub mod alloc_prelude {
+    pub use alloc::boxed::Box;
+    pub use alloc::string::{String, ToString};
+    pub use alloc::vec::Vec;
+    pub use alloc::format;
+}
 
 // ── Raw syscall ABI ──────────────────────────────────────────────────────────
 // rax = syscall number
@@ -118,6 +189,8 @@ pub mod raw {
 // ── Syscall numbers ──────────────────────────────────────────────────────────
 pub mod sys {
     pub const EXIT:    u64 = 0;
+    pub const MMAP:    u64 = 9;
+    pub const MUNMAP:  u64 = 10;
     pub const FORK:    u64 = 1;
     pub const WAIT:    u64 = 2;
     pub const GETPID:  u64 = 3;
@@ -136,6 +209,14 @@ pub mod sys {
     pub const MKDIR:   u64 = 71;
     pub const CHDIR:   u64 = 72;
     pub const GETCWD:  u64 = 73;
+    pub const STAT:    u64 = 74;
+    pub const FSTAT:   u64 = 75;
+    // Socket syscalls
+    pub const SOCKET:       u64 = 100;
+    pub const CONNECT:      u64 = 102;
+    pub const SEND:         u64 = 105;
+    pub const RECV:         u64 = 106;
+    pub const CLOSE_SOCKET: u64 = 107;
     pub const DUP2:    u64 = 81;
     pub const KILL:    u64 = 91;
     pub const MSGQ_CREATE:  u64 = 115;
@@ -263,6 +344,21 @@ pub fn brk(new_end: u64) -> i64 {
     unsafe { raw::syscall1(sys::BRK, new_end) }
 }
 
+/// Map `len` bytes of anonymous zeroed memory (MAP_ANONYMOUS|MAP_PRIVATE).
+/// Returns a pointer to the mapped region, or null on failure.
+/// The region persists until the process exits (munmap is a no-op).
+#[inline]
+pub fn mmap_anon(len: usize) -> *mut u8 {
+    let r = unsafe { raw::syscall2(sys::MMAP, 0u64, len as u64) };
+    if r <= 0 { core::ptr::null_mut() } else { r as *mut u8 }
+}
+
+/// Unmap a previously mapped region. Currently a no-op stub.
+#[inline]
+pub fn munmap(_ptr: *mut u8, _len: usize) -> i64 {
+    unsafe { raw::syscall2(sys::MUNMAP, _ptr as u64, _len as u64) }
+}
+
 /// Send SIGKILL to `pid`.  Returns 0 on success.
 #[inline]
 pub fn kill(pid: u32) -> i64 {
@@ -345,6 +441,109 @@ pub fn chdir(path: &str) -> i64 {
 #[inline]
 pub fn getcwd(buf: &mut [u8]) -> i64 {
     unsafe { raw::syscall2(sys::GETCWD, buf.as_mut_ptr() as u64, buf.len() as u64) }
+}
+
+/// Minimal file metadata returned by `stat` / `fstat`.
+#[repr(C)]
+pub struct FileStat {
+    /// File size in bytes.
+    pub size: u64,
+    /// Entry type: 0 = file, 1 = directory, 2 = device.
+    pub kind: u32,
+    pub _pad: u32,
+}
+
+impl FileStat {
+    pub const KIND_FILE: u32 = 0;
+    pub const KIND_DIR:  u32 = 1;
+    pub const KIND_DEV:  u32 = 2;
+
+    pub const fn zeroed() -> Self {
+        Self { size: 0, kind: 0, _pad: 0 }
+    }
+
+    pub fn is_file(&self) -> bool { self.kind == Self::KIND_FILE }
+    pub fn is_dir(&self)  -> bool { self.kind == Self::KIND_DIR  }
+}
+
+/// Stat `path`.  Fills `*out` and returns 0 on success.
+#[inline]
+pub fn stat(path: &str, out: &mut FileStat) -> i64 {
+    unsafe {
+        raw::syscall3(sys::STAT,
+            path.as_ptr() as u64,
+            path.len() as u64,
+            out as *mut FileStat as u64)
+    }
+}
+
+/// Stat an open file descriptor.  Fills `*out` and returns 0 on success.
+#[inline]
+pub fn fstat(fd: i32, out: &mut FileStat) -> i64 {
+    unsafe {
+        raw::syscall2(sys::FSTAT, fd as u64, out as *mut FileStat as u64)
+    }
+}
+
+// ── Networking ───────────────────────────────────────────────────────────────
+
+/// AF_INET socket address (mirrors `struct sockaddr_in`, 16 bytes).
+#[repr(C)]
+pub struct SockAddrIn {
+    pub sin_family: u16,  // 2 = AF_INET
+    pub sin_port:   u16,  // big-endian port
+    pub sin_addr:   [u8; 4], // IPv4 address (big-endian)
+    pub _pad:       [u8; 8],
+}
+
+impl SockAddrIn {
+    pub fn new(ip: [u8; 4], port: u16) -> Self {
+        Self {
+            sin_family: 2u16.to_le(),
+            sin_port:   port.to_be(),
+            sin_addr:   ip,
+            _pad:       [0; 8],
+        }
+    }
+}
+
+pub const AF_INET:     u32 = 2;
+pub const SOCK_STREAM: u32 = 1;
+pub const SOCK_DGRAM:  u32 = 2;
+
+/// Create a socket. Returns socket fd (≥ 200) on success.
+#[inline]
+pub fn socket(domain: u32, sock_type: u32, protocol: u32) -> i64 {
+    unsafe { raw::syscall3(sys::SOCKET, domain as u64, sock_type as u64, protocol as u64) }
+}
+
+/// Connect to a remote address. Returns 0 on success.
+#[inline]
+pub fn connect(sfd: i64, addr: &SockAddrIn) -> i64 {
+    unsafe {
+        raw::syscall3(sys::CONNECT,
+            sfd as u64,
+            addr as *const SockAddrIn as u64,
+            core::mem::size_of::<SockAddrIn>() as u64)
+    }
+}
+
+/// Send data on a connected socket. Returns bytes sent.
+#[inline]
+pub fn send(sfd: i64, buf: &[u8]) -> i64 {
+    unsafe { raw::syscall3(sys::SEND, sfd as u64, buf.as_ptr() as u64, buf.len() as u64) }
+}
+
+/// Receive data from a socket. Returns bytes received, 0 on EOF, -11 if no data yet.
+#[inline]
+pub fn recv(sfd: i64, buf: &mut [u8]) -> i64 {
+    unsafe { raw::syscall3(sys::RECV, sfd as u64, buf.as_mut_ptr() as u64, buf.len() as u64) }
+}
+
+/// Close a socket.
+#[inline]
+pub fn close_socket(sfd: i64) -> i64 {
+    unsafe { raw::syscall1(sys::CLOSE_SOCKET, sfd as u64) }
 }
 
 // ── Formatted printing ───────────────────────────────────────────────────────

@@ -36,8 +36,16 @@ pub enum Syscall {
     Mkdir         = 71,
     Chdir         = 72,
     Getcwd        = 73,
+    Stat          = 74,
+    Fstat         = 75,
     Dup2          = 81,
     Kill          = 91,
+    // ── Socket syscalls (100–107) ────────────────────────────────────────
+    Socket        = 100,
+    Connect       = 102,
+    Send          = 105,
+    Recv          = 106,
+    CloseSocket   = 107,
     MsgqCreate    = 115,
     Msgsnd        = 116,
     Msgrcv        = 117,
@@ -72,8 +80,15 @@ impl Syscall {
             Self::Mkdir         => "mkdir",
             Self::Chdir         => "chdir",
             Self::Getcwd        => "getcwd",
+            Self::Stat          => "stat",
+            Self::Fstat         => "fstat",
             Self::Dup2          => "dup2",
             Self::Kill          => "kill",
+            Self::Socket        => "socket",
+            Self::Connect       => "connect",
+            Self::Send          => "send",
+            Self::Recv          => "recv",
+            Self::CloseSocket   => "close_socket",
             Self::MsgqCreate    => "msgq_create",
             Self::Msgsnd        => "msgsnd",
             Self::Msgrcv        => "msgrcv",
@@ -110,8 +125,15 @@ impl From<u64> for Syscall {
             71 => Self::Mkdir,
             72 => Self::Chdir,
             73 => Self::Getcwd,
+            74 => Self::Stat,
+            75 => Self::Fstat,
             81 => Self::Dup2,
             91 => Self::Kill,
+            100 => Self::Socket,
+            102 => Self::Connect,
+            105 => Self::Send,
+            106 => Self::Recv,
+            107 => Self::CloseSocket,
             115 => Self::MsgqCreate,
             116 => Self::Msgsnd,
             117 => Self::Msgrcv,
@@ -211,8 +233,23 @@ pub trait SyscallRuntime {
     /// Set/query the userspace heap break.  `new_end == 0` returns current end.
     fn brk_program(&mut self, _new_end: u64) -> i64 { ENOSYS }
 
+    /// Map `len` bytes of anonymous zeroed memory.
+    /// `addr` is a hint (0 = kernel chooses). Returns the mapped virtual address
+    /// or a negative error code. Only MAP_ANONYMOUS|MAP_PRIVATE is supported.
+    fn mmap_anon(&mut self, _addr: u64, _len: u64) -> i64 { ENOSYS }
+
+    /// Unmap a previously mapped region. No-op stub (returns 0).
+    fn munmap_impl(&mut self, _addr: u64, _len: u64) -> i64 { 0 }
+
     /// Terminate the process with the given PID.  Returns 0 on success.
     fn kill_pid(&mut self, _pid: u64) -> i64 { ENOSYS }
+
+    // ── Socket syscalls ────────────────────────────────────────────────────
+    fn socket_impl(&mut self, _domain: u32, _type_: u32, _proto: u32) -> i64 { ENOSYS }
+    unsafe fn connect_impl(&mut self, _sfd: u64, _addr_ptr: u64, _addr_len: usize) -> i64 { ENOSYS }
+    unsafe fn send_impl(&mut self, _sfd: u64, _buf_ptr: u64, _len: usize, _flags: u32) -> i64 { ENOSYS }
+    unsafe fn recv_impl(&mut self, _sfd: u64, _buf_ptr: u64, _len: usize, _flags: u32) -> i64 { ENOSYS }
+    fn close_socket_impl(&mut self, _sfd: u64) -> i64 { ENOSYS }
 
     /// Fill `buf` with newline-separated directory entries under `path`.
     /// Each entry is `<name>\n` for files, `<name>/\n` for directories.
@@ -227,6 +264,13 @@ pub trait SyscallRuntime {
 
     /// Copy the current working directory into `buf`.  Returns bytes written.
     fn getcwd_impl(&mut self, _buf: &mut [u8]) -> i64 { ENOSYS }
+
+    /// Stat a file by path.  Writes a `FileStat` into the buffer at `buf_ptr`.
+    /// Returns 0 on success or a negative error code.
+    fn stat_impl(&mut self, _path: &[u8], _buf_ptr: u64) -> i64 { ENOSYS }
+
+    /// Stat an open file descriptor.  Writes a `FileStat` into `buf_ptr`.
+    fn fstat_impl(&mut self, _fd: i32, _buf_ptr: u64) -> i64 { ENOSYS }
 
     /// Duplicate `old_fd` to `new_fd`.  Returns `new_fd` on success.
     fn dup2_impl(&mut self, _old_fd: i32, _new_fd: i32) -> i64 { ENOSYS }
@@ -287,8 +331,15 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
         Syscall::Wait          => sys_waitpid(runtime, request.arg1),
         Syscall::Exec          => unsafe { sys_exec(runtime, request.arg1, request.arg2) },
         Syscall::GetPid        => SyscallResult::ok(runtime.current_pid() as i64),
-        Syscall::Mmap          => SyscallResult::err(ENOSYS),
-        Syscall::Munmap        => SyscallResult::err(ENOSYS),
+        Syscall::Mmap          => {
+            // arg1=addr, arg2=len (prot/flags/fd/offset ignored — anon only)
+            let r = runtime.mmap_anon(request.arg1, request.arg2);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Munmap        => {
+            let r = runtime.munmap_impl(request.arg1, request.arg2);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
         Syscall::Brk           => sys_brk(runtime, request.arg1),
         Syscall::Read          => unsafe { sys_read(runtime, request.arg1 as i32,
                                                     request.arg2, request.arg3) },
@@ -311,8 +362,34 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
         Syscall::Mkdir         => unsafe { sys_mkdir(runtime, request.arg1, request.arg2) },
         Syscall::Chdir         => unsafe { sys_chdir(runtime, request.arg1, request.arg2) },
         Syscall::Getcwd        => unsafe { sys_getcwd(runtime, request.arg1, request.arg2) },
+        Syscall::Stat          => unsafe { sys_stat(runtime, request.arg1, request.arg2, request.arg3) },
+        Syscall::Fstat         => {
+            let r = runtime.fstat_impl(request.arg1 as i32, request.arg2);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
         Syscall::Dup2          => sys_dup2(runtime, request.arg1 as i32, request.arg2 as i32),
         Syscall::Kill          => sys_kill(runtime, request.arg1),
+        // ── Socket syscalls ──────────────────────────────────────────────
+        Syscall::Socket => {
+            let r = runtime.socket_impl(request.arg1 as u32, request.arg2 as u32, request.arg3 as u32);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Connect => unsafe {
+            let r = runtime.connect_impl(request.arg1, request.arg2, request.arg3 as usize);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Send => unsafe {
+            let r = runtime.send_impl(request.arg1, request.arg2, request.arg3 as usize, request.arg4 as u32);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Recv => unsafe {
+            let r = runtime.recv_impl(request.arg1, request.arg2, request.arg3 as usize, request.arg4 as u32);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::CloseSocket => {
+            let r = runtime.close_socket_impl(request.arg1);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
         Syscall::MsgqCreate    => sys_msgq_create(runtime, request.arg1 as u32),
         Syscall::Msgsnd        => unsafe { sys_msgsnd(runtime, request.arg1 as u32, request.arg2 as u32, request.arg3, request.arg4) },
         Syscall::Msgrcv        => unsafe { sys_msgrcv(runtime, request.arg1 as u32, request.arg2) },
@@ -502,6 +579,18 @@ unsafe fn sys_getcwd<R: SyscallRuntime>(
     if let Err(e) = validate_user_range(buf_ptr, buf_len) { return SyscallResult::err(e); }
     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize) };
     let r = runtime.getcwd_impl(buf);
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+/// stat(path_ptr, path_len, stat_buf_ptr)
+unsafe fn sys_stat<R: SyscallRuntime>(
+    runtime: &mut R, path_ptr: u64, path_len: u64, stat_buf: u64,
+) -> SyscallResult {
+    if let Err(e) = validate_user_range(path_ptr, path_len) { return SyscallResult::err(e); }
+    // FileStat is 16 bytes (size:u64 + kind:u32 + _pad:u32)
+    if let Err(e) = validate_user_range(stat_buf, 16) { return SyscallResult::err(e); }
+    let path = unsafe { slice::from_raw_parts(path_ptr as *const u8, path_len as usize) };
+    let r = runtime.stat_impl(path, stat_buf);
     if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
 }
 

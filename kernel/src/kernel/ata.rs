@@ -221,3 +221,9 @@ pub unsafe fn write_sector(lba: u32, buf: &[u8; 512]) -> bool {
     unsafe { outb(PORT_STATCMD, CMD_FLUSH); }
     unsafe { wait_not_busy() }
 }
+
+/// Secondary disk presence (stub — OxideOS only supports one disk).
+pub fn is_present_sec() -> bool { false }
+
+/// Read a sector from the secondary disk (stub — always fails).
+pub unsafe fn read_sector_sec(_lba: u32, _buf: &mut [u8; 512]) -> bool { false }

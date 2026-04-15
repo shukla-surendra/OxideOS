@@ -58,6 +58,8 @@ pub struct Task {
     pub parent_pid: u8,
     /// Current userspace heap break (virtual address).  0 = unset (use USER_HEAP_BASE).
     pub heap_end:   u64,
+    /// Top of the anonymous-mmap area.  0 = unset (use USER_MMAP_BASE).
+    pub mmap_end:   u64,
     pub output:     [u8; TASK_OUTPUT_CAP],
     pub output_len: usize,
     /// Per-process open file-descriptor table.
@@ -83,6 +85,7 @@ impl Task {
             pid:        0,
             parent_pid: 0,
             heap_end:   0,
+            mmap_end:   0,
             output:     [0u8; TASK_OUTPUT_CAP],
             output_len: 0,
             fd_table:   FdTable::new(),
@@ -232,6 +235,7 @@ pub unsafe fn spawn(code: &[u8], name: &str) -> Result<u8, &'static str> {
     (*task).pid        = pid;
     (*task).parent_pid = 0;
     (*task).heap_end   = 0;
+    (*task).mmap_end   = 0;
     (*task).output_len = 0;
     (*task).fd_table   = FdTable::new();
 
@@ -433,6 +437,7 @@ pub unsafe fn fork_task(
     // Copy all task fields from parent; override the child-specific ones.
     let parent_fd    = (*sched).tasks[parent_idx].fd_table;
     let parent_heap  = (*sched).tasks[parent_idx].heap_end;
+    let parent_mmap  = (*sched).tasks[parent_idx].mmap_end;
     let parent_entry = (*sched).tasks[parent_idx].entry;
     let parent_name  = (*sched).tasks[parent_idx].name;
     let parent_nlen  = (*sched).tasks[parent_idx].name_len;
@@ -448,6 +453,7 @@ pub unsafe fn fork_task(
     (*child).pid        = child_pid;
     (*child).parent_pid = parent_pid;
     (*child).heap_end   = parent_heap;
+    (*child).mmap_end   = parent_mmap;
     (*child).output_len = 0;
     (*child).fd_table   = parent_fd;
     (*child).cwd        = parent_cwd;

@@ -60,6 +60,94 @@ static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
 static mut WINDOW_MANAGER: WindowManager = WindowManager::new();
 
 // ============================================================================
+// NETWORK CONNECTIVITY PROBE
+// ============================================================================
+
+/// Target for the kernel-side internet probe: example.com port 80.
+const PROBE_IP:   [u8; 4] = [93, 184, 216, 34];
+const PROBE_PORT: u16      = 80;
+
+#[derive(Clone, Copy)]
+enum NetProbePhase {
+    Idle,
+    Connecting { sfd: i64, start_tick: u64 },
+    Connected  { ms: u64 },
+    Failed,
+}
+
+struct NetProbe {
+    phase: NetProbePhase,
+}
+
+impl NetProbe {
+    const fn new() -> Self { Self { phase: NetProbePhase::Idle } }
+
+    /// Advance the state machine — call every GUI frame.
+    /// Returns `true` when state changed (triggers redraw).
+    fn tick(&mut self) -> bool {
+        if let NetProbePhase::Connecting { sfd, start_tick } = self.phase {
+            let now = unsafe { crate::kernel::timer::get_ticks() };
+            // 5-second timeout (500 ticks @ 100 Hz)
+            if now.wrapping_sub(start_tick) > 500 {
+                unsafe { crate::kernel::net::socket::sys_close_socket(sfd); }
+                self.phase = NetProbePhase::Failed;
+                return true;
+            }
+            // Poll the stack so the TCP handshake can progress.
+            unsafe { crate::kernel::net::poll(); }
+            if unsafe { crate::kernel::net::socket::tcp_is_connected(sfd) } {
+                let ms = now.wrapping_sub(start_tick) * 10;
+                unsafe { crate::kernel::net::socket::sys_close_socket(sfd); }
+                self.phase = NetProbePhase::Connected { ms };
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Open a TCP connection to the probe target.
+    fn start(&mut self) {
+        // Close any in-flight socket first.
+        if let NetProbePhase::Connecting { sfd, .. } = self.phase {
+            unsafe { crate::kernel::net::socket::sys_close_socket(sfd); }
+        }
+
+        use crate::kernel::net::socket::{sys_socket, sys_connect, AF_INET, SOCK_STREAM};
+        let sfd = unsafe { sys_socket(AF_INET, SOCK_STREAM, 0) };
+        if sfd < 0 { self.phase = NetProbePhase::Failed; return; }
+
+        // Build sockaddr_in: family(LE u16) | port(BE u16) | ip[4]
+        let mut addr = [0u8; 8];
+        addr[0..2].copy_from_slice(&(AF_INET as u16).to_le_bytes());
+        addr[2..4].copy_from_slice(&PROBE_PORT.to_be_bytes());
+        addr[4..8].copy_from_slice(&PROBE_IP);
+
+        let r = unsafe { sys_connect(sfd, addr.as_ptr(), 8) };
+        if r < 0 {
+            // smoltcp returns 0 on non-blocking connect initiation.
+            // Any negative value here means a hard error.
+            unsafe { crate::kernel::net::socket::sys_close_socket(sfd); }
+            self.phase = NetProbePhase::Failed;
+            return;
+        }
+
+        let start_tick = unsafe { crate::kernel::timer::get_ticks() };
+        self.phase = NetProbePhase::Connecting { sfd, start_tick };
+    }
+
+    /// Returns `true` if `(mx, my)` landed on the "Test" button inside the sysinfo window.
+    fn is_button_hit(&self, wm: &WindowManager, sysinfo_id: usize, mx: u64, my: u64) -> bool {
+        let Some(win) = wm.get_window(sysinfo_id) else { return false; };
+        if !wm.is_window_visible(sysinfo_id) { return false; }
+        // Button is placed at cy = win.y + 266 (see draw_sysinfo_panel)
+        let btn_x = win.x + 12;
+        let btn_y = win.y + 266;
+        let btn_w = win.width.saturating_sub(24);
+        mx >= btn_x && mx < btn_x + btn_w && my >= btn_y && my < btn_y + 22
+    }
+}
+
+// ============================================================================
 // MAIN KERNEL ENTRY POINT
 // ============================================================================
 
@@ -91,6 +179,9 @@ unsafe extern "C" fn kmain() -> ! {
         // ATA disk + FAT16 filesystem (optional — no disk is fine)
         crate::kernel::ata::init();
         crate::kernel::fat::init();
+
+        // Network (optional — silently skipped if no RTL8139 is found)
+        crate::kernel::net::init();
 
         test_paging_allocation();
     }
@@ -239,6 +330,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
     let mut last_right_button = false;
     let mut needs_redraw = true;
     let mut terminal_dirty = false;
+    let mut net_probe = NetProbe::new();
     // Pool of terminal windows (first is the main boot terminal).
     let mut terminals: Vec<terminal::TerminalApp> = Vec::new();
     terminals.push(terminal::TerminalApp::new(terminal_window_id));
@@ -311,6 +403,12 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                     if let Some(prog_name) = launched {
                         spawn_program(prog_name, &mut terminals, graphics, unsafe { &mut *wm });
                         needs_redraw = true;
+                    } else if net_probe.is_button_hit(unsafe { &*wm }, sysinfo_window_id, mx as u64, my as u64) {
+                        // "Test Internet Connection" button inside the sysinfo panel.
+                        if crate::kernel::net::is_present() {
+                            net_probe.start();
+                            needs_redraw = true;
+                        }
                     } else {
                         let consumed = unsafe { (*wm).handle_context_menu_click(mx as u64, my as u64) };
                         if !consumed {
@@ -341,6 +439,15 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             needs_redraw = true;
         }
 
+        // Advance the network connectivity probe state machine.
+        if net_probe.tick() {
+            needs_redraw = true;
+        }
+        // Redraw every frame while connecting so the animated dots update.
+        if matches!(net_probe.phase, NetProbePhase::Connecting { .. }) {
+            needs_redraw = true;
+        }
+
         if needs_redraw {
             unsafe { refresh_compositor_geometry(graphics, &*wm, terminal_window_id); }
             let bg = unsafe { (*wm).get_background_style() };
@@ -351,7 +458,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             for term in terminals.iter() {
                 term.draw(graphics, unsafe { &*wm });
             }
-            draw_sysinfo_panel(graphics, unsafe { &*wm }, sysinfo_window_id);
+            draw_sysinfo_panel(graphics, unsafe { &*wm }, sysinfo_window_id, &net_probe);
             launcher_app.draw(graphics, unsafe { &*wm });
             unsafe { (*wm).draw_context_menu(graphics); }
             start_menu.draw_menu(graphics);
@@ -389,6 +496,9 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                 terminal_dirty = true;
             }
         }
+
+        // Drive the network stack (RX poll + TCP timers).
+        unsafe { crate::kernel::net::poll(); }
 
         unsafe { core::arch::asm!("hlt"); }
     }
@@ -444,15 +554,15 @@ unsafe fn init_demo_windows(screen_width: u64, screen_height: u64) -> (usize, us
     let win1 = widgets::Window::new(10, 50, 540, term_h, "Terminal");
     let terminal_id = unsafe { (*wm).add_window(win1).unwrap_or(0) };
 
-    // System Info — top-right corner
-    let win2 = widgets::Window::new(screen_width - 310, 50, 290, 260, "System Info");
+    // System Info — top-right corner (taller to include network section)
+    let win2 = widgets::Window::new(screen_width - 310, 50, 290, 340, "System Info");
     let sysinfo_id = unsafe { (*wm).add_window(win2).unwrap_or(1) };
 
     // Launcher — below sysinfo on the right side, shows all programs as clickable tiles
     // Width: 3 columns × (160 + 10) - 10 + 24 pad = 510 + 4 = 514, round to 520
     // Height: 2 section headers × 18 + 4 rows × (72 + 10) - 10 + 20 status + 20 pad ≈ 400
     let launcher_x = screen_width - 530;
-    let launcher_y = 50u64 + 260 + 12; // below sysinfo
+    let launcher_y = 50u64 + 340 + 12; // below sysinfo (sysinfo now 340px tall)
     let launcher_h = screen_height.saturating_sub(launcher_y + 50).min(440).max(300);
     let win3 = widgets::Window::new(launcher_x, launcher_y, 520, launcher_h, "Programs");
     let launcher_id = unsafe { (*wm).add_window(win3).unwrap_or(2) };
@@ -484,6 +594,7 @@ unsafe fn draw_sysinfo_panel(
     graphics: &Graphics,
     wm: &gui::window_manager::WindowManager,
     window_id: usize,
+    net_probe: &NetProbe,
 ) {
     use gui::fonts;
     use gui::colors;
@@ -582,6 +693,95 @@ unsafe fn draw_sysinfo_panel(
     if let Ok(s) = core::str::from_utf8(&num_buf[i..12]) {
         fonts::draw_string(graphics, cx + 63, cy, s, 0xFF4A8090);
     }
+    cy += row;
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // ── Network section ───────────────────────────────────────────────────────
+    // ══════════════════════════════════════════════════════════════════════════
+    graphics.fill_rect(cx, cy, bar_w, 1, 0xFF1E2840);
+    cy += 8;
+
+    // ── NIC row ───────────────────────────────────────────────────────────────
+    fonts::draw_string(graphics, cx, cy, "NETWORK", 0xFF007ACC);
+    let net_up = kernel::net::is_present();
+    let (dot_col, net_label, net_col) = if net_up {
+        (0xFF30C040u32, "RTL8139", 0xFF40D050u32)
+    } else {
+        (0xFF803030u32, "No NIC ", 0xFF805050u32)
+    };
+    graphics.fill_rect(cx + 80, cy + 3, 8, 8, dot_col);
+    fonts::draw_string(graphics, cx + 94, cy, net_label, net_col);
+    cy += row;
+
+    // ── IP / MAC row ──────────────────────────────────────────────────────────
+    fonts::draw_string(graphics, cx, cy, "IP", 0xFF007ACC);
+    if net_up {
+        fonts::draw_string(graphics, cx + 27, cy, "10.0.2.15 / 24", 0xFFB0C8E8);
+    } else {
+        fonts::draw_string(graphics, cx + 27, cy, "—", 0xFF3A4050);
+    }
+    cy += row;
+
+    // ── Test button ───────────────────────────────────────────────────────────
+    // cy = win.y + 266 at this point (matching NetProbe::is_button_hit)
+    let btn_w = bar_w;
+    let btn_h = 22u64;
+    let (bt, bb, bd, btxt) = if net_up {
+        (0xFF0D5FA0u32, 0xFF072C50u32, 0xFF00AAFFu32, 0xFFE8F4FFu32)
+    } else {
+        (0xFF1C2030u32, 0xFF111520u32, 0xFF2A3044u32, 0xFF404060u32)
+    };
+    graphics.fill_rect_gradient_v(cx, cy, btn_w, btn_h, bt, bb);
+    graphics.draw_rect(cx, cy, btn_w, btn_h, bd, 1);
+    // Centred label
+    let label_chars = 24u64; // "Test Internet Connection"
+    let label_px    = label_chars * 9;
+    let label_x     = cx + btn_w.saturating_sub(label_px) / 2;
+    fonts::draw_string(graphics, label_x, cy + 7, "Test Internet Connection", btxt);
+    cy += btn_h + 8;
+
+    // ── Status line ───────────────────────────────────────────────────────────
+    match net_probe.phase {
+        NetProbePhase::Idle => {
+            fonts::draw_string(graphics, cx, cy, "Status: idle", 0xFF3A4860);
+        }
+        NetProbePhase::Connecting { start_tick, .. } => {
+            let cur_ticks = unsafe { kernel::timer::get_ticks() };
+            let phase = ((cur_ticks.wrapping_sub(start_tick)) / 20) % 4;
+            let anim = match phase {
+                0 => "Connecting.   ",
+                1 => "Connecting..  ",
+                2 => "Connecting... ",
+                _ => "Connecting....",
+            };
+            graphics.fill_rect(cx, cy + 3, 8, 8, 0xFFC8A020);
+            fonts::draw_string(graphics, cx + 14, cy, anim, 0xFFC8A020);
+        }
+        NetProbePhase::Connected { ms } => {
+            graphics.fill_rect(cx, cy + 3, 8, 8, 0xFF30C040);
+            fonts::draw_string(graphics, cx + 14, cy, "Connected!", 0xFF40D050);
+            // Format "NNNms"
+            let mut mbuf = [0u8; 8]; let mlen = fmt_decimal(ms, &mut mbuf);
+            mbuf[mlen] = b'm'; mbuf[mlen+1] = b's';
+            if let Ok(ms_str) = core::str::from_utf8(&mbuf[..mlen+2]) {
+                fonts::draw_string(graphics, cx + 14 + 72, cy, ms_str, 0xFF60B070);
+            }
+        }
+        NetProbePhase::Failed => {
+            graphics.fill_rect(cx, cy + 3, 8, 8, 0xFFC03030);
+            fonts::draw_string(graphics, cx + 14, cy, "Failed / timeout", 0xFFD04040);
+        }
+    }
+}
+
+/// Format `n` as ASCII decimal into `buf`. Returns number of bytes written.
+fn fmt_decimal(mut n: u64, buf: &mut [u8]) -> usize {
+    if n == 0 { if !buf.is_empty() { buf[0] = b'0'; } return 1; }
+    let mut tmp = n; let mut len = 0;
+    while tmp > 0 { len += 1; tmp /= 10; }
+    let len = len.min(buf.len());
+    for i in (0..len).rev() { buf[i] = b'0' + (n % 10) as u8; n /= 10; }
+    len
 }
 
 // ============================================================================

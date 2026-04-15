@@ -573,6 +573,39 @@ impl WindowManager {
         format_uptime(ticks, &mut time_buf);
         let time_str = core::str::from_utf8(&time_buf).unwrap_or("00:00:00");
         fonts::draw_string(graphics, box_x + BOX_PAD, 14, time_str, 0xFF7FC8FF);
+
+        // ── Network indicator — left of clock ──────────────────────────────────
+        // "● 10.0.2.15" (green) or "● No NIC" (dim red), pill background.
+        const NET_PAD: u64 = 8;
+        const NET_DOT: u64 = 8;   // dot width
+        const NET_GAP: u64 = 5;   // dot → text gap
+        // Longest label: "10.0.2.15" = 9 chars × 9 = 81 px; +dot+gap+2×pad = 102
+        const NET_W: u64 = NET_DOT + NET_GAP + 81 + NET_PAD * 2; // 110
+        let net_box_x = box_x.saturating_sub(NET_W + 8);
+
+        let net_present = crate::kernel::net::is_present();
+        let (dot_col, label, label_col) = if net_present {
+            (0xFF30C040u32, "10.0.2.15", 0xFF60D870u32)
+        } else {
+            (0xFF803030u32, "No NIC   ", 0xFF805050u32)
+        };
+
+        // Background pill
+        let (pill_top, pill_bot, pill_bdr) = if net_present {
+            (0xFF0E2818u32, 0xFF091810u32, 0xFF1A6030u32)
+        } else {
+            (0xFF1E2230u32, 0xFF141820u32, 0xFF3A2030u32)
+        };
+        graphics.fill_rect_gradient_v(net_box_x, 5, NET_W, 30, pill_top, pill_bot);
+        graphics.draw_rect(net_box_x, 5, NET_W, 30, pill_bdr, 1);
+
+        // Dot
+        let dot_x = net_box_x + NET_PAD;
+        let dot_y = 5 + (30 - NET_DOT) / 2; // vertically centered
+        graphics.fill_rect(dot_x, dot_y, NET_DOT, NET_DOT, dot_col);
+
+        // Label
+        fonts::draw_string(graphics, dot_x + NET_DOT + NET_GAP, 14, label, label_col);
     }
 
     fn draw_taskbar_item(&self, graphics: &Graphics, window: &Window, window_id: usize, x: u64) {

@@ -12,6 +12,11 @@ $(call USER_VARIABLE,KARCH,x86_64)
 # -cpu max: expose all available CPU features so LLVM-vectorised code (fill_rect, etc.) can use SSE/AVX.
 $(call USER_VARIABLE,QEMUFLAGS,-m 2G -cpu max)
 
+# Network flags: expose an RTL8139 NIC via QEMU user-mode NAT.
+# The guest gets IP 10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3.
+# Remove these if you don't want networking.
+override NETFLAGS := -netdev user,id=net0 -device rtl8139,netdev=net0
+
 override IMAGE_NAME  := oxide_os-$(KARCH)
 override DISK_IMAGE  := oxide_disk.img
 # Size of the FAT16 disk image in 512-byte sectors (4 MB = 8192 sectors).
@@ -54,6 +59,7 @@ run-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
 		$(DISK_FLAG) \
+		$(NETFLAGS) \
 		$(QEMUFLAGS)
 
 # run-gui: SDL display gives the best PS/2 mouse experience.
@@ -69,6 +75,7 @@ run-gui-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NA
 		-cdrom $(IMAGE_NAME).iso \
 		$(DISK_FLAG) \
 		-display sdl,grab-on-hover=on \
+		$(NETFLAGS) \
 		$(QEMUFLAGS)
 
 # KVM-accelerated run (much faster; requires nested virtualisation enabled in WSL2).
@@ -83,6 +90,7 @@ run-kvm-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NA
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
 		-display gtk,grab-on-hover=on,show-tabs=off \
+		$(NETFLAGS) \
 		-m 2G
 
 .PHONY: run-hdd-x86_64
@@ -190,6 +198,7 @@ run-bios: $(IMAGE_NAME).iso
 		-cdrom $(IMAGE_NAME).iso \
 		-boot d \
 		$(if $(wildcard $(DISK_IMAGE)),-drive file=$(DISK_IMAGE)$(comma)format=raw$(comma)if=ide) \
+		$(NETFLAGS) \
 		$(QEMUFLAGS)
 
 .PHONY: run-hdd-bios

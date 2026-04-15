@@ -78,6 +78,10 @@ pub static MKDIR: &[u8] =
 pub static PWD: &[u8] =
     include_bytes!("../../../userspace/bin/pwd.elf");
 
+/// wget — minimal HTTP/1.0 GET client (TCP socket, interactive).
+pub static WGET: &[u8] =
+    include_bytes!("../../../userspace/bin/wget.elf");
+
 /// Look up a built-in program by name.
 pub fn find(name: &str) -> Option<&'static [u8]> {
     match name {
@@ -99,6 +103,7 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
         "cp"        => Some(CP),
         "mkdir"     => Some(MKDIR),
         "pwd"       => Some(PWD),
+        "wget"      => Some(WGET),
         _           => None,
     }
 }
@@ -108,5 +113,5 @@ pub const NAMES: &[&str] = &[
     "hello", "counter", "sysinfo", "input",
     "fib", "primes", "countdown", "spinner", "filetest",
     "hello_rust", "sh", "terminal",
-    "ls", "cat", "ps", "cp", "mkdir", "pwd",
+    "ls", "cat", "ps", "cp", "mkdir", "pwd", "wget",
 ];

@@ -249,7 +249,8 @@ unsafe fn dir_lookup(state: &Ext2State, dir_ino: u32, name: &[u8]) -> u32 {
             if reclen == 0 { break; } // corrupt
 
             if ino != 0 && namlen == name.len() {
-                let entry_name = &(*s)[pos+8..pos+8+namlen];
+                let s_ref: &[u8] = &*s;
+                let entry_name = &s_ref[pos+8..pos+8+namlen];
                 if entry_name == name {
                     return ino;
                 }
@@ -312,8 +313,9 @@ pub unsafe fn init(partition_lba: u32) {
     // Combine two sectors → 1024-byte superblock in SCRATCH.
     let scratch = &raw mut SCRATCH;
     unsafe {
-        (*scratch)[..512].copy_from_slice(&sb0);
-        (*scratch)[512..1024].copy_from_slice(&sb1);
+        let scratch_ref: &mut [u8] = &mut *scratch;
+        scratch_ref[..512].copy_from_slice(&sb0);
+        scratch_ref[512..1024].copy_from_slice(&sb1);
     }
 
     // Validate magic at offset 56 (within the 1024-byte superblock).
@@ -518,7 +520,8 @@ pub unsafe fn list_dir_raw(path: &[u8], out: &mut [u8]) -> i64 {
             if reclen == 0 { break; }
 
             if ino != 0 {
-                let name = &(*s)[pos+8..pos+8+namlen];
+                let s_ref: &[u8] = unsafe { &*s };
+                let name = &s_ref[pos+8..pos+8+namlen];
                 // Skip . and ..
                 if name != b"." && name != b".." {
                     let n = namlen.min(out.len().saturating_sub(written + 2));

@@ -33,3 +33,10 @@ version = "0.1.0"
 dependencies = [
  "oxide-rt",
 ]
+
+[[package]]
+name = "wget"
+version = "0.1.0"
+dependencies = [
+ "oxide-rt",
+]
