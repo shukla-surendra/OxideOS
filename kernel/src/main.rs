@@ -579,6 +579,10 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             launcher_app.draw(graphics, unsafe { &*wm });
             unsafe { (*wm).draw_context_menu(graphics); }
             start_menu.draw_menu(graphics);
+            // Composite GUI-proc window content on top of all kernel draws.
+            // This keeps filemanager/etc. content visible during full redraws
+            // and ensures GUI-proc windows respect z-order over terminal/sysinfo.
+            unsafe { kernel::gui_proc::composite_all(graphics); }
             needs_redraw   = false;
             terminal_dirty = false;
         } else if terminal_dirty {
@@ -590,6 +594,9 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                     term.draw(graphics, unsafe { &*wm });
                 }
             }
+            // Re-composite GUI-proc content so terminal redraws don't paint
+            // over overlapping GUI-proc windows.
+            unsafe { kernel::gui_proc::composite_all(graphics); }
             terminal_dirty = false;
         }
 
@@ -602,21 +609,12 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             // Kernel-terminal dirty redraws happen separately above.
         }
 
-        if let Some((mx, my)) = cursor_pos {
-            saved_pixels = graphics.save_cursor_area(mx, my);
-            graphics.draw_cursor(mx, my, 0xFFFFFFFF);
-        }
-
-        // Blit the completed back buffer to the real framebuffer in one pass.
-        graphics.present();
-
-        // If any GUI-proc called present this frame, force a redraw next frame.
-        if unsafe { kernel::gui_proc::take_present_flag() } {
-            needs_redraw = true;
-        }
-
-        // Run the scheduler: give the next ready task one time slice (~20 ms).
-        // Returns Some((pid, exit_code)) when a task permanently exits.
+        // Run the scheduler BEFORE the blit so GUI-proc tasks (filemanager,
+        // terminal, etc.) can paint their content into the back-buffer in the
+        // same frame that the kernel drew the window chrome.  Placing the tick
+        // after present() caused one-frame gaps where the kernel wiped the
+        // proc's content, blit an empty window, and only showed the content
+        // the following frame — producing a continuous flicker.
         if let Some((pid, exit_code)) = unsafe { kernel::scheduler::tick() } {
             for term in terminals.iter_mut() {
                 term.on_task_exit(pid, exit_code);
@@ -633,6 +631,20 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                 terminal_dirty = true;
             }
         }
+
+        // Check the GUI-proc present flag after the tick so we see flags set
+        // by this frame's task run.  No separate needs_redraw: the kernel will
+        // already redraw next frame if the window chrome changed; the proc
+        // content is already in the back-buffer and will be blit below.
+        let _ = unsafe { kernel::gui_proc::take_present_flag() };
+
+        if let Some((mx, my)) = cursor_pos {
+            saved_pixels = graphics.save_cursor_area(mx, my);
+            graphics.draw_cursor(mx, my, 0xFFFFFFFF);
+        }
+
+        // Blit the completed back buffer to the real framebuffer in one pass.
+        graphics.present();
 
         // Drive the network stack (RX poll + TCP timers).
         unsafe { crate::kernel::net::poll(); }

@@ -19,6 +19,7 @@ pub enum Syscall {
     Wait          = 2,
     GetPid        = 3,
     Exec          = 5,
+    ExecArgs      = 6,
     Mmap          = 9,
     Munmap        = 10,
     Brk           = 11,
@@ -88,6 +89,7 @@ impl Syscall {
             Self::Wait          => "wait",
             Self::GetPid        => "getpid",
             Self::Exec          => "exec",
+            Self::ExecArgs      => "exec_args",
             Self::Mmap          => "mmap",
             Self::Munmap        => "munmap",
             Self::Brk           => "brk",
@@ -157,6 +159,7 @@ impl From<u64> for Syscall {
             2  => Self::Wait,
             3  => Self::GetPid,
             5  => Self::Exec,
+            6  => Self::ExecArgs,
             9  => Self::Mmap,
             10 => Self::Munmap,
             11 => Self::Brk,
@@ -295,6 +298,12 @@ pub trait SyscallRuntime {
     /// On success this never returns (jumps directly into the new image).
     /// On failure it returns a negative error code.
     fn exec_program(&mut self, _path: &[u8]) -> i64 { ENOSYS }
+
+    /// Like `exec_program` but also passes a space-separated argument string.
+    /// `args` is the argv[1..] content (does NOT include the program name).
+    fn exec_program_args(&mut self, path: &[u8], _args: &[u8]) -> i64 {
+        self.exec_program(path) // default: ignore args
+    }
 
     /// Fork the current process.  Returns child PID to parent, 0 to child.
     fn fork_child(&mut self) -> i64 { ENOSYS }
@@ -467,6 +476,8 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
         Syscall::Fork          => sys_fork(runtime),
         Syscall::Wait          => sys_waitpid(runtime, request.arg1),
         Syscall::Exec          => unsafe { sys_exec(runtime, request.arg1, request.arg2) },
+        Syscall::ExecArgs      => unsafe { sys_exec_args(runtime, request.arg1, request.arg2,
+                                                          request.arg3, request.arg4) },
         Syscall::GetPid        => SyscallResult::ok(runtime.current_pid() as i64),
         Syscall::Mmap          => {
             // arg1=addr, arg2=len (prot/flags/fd/offset ignored — anon only)
@@ -779,6 +790,30 @@ unsafe fn sys_exec<R: SyscallRuntime>(
     // On success exec_program diverges (never returns).
     // On failure it returns a negative error code.
     let err = runtime.exec_program(path);
+    SyscallResult::err(err)
+}
+
+/// ExecArgs syscall: like Exec but also receives a space-separated args string.
+/// arg1=path_ptr, arg2=path_len, arg3=args_ptr, arg4=args_len
+unsafe fn sys_exec_args<R: SyscallRuntime>(
+    runtime: &mut R,
+    path_ptr: u64, path_len: u64,
+    args_ptr: u64, args_len: u64,
+) -> SyscallResult {
+    if let Err(code) = validate_user_range(path_ptr, path_len) {
+        return SyscallResult::err(code);
+    }
+    if path_len == 0 { return SyscallResult::err(EINVAL); }
+    let path = unsafe { slice::from_raw_parts(path_ptr as *const u8, path_len as usize) };
+    let args = if args_len > 0 {
+        if let Err(code) = validate_user_range(args_ptr, args_len) {
+            return SyscallResult::err(code);
+        }
+        unsafe { slice::from_raw_parts(args_ptr as *const u8, args_len as usize) }
+    } else {
+        b""
+    };
+    let err = runtime.exec_program_args(path, args);
     SyscallResult::err(err)
 }
 

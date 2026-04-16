@@ -19,7 +19,7 @@ pub const MAX_TASKS:       usize = 8;
 const  PAGE_SIZE:          usize = 4096;
 const  USER_CODE_ADDR:     u64   = 0x0040_0000;
 const  USER_STACK_TOP:     u64   = 0x0080_0000;
-const  USER_STACK_PAGES:   usize = 4;
+const  USER_STACK_PAGES:   usize = 64; // 256 KB — Rust programs need deep stacks
 const  TASK_OUTPUT_CAP:    usize = 2048;
 
 /// Timer ticks a task runs before being preempted (100 Hz → 20 ms).
@@ -135,6 +135,9 @@ pub struct Task {
     pub signal_handlers: [u64; NSIG],
     /// Shared memory attachments for this process.
     pub shm_attaches: [crate::kernel::shm::ShmAttach; crate::kernel::shm::MAX_ATTACH],
+    /// Initial RSP for the first-run launch — points to the argc value on the
+    /// user stack (System V AMD64 ABI). Set by spawn() / exec_binary().
+    pub initial_rsp: u64,
 }
 
 impl Task {
@@ -161,6 +164,7 @@ impl Task {
             pending_signals: 0,
             signal_handlers: [0u64; NSIG],
             shm_attaches: [const { crate::kernel::shm::ShmAttach::empty() }; crate::kernel::shm::MAX_ATTACH],
+            initial_rsp: USER_STACK_TOP - 16,
         }
     }
 
@@ -224,6 +228,75 @@ pub fn output_drain_task(idx: usize, mut f: impl FnMut(&str)) {
             if !line.is_empty() { f(line); }
         }
     }
+}
+
+// ── argv/argc helpers ──────────────────────────────────────────────────────
+
+/// Build a System V AMD64 ABI argv block at the top of the user stack and copy
+/// it into `cr3`.  Returns the initial RSP value (points to `argc`).
+///
+/// Stack layout written (little-endian u64 values):
+///   [rsp +  0]               = argc
+///   [rsp +  8 * 1]           = argv[0] ptr  (→ string data below)
+///   [rsp +  8 * (1+argc)]    = NULL          (end of argv)
+///   [rsp +  8 * (2+argc)]    = NULL          (end of envp)
+///   [rsp + ptr_table_bytes]  = argv[0]\0 argv[1]\0 …
+///
+/// `stack_top` is the first byte **above** the mapped stack region.
+/// The entire block is 16-byte aligned.
+pub unsafe fn write_argv_to_stack(
+    cr3:       u64,
+    stack_top: u64,
+    args:      &[&str],
+) -> u64 {
+    // Cap argv at 31 entries (leaves room for the NULL and keeps the buffer small).
+    let argc = args.len().min(31);
+
+    // Size of the pointer table:  argc_u64 + argc pointers + NULL + envp-NULL.
+    let ptr_table_bytes = 8 * (1 + argc + 2);
+
+    // Total string-data bytes (each arg + NUL terminator).
+    let mut str_bytes = 0usize;
+    for a in &args[..argc] {
+        str_bytes += a.len() + 1;
+    }
+
+    // Round the whole block to 16 bytes.
+    let total = (ptr_table_bytes + str_bytes + 15) & !15;
+    if total > 512 {
+        // Shouldn't happen for normal program names; fall back to a safe default.
+        return stack_top - 16;
+    }
+
+    let initial_rsp = stack_top - total as u64;
+
+    // Build the block in a zero-initialised kernel stack buffer.
+    let mut buf = [0u8; 512];
+
+    // Write argc.
+    buf[0..8].copy_from_slice(&(argc as u64).to_le_bytes());
+
+    // Write string data and argv pointers interleaved.
+    let mut str_off = ptr_table_bytes; // byte offset in `buf` where strings start
+    for i in 0..argc {
+        // argv[i] is at virtual address `initial_rsp + str_off`.
+        let va = initial_rsp + str_off as u64;
+        let slot = 8 + i * 8;
+        buf[slot..slot + 8].copy_from_slice(&va.to_le_bytes());
+
+        // Copy the string bytes.
+        let b = args[i].as_bytes();
+        let end = str_off + b.len();
+        buf[str_off..end].copy_from_slice(b);
+        buf[end] = 0; // NUL terminator
+        str_off = end + 1;
+    }
+    // argv[argc] = NULL and envp[0] = NULL are already 0.
+
+    // Copy into the user address space.
+    unsafe { paging_allocator::copy_to_region_in(cr3, initial_rsp, &buf[..total]); }
+
+    initial_rsp
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -312,10 +385,16 @@ pub unsafe fn spawn(code: &[u8], name: &str) -> Result<u8, &'static str> {
     (*task).signal_handlers = [0u64; NSIG];
     (*task).shm_attaches    = [const { crate::kernel::shm::ShmAttach::empty() }; crate::kernel::shm::MAX_ATTACH];
 
-    // Map the signal-return trampoline page (read + execute, not writable).
-    if paging_allocator::map_user_region_in(cr3, USER_SIGTRAMP, 1, false, true).is_ok() {
+    // Map the signal-return trampoline page as writable so copy_to_region_in
+    // can write to it in supervisor mode (CR0.WP faults on non-writable pages
+    // regardless of privilege level).  User-writable is acceptable here.
+    if paging_allocator::map_user_region_in(cr3, USER_SIGTRAMP, 1, true, true).is_ok() {
         paging_allocator::copy_to_region_in(cr3, USER_SIGTRAMP, SIGTRAMP_BYTES);
     }
+
+    // Build the System V AMD64 argv block on the user stack (argv[0] = name).
+    let initial_rsp = unsafe { write_argv_to_stack(cr3, USER_STACK_TOP, &[name]) };
+    (*task).initial_rsp = initial_rsp;
 
     let bytes = name.as_bytes();
     let len   = bytes.len().min(16);
@@ -424,9 +503,10 @@ pub unsafe fn tick() -> Option<(u8, i64)> {
     let entry  = (*sched).tasks[idx].entry;
     let cr3    = (*sched).tasks[idx].cr3;
 
+    let initial_rsp = (*sched).tasks[idx].initial_rsp;
     let exit_code = if first {
         (*sched).tasks[idx].first_run = false;
-        crate::kernel::user_mode::launch_at(entry, USER_STACK_TOP - 16, cr3)
+        crate::kernel::user_mode::launch_at(entry, initial_rsp, cr3)
     } else {
         let ctx_ptr = &raw const (*sched).tasks[idx].ctx;
         crate::kernel::user_mode::resume_user_context(&*ctx_ptr, cr3)

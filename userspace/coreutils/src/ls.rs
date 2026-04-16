@@ -2,18 +2,21 @@
 #![no_std]
 #![no_main]
 
-use oxide_rt::{exit, getcwd, readdir, print_str, print_bytes};
+use oxide_rt::{exit, getcwd, readdir, print_str, print_bytes, arg, argc};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn oxide_main() {
-    // TODO: parse argv once we have it; for now read argv from env or use cwd
-    // Use getcwd as the default path
+    // Use argv[1] if provided, else current working directory.
     let mut cwd_buf = [0u8; 128];
-    let cwd_len = getcwd(&mut cwd_buf);
-    let path = if cwd_len > 0 {
-        unsafe { core::str::from_utf8_unchecked(&cwd_buf[..cwd_len as usize]) }
+    let path = if argc() >= 2 {
+        arg(1).unwrap_or("/")
     } else {
-        "/"
+        let cwd_len = getcwd(&mut cwd_buf);
+        if cwd_len > 0 {
+            unsafe { core::str::from_utf8_unchecked(&cwd_buf[..cwd_len as usize]) }
+        } else {
+            "/"
+        }
     };
 
     let mut buf = [0u8; 4096];

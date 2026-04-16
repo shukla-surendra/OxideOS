@@ -449,6 +449,44 @@ unsafe impl GlobalAlloc for PagingAllocator {
 #[global_allocator]
 pub static ALLOCATOR: PagingAllocator = PagingAllocator::new();
 
+/// Map a physical memory range into the kernel's address space.
+///
+/// This is used for memory-mapped I/O (like the framebuffer) where we need
+/// specific permissions (writable, no-execute) for a fixed physical range.
+pub unsafe fn map_kernel_region(
+    phys_addr: u64,
+    virt_addr: u64,
+    num_pages: usize,
+    writable:  bool,
+    executable: bool,
+) -> Result<(), &'static str> {
+    let inner = unsafe { &mut *ALLOCATOR.inner.get() };
+    if !inner.initialized.load(Ordering::Relaxed) {
+        return Err("Paging allocator not initialized");
+    }
+    let ptm   = inner.page_table_manager.as_mut().ok_or("PTM unavailable")?;
+    let flags = PageTableFlags::user_flags(writable, executable);
+
+    for i in 0..num_pages {
+        let page_phys = phys_addr + (i * 4096) as u64;
+        let page_virt = virt_addr + (i * 4096) as u64;
+        unsafe {
+            // Check if already mapped — if so, we might need to update flags
+            // but for now we just skip to avoid "Page already mapped" error.
+            if ptm.get_table(ptm.l4_table_phys).entries[((page_virt >> 39) & 0x1FF) as usize].is_present() {
+                // This is a bit coarse; a real implementation would walk all 4 levels.
+                // For the framebuffer, Limine usually hasn't mapped it in our
+                // kernel-space L4 yet.
+            }
+            
+            // We use a modified map that doesn't error if already present, or we unmap first.
+            let _ = ptm.unmap(page_virt, &mut inner.frame_allocator);
+            ptm.map(page_virt, page_phys, flags, &mut inner.frame_allocator)?;
+        }
+    }
+    Ok(())
+}
+
 pub unsafe fn init_paging_heap(memory_map: &MemoryMapRequest) {
     unsafe { ALLOCATOR.init(memory_map) };
 }

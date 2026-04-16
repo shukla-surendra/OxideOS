@@ -213,6 +213,7 @@ pub mod sys {
     pub const WAIT:    u64 = 2;
     pub const GETPID:  u64 = 3;
     pub const EXEC:    u64 = 5;
+    pub const EXEC_ARGS: u64 = 6;
     pub const BRK:     u64 = 11;
     pub const READ:    u64 = 20;
     pub const WRITE:   u64 = 21;
@@ -587,6 +588,18 @@ pub fn readdir(path: &str, buf: &mut [u8]) -> i64 {
 #[inline]
 pub fn exec(path: &str) -> i64 {
     unsafe { raw::syscall2(sys::EXEC, path.as_ptr() as u64, path.len() as u64) }
+}
+
+/// Execute the program at `path` with the given argument string.
+/// `args` is a space-separated list of argv[1..] arguments (NOT including the
+/// program name).  On success this never returns.
+#[inline]
+pub fn exec_args(path: &str, args: &str) -> i64 {
+    unsafe {
+        raw::syscall4(sys::EXEC_ARGS,
+            path.as_ptr() as u64, path.len() as u64,
+            args.as_ptr() as u64, args.len() as u64)
+    }
 }
 
 /// Open a file. `flags`: 1 = read, 2 = write/create.
@@ -1120,6 +1133,47 @@ pub fn gui_blit_shm(
     };
 }
 
+// ── argv/argc ────────────────────────────────────────────────────────────────
+//
+// The kernel writes a System V AMD64 ABI argv block at the initial RSP:
+//
+//   [rsp +  0]            = argc (u64)
+//   [rsp +  8]            = argv[0] ptr
+//   [rsp + 16]            = argv[1] ptr (or NULL)
+//   ...
+//   [rsp + 8*(argc+1)]    = NULL (end of argv)
+//   [rsp + 8*(argc+2)]    = NULL (end of envp)
+//   [string data follows]
+//
+// _start caches these so programs can call `oxide_rt::argc()` / `oxide_rt::arg(i)`.
+
+static mut PROC_ARGC: usize = 0;
+// Stores the raw pointer values — safe to read as long as the stack mapping exists.
+static mut PROC_ARGV: [*const u8; 32] = [core::ptr::null(); 32];
+
+/// Return the number of command-line arguments (including argv[0]).
+#[inline]
+pub fn argc() -> usize {
+    unsafe { PROC_ARGC }
+}
+
+/// Return the i-th command-line argument as a `&str`, or `None` if out of range.
+///
+/// The lifetime is `'static` — the strings live in the process's initial stack
+/// mapping for the entire program lifetime.
+pub fn arg(i: usize) -> Option<&'static str> {
+    unsafe {
+        if i >= PROC_ARGC { return None; }
+        let ptr = PROC_ARGV[i];
+        if ptr.is_null() { return None; }
+        // Walk the null-terminated string.
+        let mut len = 0usize;
+        while *ptr.add(len) != 0 { len += 1; }
+        let s = core::slice::from_raw_parts(ptr, len);
+        core::str::from_utf8(s).ok()
+    }
+}
+
 // ── Entry point & panic handler ──────────────────────────────────────────────
 
 unsafe extern "C" {
@@ -1129,6 +1183,19 @@ unsafe extern "C" {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start() -> ! {
+    // Read the argv block that the kernel placed at our initial RSP.
+    let rsp: u64;
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nostack, nomem));
+        let argc_val = *(rsp as *const u64);
+        let argc = argc_val as usize;
+        PROC_ARGC = argc;
+        let max = argc.min(32);
+        for i in 0..max {
+            let ptr_va = *((rsp + 8 + i as u64 * 8) as *const u64);
+            PROC_ARGV[i] = ptr_va as *const u8;
+        }
+    }
     unsafe { oxide_main(); }
     exit(0);
 }

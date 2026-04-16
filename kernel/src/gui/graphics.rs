@@ -144,6 +144,46 @@ impl Graphics {
         }
     }
 
+    /// Read a pixel from the back buffer.
+    pub fn get_pixel(&self, x: u64, y: u64) -> u32 {
+        if x >= self.width || y >= self.height { return 0; }
+        unsafe { *self.back_buffer.add(self.pixel_offset(x, y)) }
+    }
+
+    /// Copy a rectangular region from the back buffer into `dst`.
+    /// `dst` must have capacity `w * h`.
+    pub fn read_rect(&self, x: u64, y: u64, w: u64, h: u64, dst: &mut [u32]) {
+        for row in 0..h {
+            let sy = y + row;
+            if sy >= self.height { break; }
+            for col in 0..w {
+                let sx = x + col;
+                if sx >= self.width { break; }
+                let idx = (row * w + col) as usize;
+                if idx < dst.len() {
+                    dst[idx] = unsafe { *self.back_buffer.add(self.pixel_offset(sx, sy)) };
+                }
+            }
+        }
+    }
+
+    /// Blit a rectangular buffer back into the back buffer.
+    /// `src` must have capacity `w * h`.
+    pub fn write_rect(&self, x: u64, y: u64, w: u64, h: u64, src: &[u32]) {
+        for row in 0..h {
+            let dy = y + row;
+            if dy >= self.height { break; }
+            for col in 0..w {
+                let dx = x + col;
+                if dx >= self.width { break; }
+                let idx = (row * w + col) as usize;
+                if idx < src.len() {
+                    unsafe { *self.back_buffer.add(self.pixel_offset(dx, dy)) = src[idx]; }
+                }
+            }
+        }
+    }
+
     /// Draw a filled rectangle.
     pub fn fill_rect(&self, x: u64, y: u64, width: u64, height: u64, color: u32) {
         if width == 0 || height == 0 || x >= self.width || y >= self.height {

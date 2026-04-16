@@ -103,7 +103,12 @@ impl SyscallRuntime for KernelRuntime {
     }
 
     fn exec_program(&mut self, path: &[u8]) -> i64 {
-        self.exec_resolve(path)
+        self.exec_resolve(path, "")
+    }
+
+    fn exec_program_args(&mut self, path: &[u8], args: &[u8]) -> i64 {
+        let args_str = core::str::from_utf8(args).unwrap_or("");
+        self.exec_resolve(path, args_str)
     }
 
     fn fork_child(&mut self) -> i64 {
@@ -774,7 +779,8 @@ impl SyscallRuntime for KernelRuntime {
 
 impl KernelRuntime {
     /// Resolve path → binary bytes, then hand off to `exec_binary`.
-    fn exec_resolve(&mut self, path: &[u8]) -> i64 {
+    /// `extra_args` is the space-separated argument string (argv[1..]).
+    fn exec_resolve(&mut self, path: &[u8], extra_args: &str) -> i64 {
         extern crate alloc;
         use alloc::vec::Vec;
 
@@ -783,10 +789,17 @@ impl KernelRuntime {
             Err(_) => return -1,
         };
 
+        // Derive argv[0] from the path (basename without leading slashes).
+        let prog_name = path_str
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or(path_str);
+
         // 1. Built-in registry (embedded binaries — no disk needed).
         let short = path_str.trim_start_matches('/').trim_start_matches("bin/");
         if let Some(b) = crate::kernel::programs::find(short) {
-            return self.exec_binary(b);
+            return self.exec_binary(b, prog_name, extra_args);
         }
 
         // 2. RamFS
@@ -795,19 +808,19 @@ impl KernelRuntime {
         {
             if !data.is_empty() {
                 let owned: Vec<u8> = data.to_vec();
-                return self.exec_binary(&owned);
+                return self.exec_binary(&owned, prog_name, extra_args);
             }
         }
 
         // 3. FAT16
         if path.starts_with(b"/disk/") {
-            return self.exec_fat(path);
+            return self.exec_fat(path, extra_args);
         }
 
         -2 // ENOENT
     }
 
-    fn exec_fat(&mut self, path: &[u8]) -> i64 {
+    fn exec_fat(&mut self, path: &[u8], extra_args: &str) -> i64 {
         extern crate alloc;
         use alloc::vec::Vec;
         let fd = unsafe { crate::kernel::fat::open(path, 0) };
@@ -821,19 +834,25 @@ impl KernelRuntime {
         }
         let _ = unsafe { crate::kernel::fat::close(fd as i32) };
         if buf.is_empty() { return -2; }
-        self.exec_binary(&buf)
+        let path_str = core::str::from_utf8(path).unwrap_or("");
+        let prog_name = path_str.trim_end_matches('/').rsplit('/').next().unwrap_or(path_str);
+        self.exec_binary(&buf, prog_name, extra_args)
     }
 
     /// Load `binary` into a fresh address space and replace the current task.
-    /// On success this never returns; on failure returns a negative error code.
-    fn exec_binary(&mut self, binary: &[u8]) -> i64 {
-        use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX, EXIT_PREEMPTED};
+    /// `prog_name` is the argv[0] string; `extra_args` is the space-separated
+    /// argument string (argv[1..]).  On success this never returns.
+    fn exec_binary(&mut self, binary: &[u8], prog_name: &str, extra_args: &str) -> i64 {
+        extern crate alloc;
+        use alloc::vec::Vec;
+        use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX, EXIT_PREEMPTED,
+                                       USER_SIGTRAMP, SIGTRAMP_BYTES, write_argv_to_stack};
         use crate::kernel::paging_allocator as pa;
         use crate::kernel::fs::ramfs::FdTable;
 
         const PAGE_SIZE:        usize = 4096;
         const USER_STACK_TOP:   u64   = 0x0080_0000;
-        const USER_STACK_PAGES: usize = 4;
+        const USER_STACK_PAGES: usize = 64; // 256 KB
         const USER_CODE_ADDR:   u64   = 0x0040_0000;
         let stack_base = USER_STACK_TOP - (USER_STACK_PAGES * PAGE_SIZE) as u64;
 
@@ -846,6 +865,11 @@ impl KernelRuntime {
         // Map user stack.
         if unsafe { pa::map_user_region_in(new_cr3, stack_base, USER_STACK_PAGES, true, false) }.is_err() {
             return -4;
+        }
+
+        // Map signal trampoline.
+        if unsafe { pa::map_user_region_in(new_cr3, USER_SIGTRAMP, 1, true, true) }.is_ok() {
+            unsafe { pa::copy_to_region_in(new_cr3, USER_SIGTRAMP, SIGTRAMP_BYTES); }
         }
 
         // Load ELF or flat binary into the new CR3.
@@ -862,6 +886,15 @@ impl KernelRuntime {
             unsafe { pa::copy_to_region_in(new_cr3, USER_CODE_ADDR, binary); }
             USER_CODE_ADDR
         };
+
+        // Build argv: argv[0] = prog_name, then split extra_args by whitespace.
+        let mut argv_buf: Vec<&str> = Vec::new();
+        argv_buf.push(prog_name);
+        for token in extra_args.split_ascii_whitespace() {
+            if argv_buf.len() >= 31 { break; }
+            argv_buf.push(token);
+        }
+        let initial_rsp = unsafe { write_argv_to_stack(new_cr3, USER_STACK_TOP, &argv_buf) };
 
         // Capture old CR3 before overwriting.
         let old_cr3 = unsafe {
@@ -880,14 +913,15 @@ impl KernelRuntime {
                 (*task).fd_table.entries[1],
                 (*task).fd_table.entries[2],
             ];
-            (*task).cr3        = new_cr3;
-            (*task).entry      = entry;
-            (*task).first_run  = true;
-            (*task).fd_table   = FdTable::new();
+            (*task).cr3         = new_cr3;
+            (*task).entry       = entry;
+            (*task).first_run   = true;
+            (*task).initial_rsp = initial_rsp;
+            (*task).fd_table    = FdTable::new();
             (*task).fd_table.entries[0] = saved_std[0];
             (*task).fd_table.entries[1] = saved_std[1];
             (*task).fd_table.entries[2] = saved_std[2];
-            (*task).output_len = 0;
+            (*task).output_len  = 0;
         }
 
         // Free old page table (user half only; kernel half is shared).
@@ -896,7 +930,7 @@ impl KernelRuntime {
         }
 
         // Non-local goto back to tick().  tick() will see EXIT_PREEMPTED,
-        // mark the task Ready, and on the next tick launch_at(entry, stack, new_cr3).
+        // mark the task Ready, and on the next tick launch_at(entry, initial_rsp, new_cr3).
         unsafe {
             crate::kernel::user_mode::CURRENT_SYSCALL_CTX = None;
             crate::kernel::user_mode::exit_to_kernel(EXIT_PREEMPTED);

@@ -48,6 +48,7 @@ designed so the OS remains bootable and usable after every milestone.
 | Shell `/bin/sh` — fork+exec, >, >> redirect | ✅ |
 | Coreutils: ls, cat, cp, mv, rm, mkdir, pwd, ps, wget, edit, nc | ✅ |
 | Text editor `/bin/edit` — nano-like, VT100 | ✅ |
+| **argv/argc passing** — System V AMD64 ABI argv block on user stack, `oxide-rt::arg()`/`argc()`, `ExecArgs` syscall 6, shell passes args | ✅ |
 | Netcat `/bin/nc` — TCP listen/connect, UDP send/listen | ✅ |
 | **GUI userspace API** — per-process windows (GuiCreate/Destroy/FillRect/DrawText/Present/PollEvent/GetSize/BlitShm, syscalls 125–132) | ✅ |
 | **GUI file manager** `/bin/filemanager` — directory navigation, file listing, keyboard+mouse input | ✅ |
@@ -56,7 +57,8 @@ designed so the OS remains bootable and usable after every milestone.
 
 | Gap | Blocks |
 |-----|--------|
-| **argv passing** — programs use interactive prompts | Every CLI tool |
+| ~~**argv passing**~~ | ✅ Done |
+| **Open-source C programs** — musl libc + Linux ABI compat | Running real programs |
 | **Environment variables** (PATH, HOME, USER) | Shell usability |
 | **Shell pipes** (cmd1 \| cmd2) | Shell usability |
 | **Job control** (bg, fg, &) | Shell usability |
@@ -127,11 +129,13 @@ Window manager, compositor IPC, shared memory, MSG_BLIT_SHM, start menu, userspa
 Per-process window syscalls (GuiCreate/Destroy/FillRect/DrawText/Present/PollEvent/GetSize/BlitShm, syscalls 125–132), keyboard/mouse event routing to focused window, `gui_proc` kernel module, `oxide-rt` GUI bindings, `/bin/filemanager` GUI file manager
 
 ### ✅ Phase 9 — Stability & Security
+### ✅ Phase 10.1 — argv/argc Passing
+System V AMD64 ABI argv block written to user stack by kernel. `oxide-rt::arg(i)` / `argc()` helpers. `ExecArgs` syscall 6 lets shell pass argv[1..] to exec'd programs. Shell updated to call `exec_args(prog, args)`. `ls` and `cat` coreutils updated to use argv.
 SYSCALL/SYSRET, SMEP, ACPI proper shutdown, BSoD crash dump, ATA alignment fix
 
 ---
 
-## Phase 10 — argv, Environment Variables & Shell Pipes  ← NEXT
+## Phase 10 — argv, Environment Variables & Shell Pipes
 
 **Goal:** Programs receive command-line arguments. The shell gains pipes and job control.
 This single phase makes OxideOS feel like a real Unix system.
@@ -191,6 +195,167 @@ With argv wired:
 - `/bin/true` / `/bin/false` — exit 0 / exit 1
 
 **Deliverable:** `ls /bin | grep sh | wc -l` works end-to-end.
+
+---
+
+---
+
+## Phase 10.6 — Open-Source Software Support  ← NEW GOAL
+
+**Goal:** Compile and run real open-source projects (Lua, BusyBox, curl, etc.) on OxideOS,
+starting with simple single-binary C programs and building up to interactive tools.
+
+### Why this is the critical path
+
+OxideOS already has: processes, ELF loading, a filesystem, networking, argv, a shell.
+The missing piece is a **C runtime** and **Linux ABI compatibility** so that programs
+compiled with standard toolchains just work.
+
+### 10.6.1 Linux x86-64 syscall ABI shim  ← FIRST STEP
+
+**Problem:** OxideOS syscall numbers don't match Linux. A program compiled for Linux
+calls `write` as syscall 1, but OxideOS maps 1 to `Fork`.
+
+**Options:**
+- **A (recommended): Remap OxideOS to Linux numbers.**
+  Change OxideOS syscall constants to match Linux x86-64 ABI. Update `oxide-rt` and
+  all userspace programs. One-time churn, then all standard toolchains just work.
+- **B: Personality-based shim.** Detect Linux binaries (ELF note `NT_GNU_ABI_TAG`)
+  and translate syscall numbers at the `int 0x80` / `syscall` entry point.
+
+Recommended: **Option A** (renumber OxideOS). Affected numbers:
+
+| Syscall | Linux | OxideOS now | Action |
+|---------|-------|-------------|--------|
+| read    | 0     | 20          | renumber |
+| write   | 1     | 21          | renumber |
+| open    | 2     | 22          | renumber |
+| close   | 3     | 23          | renumber |
+| mmap    | 9     | 9           | ✅ already matches |
+| brk     | 12    | 11          | renumber |
+| exit    | 60    | 0           | renumber |
+| fork    | 57    | 1           | renumber |
+| execve  | 59    | 5           | renumber |
+| getpid  | 39    | 3           | renumber |
+| wait4   | 61    | 2           | renumber |
+
+Files: `kernel/src/kernel/syscall_core.rs`, `userspace/oxide-rt/src/lib.rs`,
+all `userspace/*/src/main.rs`.
+
+### 10.6.2 musl libc cross-compilation
+
+**Goal:** Build a musl libc static library targeted at OxideOS.
+
+Steps:
+1. Clone musl 1.2.x: `git clone https://git.musl-libc.org/git/musl`
+2. Configure: `CC=x86_64-linux-musl-gcc ./configure --prefix=/opt/oxide-musl --target=x86_64-oxide`
+3. Patch musl's `src/internal/syscall.h` to use OxideOS syscall numbers.
+4. Build: `make -j$(nproc)`
+5. Result: `/opt/oxide-musl/lib/libc.a` and `/opt/oxide-musl/include/`
+
+Cross-compile a test program:
+```bash
+x86_64-linux-musl-gcc -static -nostdinc \
+  -I/opt/oxide-musl/include \
+  -L/opt/oxide-musl/lib \
+  hello.c -o hello-oxide
+```
+Load `hello-oxide` into OxideOS RamFS and run via the shell.
+
+### 10.6.3 select/poll syscalls  ← required by most programs
+
+Almost every C program that does I/O uses `select` or `poll`. Without them, programs
+block on reads and can't multiplex input.
+
+Implementation:
+- `poll(fds: *mut pollfd, nfds: u64, timeout_ms: i64) -> i64` (syscall 7 on Linux)
+  - Check each fd for POLLIN/POLLOUT readiness without blocking.
+  - If nothing ready and `timeout_ms > 0`, put task to sleep until fd ready or timeout.
+- `select(nfds, readfds, writefds, exceptfds, timeout)` (syscall 23 on Linux)
+  - Implemented on top of `poll`.
+
+Files: `kernel/src/kernel/syscall_core.rs`, `kernel/src/kernel/syscall.rs`.
+
+### 10.6.4 Real munmap
+
+Currently `munmap` is a no-op. Programs that use mmap for dynamic memory (musl's
+allocator) will leak unless munmap actually unmaps pages.
+
+Implementation:
+- Track per-task mmap regions: `Vec<(virt_base: u64, len: u64)>` in `Task`.
+- `munmap(addr, len)`: find the region, unmap PTEs, return physical frames.
+- TLB flush (`invlpg`) for every unmapped page.
+
+### 10.6.5 argv via execve (argc+argv+envp on stack)
+
+musl's `_start` reads `argc`, `argv`, and `envp` from the initial stack using the
+full System V AMD64 ABI layout. OxideOS currently writes `argc`/`argv` but no `envp`
+beyond two NULL terminators. musl is tolerant of empty envp, but we should verify.
+
+Add minimal environment variables (PATH, HOME, TERM, USER) to the envp block:
+- Kernel writes them after the argv NULL.
+- `oxide-rt::getenv(key)` walks the envp block.
+
+### 10.6.6 Target: Run Lua 5.4
+
+Lua is an ideal first target:
+- Single-file C99 codebase (~30 KLOC)
+- Minimal syscall surface: open/read/write/close/exit/mmap/munmap/time
+- No threads, no signals
+- Compiles as a static binary with musl libc
+
+Cross-compile steps:
+```bash
+make PLAT=generic CC="x86_64-linux-musl-gcc" \
+  MYCFLAGS="-static -fno-stack-protector" \
+  MYLDFLAGS="-static" lua
+```
+Load `lua` into RamFS, run `lua hello.lua`.
+
+### 10.6.7 Target: Run BusyBox
+
+BusyBox provides 300+ Unix tools in a single binary — a fully functional userland.
+
+```bash
+make ARCH=x86_64 CC=x86_64-linux-musl-gcc \
+  CONFIG_STATIC=y CONFIG_PREFIX=/bin busybox
+```
+
+Copy to OxideOS FAT16 or RamFS. Symlinks for each applet:
+```
+/bin/busybox → busybox
+/bin/ls      → busybox
+/bin/grep    → busybox
+...
+```
+
+Requires working: `fork`, `exec`, `wait`, `open`, `read`, `write`, `stat`, `mmap`,
+`munmap`, `getdents64`, `select`/`poll`, `ioctl`, `uname`.
+
+### 10.6.8 Future targets (stretch)
+
+| Program | Difficulty | Key requirements |
+|---------|-----------|-----------------|
+| coreutils (GNU) | Medium | full POSIX stat, links |
+| Python 3 | Hard | threads, select, complex signal handling |
+| curl/wget2 | Medium | select, DNS, TLS (mbedtls) |
+| Nginx | Hard | fork, epoll (or select), signals |
+| SQLite | Easy | file I/O, mmap, no threads |
+| Redis | Medium | select/epoll, fork |
+| Lua 5.4 | Easy | minimal syscalls |
+| MicroPython | Easy | mmap, minimal stdlib |
+
+### Implementation order
+
+```
+10.6.1  Remap syscall numbers to Linux ABI         ← unblocks standard toolchains
+10.6.3  select/poll                                 ← unblocks most C programs
+10.6.4  real munmap                                 ← unblocks musl malloc
+10.6.2  musl cross-compilation setup               ← first C programs
+10.6.5  envp on stack                               ← full ABI compliance
+10.6.6  Run Lua 5.4                                 ← proof of concept
+10.6.7  Run BusyBox                                 ← full userland replacement
+```
 
 ---
 
@@ -725,11 +890,20 @@ Replace kernel-launched terminal with a proper init:
 ## Implementation Priority Order (Updated)
 
 ```
-✅ DONE  Phases 1–9 (see completed list above)
+✅ DONE  Phases 1–9, Phase 10.1 (argv/argc)
 
-── NEXT ────────────────────────────────────────────────────────────
+── NEXT: Open-Source Software ──────────────────────────────────────
 
-🔥 Phase 10.1  argv/argc passing                    ← MOST IMPACTFUL
+🔥 Phase 10.6.1  Remap syscalls to Linux ABI           ← enables musl/gcc toolchain
+🔥 Phase 10.6.3  select/poll syscall                   ← unblocks most C programs
+🔥 Phase 10.6.4  Real munmap                           ← musl malloc works
+🔥 Phase 10.6.2  musl libc cross-compilation           ← first real C programs
+🔥 Phase 10.6.5  envp on stack                         ← full SysV ABI compliance
+🔥 Phase 10.6.6  Run Lua 5.4                           ← proof of concept
+🔥 Phase 10.6.7  Run BusyBox                           ← full Unix userland
+
+── ALSO NEXT: Shell & Tools ────────────────────────────────────────
+
 🔥 Phase 10.3  Shell pipes (cmd1 | cmd2)            ← Core shell feature
 🔥 Phase 10.2  Environment variables                ← PATH, HOME, TERM
 🔥 Phase 10.5  More coreutils (grep, echo, kill...) ← Daily usability
@@ -766,7 +940,9 @@ The milestones that cross the line from hobby OS to real OS:
 
 | Milestone | Phase | Status |
 |-----------|-------|--------|
-| Programs receive argv | 10.1 | ⬡ |
+| Programs receive argv | 10.1 | ✅ |
+| musl libc + first C program | 10.6 | ⬡ |
+| BusyBox runs | 10.6.7 | ⬡ |
 | Shell pipes work | 10.3 | ⬡ |
 | DNS + wget by hostname | 13.2 | ⬡ |
 | ext2 writable | 12.1 | ⬡ |

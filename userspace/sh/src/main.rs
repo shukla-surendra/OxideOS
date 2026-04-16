@@ -7,7 +7,7 @@
 #![no_main]
 
 use oxide_rt::{
-    exit, fork, waitpid, exec, getchar, sleep_ms,
+    exit, fork, waitpid, exec_args, getchar, sleep_ms,
     print_str, print_bytes, readdir, open, write, read, close, dup2,
 };
 
@@ -257,7 +257,7 @@ pub extern "C" fn oxide_main() {
                         dup2(redir_fd, 1);
                         close(redir_fd);
                     }
-                    exec(prog);
+                    exec_args(prog, args);
                     print_str("sh: ");
                     print_str(prog);
                     print_str(": not found\n");

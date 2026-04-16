@@ -18,6 +18,9 @@
 //! All state lives in fixed-size static arrays so no heap allocation is needed
 //! inside the kernel.  `MAX_ENTRIES` windows are supported simultaneously.
 
+extern crate alloc;
+use alloc::vec::Vec;
+
 use crate::gui::widgets::Window;
 use crate::gui::graphics::Graphics;
 use crate::gui::fonts;
@@ -88,10 +91,19 @@ struct GprocEntry {
     events:    [GuiEventRaw; EVENT_RING_SIZE],
     head:      usize,
     tail:      usize,
+    /// Snapshot of the window content area taken on every gui_present call.
+    /// Composited back into the backbuffer during kernel redraws so content
+    /// survives full-screen repaints without needing the task to be awake.
+    backing:   Vec<u32>,
+    back_w:    u32,
+    back_h:    u32,
+    /// Absolute screen position of the content area (updated on present).
+    back_cx:   u64,
+    back_cy:   u64,
 }
 
 impl GprocEntry {
-    const fn empty() -> Self {
+    fn empty() -> Self {
         const Z: GuiEventRaw = GuiEventRaw::zero();
         Self {
             active:    false,
@@ -100,6 +112,11 @@ impl GprocEntry {
             events:    [Z; EVENT_RING_SIZE],
             head:      0,
             tail:      0,
+            backing:   Vec::new(),
+            back_w:    0,
+            back_h:    0,
+            back_cx:   0,
+            back_cy:   0,
         }
     }
 
@@ -120,10 +137,28 @@ impl GprocEntry {
 
 // ── Static globals ────────────────────────────────────────────────────────────
 
-static mut ENTRIES: [GprocEntry; MAX_ENTRIES] = {
-    const E: GprocEntry = GprocEntry::empty();
-    [E; MAX_ENTRIES]
-};
+// SAFETY: single-threaded kernel; initialized once, accessed only from the
+// main GUI loop and scheduler (never concurrently).
+static mut ENTRIES_INIT: bool = false;
+static mut ENTRIES: core::mem::MaybeUninit<[GprocEntry; MAX_ENTRIES]>
+    = core::mem::MaybeUninit::uninit();
+
+/// Must be called before any other gui_proc function (done by `init`).
+unsafe fn ensure_entries() {
+    if unsafe { !ENTRIES_INIT } {
+        // Initialize all entries in place via raw pointer — avoids creating a
+        // mutable reference to a mutable static (denied in Rust 2024).
+        let ptr = unsafe { core::ptr::addr_of_mut!(ENTRIES) } as *mut GprocEntry;
+        for i in 0..MAX_ENTRIES {
+            unsafe { ptr.add(i).write(GprocEntry::empty()); }
+        }
+        unsafe { ENTRIES_INIT = true; }
+    }
+}
+
+unsafe fn entries() -> &'static mut [GprocEntry; MAX_ENTRIES] {
+    unsafe { &mut *(core::ptr::addr_of_mut!(ENTRIES) as *mut [GprocEntry; MAX_ENTRIES]) }
+}
 
 // Static title storage — avoids changing Window::title from &'static str
 static mut TITLE_BUFS: [[u8; TITLE_BUF_LEN]; MAX_ENTRIES] = [[0; TITLE_BUF_LEN]; MAX_ENTRIES];
@@ -148,6 +183,7 @@ pub unsafe fn init(
     wm:  *mut crate::gui::window_manager::WindowManager,
     gfx: *const Graphics,
 ) {
+    unsafe { ensure_entries(); }
     WM_PTR    = wm;
     GFX_PTR   = gfx;
     GFX_VALID = true;
@@ -181,7 +217,7 @@ pub unsafe fn pop_pending_key() -> Option<u8> {
 fn slot_by_win(window_id: u32) -> Option<usize> {
     unsafe {
         for i in 0..MAX_ENTRIES {
-            if ENTRIES[i].active && ENTRIES[i].window_id == window_id {
+            if entries()[i].active && entries()[i].window_id == window_id {
                 return Some(i);
             }
         }
@@ -192,7 +228,7 @@ fn slot_by_win(window_id: u32) -> Option<usize> {
 fn slot_by_pid_and_win(pid: u32, window_id: u32) -> Option<usize> {
     unsafe {
         for i in 0..MAX_ENTRIES {
-            if ENTRIES[i].active && ENTRIES[i].pid == pid && ENTRIES[i].window_id == window_id {
+            if entries()[i].active && entries()[i].pid == pid && entries()[i].window_id == window_id {
                 return Some(i);
             }
         }
@@ -231,7 +267,7 @@ pub unsafe fn create_window(pid: u32, title_bytes: &[u8], width: u32, height: u3
     // Find a free entry slot.
     let slot = 'find: {
         for i in 0..MAX_ENTRIES {
-            if !unsafe { ENTRIES[i].active } {
+            if !unsafe { entries()[i].active } {
                 break 'find Some(i);
             }
         }
@@ -269,12 +305,23 @@ pub unsafe fn create_window(pid: u32, title_bytes: &[u8], width: u32, height: u3
         }
     };
 
+    // Allocate backing buffer for the content area.
+    let (back_cx, back_cy, back_cw, back_ch) =
+        content_area(wm_id).unwrap_or((win_x, win_y + TITLE_BAR_H, win_w, win_h.saturating_sub(TITLE_BAR_H)));
+    let cap = (back_cw * back_ch) as usize;
+
     unsafe {
-        ENTRIES[slot].active    = true;
-        ENTRIES[slot].window_id = wm_id as u32;
-        ENTRIES[slot].pid       = pid;
-        ENTRIES[slot].head      = 0;
-        ENTRIES[slot].tail      = 0;
+        entries()[slot].active    = true;
+        entries()[slot].window_id = wm_id as u32;
+        entries()[slot].pid       = pid;
+        entries()[slot].head      = 0;
+        entries()[slot].tail      = 0;
+        entries()[slot].back_w    = back_cw as u32;
+        entries()[slot].back_h    = back_ch as u32;
+        entries()[slot].back_cx   = back_cx;
+        entries()[slot].back_cy   = back_cy;
+        entries()[slot].backing   = Vec::with_capacity(cap);
+        entries()[slot].backing.resize(cap, 0u32);
     }
 
     wm_id as i64
@@ -290,7 +337,8 @@ pub unsafe fn destroy_window(pid: u32, window_id: u32) -> i64 {
         if !WM_PTR.is_null() {
             (*WM_PTR).remove_window(window_id as usize);
         }
-        ENTRIES[slot].active = false;
+        entries()[slot].active  = false;
+        entries()[slot].backing = Vec::new(); // free memory
     }
     0
 }
@@ -343,11 +391,21 @@ pub unsafe fn draw_text(
     0
 }
 
-/// Present the window (signals the main loop to include this window in the
-/// next blit; the back-buffer is already updated).  Always returns 0.
-pub unsafe fn present(_pid: u32, _window_id: u32) -> i64 {
-    // The main loop blits the back-buffer every frame.
-    // Setting NEEDS_PRESENT just makes the next frame happen promptly.
+/// Present the window: snapshot the content area into the backing buffer so
+/// it survives kernel redraws, then signal the main loop to blit.
+pub unsafe fn present(pid: u32, window_id: u32) -> i64 {
+    if !GFX_VALID { unsafe { NEEDS_PRESENT = true; } return 0; }
+    let gfx = unsafe { &*GFX_PTR };
+
+    // Find the entry and snapshot.
+    if let Some(slot) = slot_by_pid_and_win(pid, window_id) {
+        let e = unsafe { &mut entries()[slot] };
+        let w = e.back_w as u64;
+        let h = e.back_h as u64;
+        if w > 0 && h > 0 && e.backing.len() == (w * h) as usize {
+            gfx.read_rect(e.back_cx, e.back_cy, w, h, &mut e.backing);
+        }
+    }
     unsafe { NEEDS_PRESENT = true; }
     0
 }
@@ -411,7 +469,7 @@ pub unsafe fn poll_event(pid: u32, window_id: u32, event_ptr: u64) -> i64 {
         Some(s) => s,
         None    => return -9,
     };
-    let ev = unsafe { ENTRIES[slot].pop() };
+    let ev = unsafe { entries()[slot].pop() };
     match ev {
         None     => -6, // EAGAIN
         Some(ev) => {
@@ -446,28 +504,28 @@ pub unsafe fn get_size(pid: u32, window_id: u32, w_ptr: u64, h_ptr: u64) -> i64 
 /// Push a keyboard char to the event queue of the window with `window_id`.
 pub unsafe fn push_key_event(window_id: u32, ch: u8) {
     if let Some(slot) = slot_by_win(window_id) {
-        unsafe { ENTRIES[slot].push(GuiEventRaw::key(ch)); }
+        unsafe { entries()[slot].push(GuiEventRaw::key(ch)); }
     }
 }
 
 /// Push a mouse-move event (window-relative coords) to `window_id`.
 pub unsafe fn push_mouse_move(window_id: u32, rel_x: u16, rel_y: u16) {
     if let Some(slot) = slot_by_win(window_id) {
-        unsafe { ENTRIES[slot].push(GuiEventRaw::mouse_move(rel_x, rel_y)); }
+        unsafe { entries()[slot].push(GuiEventRaw::mouse_move(rel_x, rel_y)); }
     }
 }
 
 /// Push a mouse button event to `window_id`.
 pub unsafe fn push_mouse_btn(window_id: u32, rel_x: u16, rel_y: u16, button: u8, pressed: bool) {
     if let Some(slot) = slot_by_win(window_id) {
-        unsafe { ENTRIES[slot].push(GuiEventRaw::mouse_btn(rel_x, rel_y, button, pressed)); }
+        unsafe { entries()[slot].push(GuiEventRaw::mouse_btn(rel_x, rel_y, button, pressed)); }
     }
 }
 
 /// Push a focus-change event to `window_id`.
 pub unsafe fn push_focus_event(window_id: u32, gained: bool) {
     if let Some(slot) = slot_by_win(window_id) {
-        unsafe { ENTRIES[slot].push(GuiEventRaw::focus(gained)); }
+        unsafe { entries()[slot].push(GuiEventRaw::focus(gained)); }
     }
 }
 
@@ -477,7 +535,7 @@ pub unsafe fn on_window_closed(window_id: u32) {
     if let Some(slot) = slot_by_win(window_id) {
         unsafe {
             // Push a close event so the process can exit cleanly.
-            ENTRIES[slot].push(GuiEventRaw::close());
+            entries()[slot].push(GuiEventRaw::close());
             // Mark entry as pending-close (process still alive, window gone).
             // The process will exit after receiving the close event.
         }
@@ -488,14 +546,34 @@ pub unsafe fn on_window_closed(window_id: u32) {
 pub unsafe fn on_process_exit(pid: u32) {
     unsafe {
         for i in 0..MAX_ENTRIES {
-            if ENTRIES[i].active && ENTRIES[i].pid == pid {
-                let wid = ENTRIES[i].window_id;
+            if entries()[i].active && entries()[i].pid == pid {
+                let wid = entries()[i].window_id;
                 if !WM_PTR.is_null() {
                     (*WM_PTR).remove_window(wid as usize);
                 }
-                ENTRIES[i].active = false;
+                entries()[i].active  = false;
+                entries()[i].backing = Vec::new(); // free backing buffer
             }
         }
+    }
+}
+
+// ── Compositor ───────────────────────────────────────────────────────────────
+
+/// Composite every active GUI-proc window's backing buffer into the
+/// back-buffer.  Call this after drawing all kernel window chrome so that
+/// GUI-proc content lands on top (correct z-order) and survives full redraws
+/// even when the userspace task is sleeping.
+pub unsafe fn composite_all(graphics: &Graphics) {
+    if !GFX_VALID { return; }
+    for i in 0..MAX_ENTRIES {
+        let e = unsafe { &entries()[i] };
+        if !e.active { continue; }
+        let w = e.back_w as u64;
+        let h = e.back_h as u64;
+        if w == 0 || h == 0 { continue; }
+        if e.backing.len() != (w * h) as usize { continue; }
+        graphics.write_rect(e.back_cx, e.back_cy, w, h, &e.backing);
     }
 }
 
