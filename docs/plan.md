@@ -363,7 +363,7 @@ Requires working: `fork`, `exec`, `wait`, `open`, `read`, `write`, `stat`, `mmap
 
 ```
 10.6.1  Remap syscall numbers to Linux ABI         ← unblocks standard toolchains
-10.6.3  select/poll                                 ← unblocks most C programs
+✅ 10.6.3  select/poll (poll syscall 7 implemented)  ← done
 10.6.4  real munmap                                 ← unblocks musl malloc
 10.6.2  musl cross-compilation setup               ← first C programs
 10.6.5  envp on stack                               ← full ABI compliance
@@ -908,7 +908,7 @@ Replace kernel-launched terminal with a proper init:
 
 ── NEXT: Open-Source Software ──────────────────────────────────────
 
-🔥 Phase 10.6.1  Remap syscalls to Linux ABI           ← enables musl/gcc toolchain
+✅ Phase 10.6.1  Remap syscalls to Linux ABI           ← done
 🔥 Phase 10.6.3  select/poll syscall                   ← unblocks most C programs
 🔥 Phase 10.6.4  Real munmap                           ← musl malloc works
 🔥 Phase 10.6.2  musl libc cross-compilation           ← first real C programs

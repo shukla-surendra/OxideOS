@@ -393,6 +393,27 @@ pub unsafe fn sys_recv(sfd: i64, buf_ptr: *mut u8, len: usize, _flags: u32) -> i
     }
 }
 
+/// Returns `true` if the socket has data ready to read (for poll/select).
+pub unsafe fn socket_read_ready(sfd: i64) -> bool {
+    let slot = match slot_from_fd(sfd) { Some(s) => s, None => return false };
+    let (handle, sock_type) = unsafe {
+        let table = &*core::ptr::addr_of!(SOCK_TABLE);
+        match table[slot].as_ref() {
+            Some(e) => (e.handle, e.sock_type),
+            None    => return false,
+        }
+    };
+    unsafe {
+        let net_ptr = core::ptr::addr_of_mut!(stack::NET);
+        let state   = match &mut *net_ptr { Some(s) => s, None => return false };
+        if sock_type == SOCK_STREAM {
+            state.sockets.get_mut::<TcpSocket>(handle).can_recv()
+        } else {
+            state.sockets.get_mut::<UdpSocket>(handle).can_recv()
+        }
+    }
+}
+
 /// Returns `true` once the TCP handshake is complete (socket can send data).
 /// Used by the kernel-side connectivity probe — does not consume or send any data.
 pub unsafe fn tcp_is_connected(sfd: i64) -> bool {

@@ -148,6 +148,10 @@ pub static TRUE: &[u8] =
 pub static FALSE: &[u8] =
     include_bytes!("../../../userspace/bin/false.elf");
 
+/// hello_c — "Hello from C on OxideOS!" compiled from C with gcc (Linux syscall ABI).
+pub static HELLO_C: &[u8] =
+    include_bytes!("../../../userspace/bin/hello_c.elf");
+
 /// Look up a built-in program by name.
 pub fn find(name: &str) -> Option<&'static [u8]> {
     match name {
@@ -184,9 +188,10 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
         "sleep" => Some(SLEEP),
         "kill"  => Some(KILL),
         "touch" => Some(TOUCH),
-        "true"  => Some(TRUE),
-        "false" => Some(FALSE),
-        _             => None,
+        "true"    => Some(TRUE),
+        "false"   => Some(FALSE),
+        "hello_c" => Some(HELLO_C),
+        _         => None,
     }
 }
 
@@ -199,4 +204,5 @@ pub const NAMES: &[&str] = &[
     "filemanager",
     "echo", "grep", "wc", "head", "tail", "sort", "sleep", "kill", "touch",
     "true", "false",
+    "hello_c",
 ];

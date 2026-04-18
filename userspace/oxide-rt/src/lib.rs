@@ -204,64 +204,68 @@ pub mod raw {
     }
 }
 
-// ── Syscall numbers ──────────────────────────────────────────────────────────
+// ── Syscall numbers (Linux x86-64 ABI) ──────────────────────────────────────
+// Standard syscalls match Linux x86-64 numbers.
+// OxideOS-specific syscalls use numbers ≥ 400.
 pub mod sys {
-    pub const EXIT:    u64 = 0;
-    pub const MMAP:    u64 = 9;
-    pub const MUNMAP:  u64 = 10;
-    pub const FORK:    u64 = 1;
-    pub const WAIT:    u64 = 2;
-    pub const GETPID:  u64 = 3;
-    pub const EXEC:    u64 = 5;
-    pub const EXEC_ARGS: u64 = 6;
-    pub const BRK:     u64 = 11;
-    pub const READ:    u64 = 20;
-    pub const WRITE:   u64 = 21;
-    pub const OPEN:    u64 = 22;
-    pub const CLOSE:   u64 = 23;
-    pub const PRINT:   u64 = 30;
-    pub const GETCHAR: u64 = 31;
-    pub const GETTIME: u64 = 40;
-    pub const SLEEP:   u64 = 41;
-    pub const PIPE:    u64 = 60;
-    pub const READDIR: u64 = 70;
-    pub const MKDIR:   u64 = 71;
-    pub const CHDIR:   u64 = 72;
-    pub const GETCWD:  u64 = 73;
-    pub const STAT:     u64 = 74;
-    pub const FSTAT:    u64 = 75;
-    pub const UNLINK:   u64 = 76;
-    pub const RENAME:   u64 = 77;
-    pub const TRUNCATE: u64 = 78;
-    // Socket syscalls
-    pub const SOCKET:       u64 = 100;
-    pub const BIND:         u64 = 101;
-    pub const CONNECT:      u64 = 102;
-    pub const LISTEN:       u64 = 103;
-    pub const ACCEPT:       u64 = 104;
-    pub const SEND:         u64 = 105;
-    pub const RECV:         u64 = 106;
-    pub const CLOSE_SOCKET: u64 = 107;
-    pub const SENDTO:       u64 = 108;
-    pub const RECVFROM:     u64 = 109;
-    pub const DUP2:    u64 = 81;
-    pub const KILL:    u64 = 91;
-    pub const MSGQ_CREATE:  u64 = 115;
-    pub const MSGSND:       u64 = 116;
-    pub const MSGRCV:       u64 = 117;
-    pub const MSGQ_DESTROY: u64 = 118;
-    pub const MSGRCV_WAIT:  u64 = 119;
-    pub const MSGQ_LEN:     u64 = 120;
-    pub const IOCTL:        u64 = 92;
-    pub const SIGACTION:    u64 = 93;
-    pub const SIGRETURN:    u64 = 95;
-    pub const SHMGET:       u64 = 110;
-    pub const SHMAT:        u64 = 111;
-    pub const SHMDT:        u64 = 112;
-    pub const GETENV:       u64 = 79;
-    pub const SETENV:       u64 = 80;
-    pub const CHMOD:        u64 = 96;
-    pub const CHOWN:        u64 = 97;
+    // POSIX / Linux-compatible
+    pub const READ:     u64 = 0;
+    pub const WRITE:    u64 = 1;
+    pub const OPEN:     u64 = 2;
+    pub const CLOSE:    u64 = 3;
+    pub const STAT:     u64 = 4;
+    pub const FSTAT:    u64 = 5;
+    pub const MMAP:     u64 = 9;
+    pub const MUNMAP:   u64 = 11;
+    pub const BRK:      u64 = 12;
+    pub const SIGACTION: u64 = 13;
+    pub const SIGRETURN: u64 = 15;
+    pub const IOCTL:    u64 = 16;
+    pub const PIPE:     u64 = 22;
+    pub const SHMGET:   u64 = 29;
+    pub const SHMAT:    u64 = 30;
+    pub const DUP2:     u64 = 33;
+    pub const SLEEP:    u64 = 35;
+    pub const GETPID:   u64 = 39;
+    pub const SOCKET:   u64 = 41;
+    pub const CONNECT:  u64 = 42;
+    pub const ACCEPT:   u64 = 43;
+    pub const SENDTO:   u64 = 44;
+    pub const RECVFROM: u64 = 45;
+    pub const BIND:     u64 = 49;
+    pub const LISTEN:   u64 = 50;
+    pub const FORK:     u64 = 57;
+    pub const EXEC:     u64 = 59;
+    pub const EXIT:     u64 = 60;
+    pub const WAIT:     u64 = 61;
+    pub const KILL:     u64 = 62;
+    pub const SHMDT:    u64 = 67;
+    pub const TRUNCATE: u64 = 76;
+    pub const READDIR:  u64 = 78;
+    pub const GETCWD:   u64 = 79;
+    pub const CHDIR:    u64 = 80;
+    pub const RENAME:   u64 = 82;
+    pub const MKDIR:    u64 = 83;
+    pub const UNLINK:   u64 = 87;
+    pub const CHMOD:    u64 = 90;
+    pub const CHOWN:    u64 = 92;
+    pub const GETTIME:  u64 = 96;
+    // OxideOS-specific (≥ 400)
+    pub const PRINT:        u64 = 400;
+    pub const GETCHAR:      u64 = 401;
+    pub const GET_SYSTEM_INFO: u64 = 402;
+    pub const GETENV:       u64 = 403;
+    pub const SETENV:       u64 = 404;
+    pub const EXEC_ARGS:    u64 = 405;
+    pub const SEND:         u64 = 406;
+    pub const RECV:         u64 = 407;
+    pub const CLOSE_SOCKET: u64 = 408;
+    pub const MSGQ_CREATE:  u64 = 415;
+    pub const MSGSND:       u64 = 416;
+    pub const MSGRCV:       u64 = 417;
+    pub const MSGQ_DESTROY: u64 = 418;
+    pub const MSGRCV_WAIT:  u64 = 419;
+    pub const MSGQ_LEN:     u64 = 420;
 }
 
 // ── TTY / termios structs ─────────────────────────────────────────────────────
@@ -957,16 +961,16 @@ pub fn comp_blit_shm(
 // }
 // ```
 
-// GUI syscall numbers (must match kernel/src/kernel/syscall_core.rs)
+// GUI syscall numbers (OxideOS-specific, must match kernel/src/kernel/syscall_core.rs)
 mod gui_sys {
-    pub const GUI_CREATE:     u64 = 125;
-    pub const GUI_DESTROY:    u64 = 126;
-    pub const GUI_FILL_RECT:  u64 = 127;
-    pub const GUI_DRAW_TEXT:  u64 = 128;
-    pub const GUI_PRESENT:    u64 = 129;
-    pub const GUI_POLL_EVENT: u64 = 130;
-    pub const GUI_GET_SIZE:   u64 = 131;
-    pub const GUI_BLIT_SHM:   u64 = 132;
+    pub const GUI_CREATE:     u64 = 425;
+    pub const GUI_DESTROY:    u64 = 426;
+    pub const GUI_FILL_RECT:  u64 = 427;
+    pub const GUI_DRAW_TEXT:  u64 = 428;
+    pub const GUI_PRESENT:    u64 = 429;
+    pub const GUI_POLL_EVENT: u64 = 430;
+    pub const GUI_GET_SIZE:   u64 = 431;
+    pub const GUI_BLIT_SHM:   u64 = 432;
 }
 
 /// A raw GUI event as written by the kernel.

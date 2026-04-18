@@ -2,6 +2,7 @@
 /ovmf
 *.iso
 *.hdd
+*.elf
 *.log
 *.img
 .idea/*

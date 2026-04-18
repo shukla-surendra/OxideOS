@@ -55,6 +55,13 @@ pub fn is_read_fd(fd: i32) -> bool { (fd - PIPE_FD_BASE) % 2 == 0 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
+/// Returns true if the read end of a pipe has data available (for poll).
+pub fn read_ready(raw_fd: i32) -> bool {
+    if !is_pipe_fd(raw_fd) || !is_read_fd(raw_fd) { return false; }
+    let idx = pipe_index(raw_fd);
+    unsafe { !PIPES[idx].is_empty() }
+}
+
 /// Allocate a new pipe. Returns `(read_fd, write_fd)` on success.
 pub unsafe fn alloc() -> Option<(i32, i32)> {
     let pipes = &raw mut PIPES;

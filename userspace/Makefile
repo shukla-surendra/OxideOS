@@ -9,9 +9,9 @@ BINS := $(SRCS:%.asm=$(BINDIR)/%.bin)
 # Rust programs (output = bin/<name>.elf)
 RUST_BINS := $(BINDIR)/hello_rust.elf
 
-.PHONY: all clean rust-programs
+.PHONY: all clean rust-programs c-programs
 
-all: $(BINDIR) $(BINS) rust-programs
+all: $(BINDIR) $(BINS) c-programs rust-programs
 
 $(BINDIR):
 	mkdir -p $(BINDIR)
@@ -19,6 +19,13 @@ $(BINDIR):
 $(BINDIR)/%.bin: %.asm
 	$(NASM) -f bin -o $@ $<
 
+# ── C programs (gcc, no stdlib, Linux syscall ABI) ────────────────────────────
+c-programs: $(BINDIR)
+	x86_64-linux-gnu-gcc -static -nostdlib -nostartfiles \
+	    -O2 -fno-stack-protector -fno-asynchronous-unwind-tables \
+	    -o $(BINDIR)/hello_c.elf hello_c/hello_c.c
+
+# ── Rust programs ─────────────────────────────────────────────────────────────
 rust-programs: $(BINDIR)
 	$(CARGO) +nightly build --release -p hello-rust -p sh -p terminal -p coreutils -p wget -p edit -p nc -p filemanager 2>&1
 	cp target/x86_64-unknown-none/release/hello_rust   $(BINDIR)/hello_rust.elf

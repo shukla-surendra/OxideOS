@@ -403,6 +403,101 @@ impl SyscallRuntime for KernelRuntime {
         }
     }
 
+    fn poll_impl(&mut self, fds_ptr: u64, nfds: u64, timeout_ms: i64) -> i64 {
+        use crate::kernel::fs::ramfs::{FdBackend, MAX_FD};
+        use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+        use super::syscall_core::TIMER_HZ;
+
+        #[repr(C)]
+        struct PollFd { fd: i32, events: i16, revents: i16 }
+        const POLLIN:  i16 = 0x0001;
+        const POLLOUT: i16 = 0x0004;
+        const POLLHUP: i16 = 0x0010;
+
+        let n = nfds as usize;
+        if n == 0 { return 0; }
+        if n > 64 || fds_ptr < 0x1000 { return -22; } // EINVAL / EFAULT
+
+        let fds = unsafe {
+            core::slice::from_raw_parts_mut(fds_ptr as *mut PollFd, n)
+        };
+
+        let mut ready = 0i64;
+        unsafe {
+            let sched = &raw const SCHED;
+            let task  = &(*sched).tasks[CURRENT_TASK_IDX];
+
+            for pfd in fds.iter_mut() {
+                pfd.revents = 0;
+                let fd = pfd.fd;
+                if fd < 0 { continue; }
+
+                // Socket FDs (fd >= 200)
+                if fd >= 200 {
+                    if (pfd.events & POLLIN) != 0
+                        && crate::kernel::net::socket::socket_read_ready(fd as i64)
+                    {
+                        pfd.revents |= POLLIN;
+                    }
+                    if (pfd.events & POLLOUT) != 0 { pfd.revents |= POLLOUT; }
+                    if pfd.revents != 0 { ready += 1; }
+                    continue;
+                }
+
+                if fd as usize >= MAX_FD { continue; }
+
+                let entry = match task.fd_table.entries[fd as usize] {
+                    None    => { pfd.revents = POLLHUP; ready += 1; continue; }
+                    Some(e) => e,
+                };
+
+                match entry.backend {
+                    FdBackend::DevTty => {
+                        if (pfd.events & POLLIN) != 0
+                            && crate::kernel::stdin::available() > 0
+                        {
+                            pfd.revents |= POLLIN;
+                        }
+                        if (pfd.events & POLLOUT) != 0 { pfd.revents |= POLLOUT; }
+                    }
+                    FdBackend::DevNull => {
+                        if (pfd.events & POLLIN)  != 0 { pfd.revents |= POLLIN; }
+                        if (pfd.events & POLLOUT) != 0 { pfd.revents |= POLLOUT; }
+                    }
+                    FdBackend::Pipe => {
+                        if entry.writable {
+                            if (pfd.events & POLLOUT) != 0 { pfd.revents |= POLLOUT; }
+                        } else {
+                            if (pfd.events & POLLIN) != 0
+                                && crate::kernel::pipe::read_ready(entry.raw_fd)
+                            {
+                                pfd.revents |= POLLIN;
+                            }
+                        }
+                    }
+                    FdBackend::RamFS | FdBackend::Fat16 | FdBackend::Ext2 => {
+                        if (pfd.events & POLLIN)  != 0 { pfd.revents |= POLLIN; }
+                        if (pfd.events & POLLOUT) != 0 { pfd.revents |= POLLOUT; }
+                    }
+                }
+                if pfd.revents != 0 { ready += 1; }
+            }
+        }
+
+        if ready > 0 || timeout_ms == 0 {
+            return ready;
+        }
+
+        // Nothing ready — sleep then return 0 (user retries poll).
+        let ticks = if timeout_ms < 0 {
+            2  // ~20 ms at 100 Hz: yield so other tasks can produce data
+        } else {
+            ((timeout_ms as u64 * TIMER_HZ) / 1000).max(1)
+        };
+        self.sleep_until_tick(self.current_ticks() + ticks);
+        0  // reached only in busy-wait fallback
+    }
+
     fn dup2_impl(&mut self, old_fd: i32, new_fd: i32) -> i64 {
         unsafe {
             let sched = &raw mut crate::kernel::scheduler::SCHED;
