@@ -42,6 +42,8 @@ pub enum Syscall {
     Unlink        = 76,
     Rename        = 77,
     Truncate      = 78,
+    Getenv        = 79,
+    Setenv        = 80,
     Dup2          = 81,
     Kill          = 91,
     Ioctl         = 92,
@@ -112,6 +114,8 @@ impl Syscall {
             Self::Unlink        => "unlink",
             Self::Rename        => "rename",
             Self::Truncate      => "truncate",
+            Self::Getenv        => "getenv",
+            Self::Setenv        => "setenv",
             Self::Dup2          => "dup2",
             Self::Kill          => "kill",
             Self::Ioctl         => "ioctl",
@@ -182,6 +186,8 @@ impl From<u64> for Syscall {
             76 => Self::Unlink,
             77 => Self::Rename,
             78 => Self::Truncate,
+            79 => Self::Getenv,
+            80 => Self::Setenv,
             81 => Self::Dup2,
             91 => Self::Kill,
             92 => Self::Ioctl,
@@ -396,6 +402,14 @@ pub trait SyscallRuntime {
     /// Truncate an open file descriptor to `length` bytes.
     fn truncate_impl(&mut self, _fd: i32, _length: u64) -> i64 { ENOSYS }
 
+    /// Read the value of environment variable `key` into `buf`.
+    /// Returns bytes written on success, -ENOENT if not found.
+    fn getenv_impl(&mut self, _key: &[u8], _buf: &mut [u8]) -> i64 { ENOSYS }
+
+    /// Set environment variable `key` to `val`.  Empty val deletes the key.
+    /// Returns 0 on success.
+    fn setenv_impl(&mut self, _key: &[u8], _val: &[u8]) -> i64 { ENOSYS }
+
     /// Duplicate `old_fd` to `new_fd`.  Returns `new_fd` on success.
     fn dup2_impl(&mut self, _old_fd: i32, _new_fd: i32) -> i64 { ENOSYS }
 
@@ -536,6 +550,8 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
             let r = runtime.truncate_impl(request.arg1 as i32, request.arg2);
             if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
         }
+        Syscall::Getenv => unsafe { sys_getenv(runtime, request.arg1, request.arg2, request.arg3, request.arg4) },
+        Syscall::Setenv => unsafe { sys_setenv(runtime, request.arg1, request.arg2, request.arg3, request.arg4) },
         Syscall::Dup2          => sys_dup2(runtime, request.arg1 as i32, request.arg2 as i32),
         Syscall::Kill          => sys_kill(runtime, request.arg1, request.arg2),
         Syscall::Ioctl         => {
@@ -897,6 +913,34 @@ unsafe fn sys_stat<R: SyscallRuntime>(
     if let Err(e) = validate_user_range(stat_buf, 16) { return SyscallResult::err(e); }
     let path = unsafe { slice::from_raw_parts(path_ptr as *const u8, path_len as usize) };
     let r = runtime.stat_impl(path, stat_buf);
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+/// Getenv: arg1=key_ptr, arg2=key_len, arg3=val_buf_ptr, arg4=val_buf_len
+unsafe fn sys_getenv<R: SyscallRuntime>(
+    runtime: &mut R, key_ptr: u64, key_len: u64, buf_ptr: u64, buf_len: u64,
+) -> SyscallResult {
+    if let Err(e) = validate_user_range(key_ptr, key_len) { return SyscallResult::err(e); }
+    if let Err(e) = validate_user_range(buf_ptr, buf_len)  { return SyscallResult::err(e); }
+    let key = unsafe { slice::from_raw_parts(key_ptr as *const u8, key_len as usize) };
+    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len as usize) };
+    let r = runtime.getenv_impl(key, buf);
+    if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+/// Setenv: arg1=key_ptr, arg2=key_len, arg3=val_ptr, arg4=val_len
+unsafe fn sys_setenv<R: SyscallRuntime>(
+    runtime: &mut R, key_ptr: u64, key_len: u64, val_ptr: u64, val_len: u64,
+) -> SyscallResult {
+    if let Err(e) = validate_user_range(key_ptr, key_len) { return SyscallResult::err(e); }
+    let key = unsafe { slice::from_raw_parts(key_ptr as *const u8, key_len as usize) };
+    let val = if val_len > 0 {
+        if let Err(e) = validate_user_range(val_ptr, val_len) { return SyscallResult::err(e); }
+        unsafe { slice::from_raw_parts(val_ptr as *const u8, val_len as usize) }
+    } else {
+        &[]
+    };
+    let r = runtime.setenv_impl(key, val);
     if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
 }
 

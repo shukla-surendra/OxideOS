@@ -31,3 +31,4 @@ pub mod ext2;
 pub mod tty;
 pub mod shm;
 pub mod gui_proc;
+pub mod env;

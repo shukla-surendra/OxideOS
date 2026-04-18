@@ -516,17 +516,39 @@ impl Graphics {
         }
     }
 
-    /// Draw the desktop wallpaper: deep-navy-to-black gradient + subtle dot grid.
+    /// Draw the desktop wallpaper: rich multi-stop navy-to-black gradient + grid.
     pub fn draw_desktop_background(&self) {
-        // Vertical gradient: deep navy → near-black
-        self.fill_rect_gradient_v(0, 0, self.width, self.height, 0xFF0D1B2A, 0xFF08101C);
+        let w = self.width;
+        let h = self.height;
 
-        // Subtle 40×40 dot grid — slightly lighter than background
-        let grid_col = 0xFF142030;
+        // Multi-stop vertical gradient (3 segments for more depth)
+        // Top 35%: deep indigo-navy
+        self.fill_rect_gradient_v(0, 0,            w, h * 35 / 100, 0xFF111829, 0xFF0D1422);
+        // Middle 35%: dark navy fading darker
+        self.fill_rect_gradient_v(0, h * 35 / 100, w, h * 35 / 100, 0xFF0D1422, 0xFF080E18);
+        // Bottom 30%: near-black
+        self.fill_rect_gradient_v(0, h * 70 / 100, w, h * 30 / 100, 0xFF080E18, 0xFF040810);
+
+        // Subtle top-left ambient glow (simulated radial — horizontal strips)
+        for i in 0..80u64 {
+            let alpha = (18u32).saturating_sub(i as u32 / 5);
+            if alpha == 0 { break; }
+            let width  = (w * (80 - i)) / 80;
+            let height_row = 1u64;
+            // blend a hint of blue into the upper-left area
+            let col = (alpha << 24) | 0x0030A0;
+            for x in 0..width.min(w / 2) {
+                self.put_pixel_alpha(x, i, col);
+            }
+            let _ = height_row;
+        }
+
+        // 40×40 dot grid — slightly lighter than background
+        let grid_col = 0xFF182438;
         let mut gy = 0u64;
-        while gy < self.height {
+        while gy < h {
             let mut gx = 0u64;
-            while gx < self.width {
+            while gx < w {
                 self.put_pixel(gx, gy, grid_col);
                 gx += 40;
             }

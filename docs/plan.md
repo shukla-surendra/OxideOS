@@ -129,6 +129,20 @@ Window manager, compositor IPC, shared memory, MSG_BLIT_SHM, start menu, userspa
 Per-process window syscalls (GuiCreate/Destroy/FillRect/DrawText/Present/PollEvent/GetSize/BlitShm, syscalls 125–132), keyboard/mouse event routing to focused window, `gui_proc` kernel module, `oxide-rt` GUI bindings, `/bin/filemanager` GUI file manager
 
 ### ✅ Phase 9 — Stability & Security
+### ✅ Phase 10.2 — Environment Variables
+Global env store in kernel (32 vars, 256-byte values). Getenv (79) / Setenv (80) syscalls.
+`oxide-rt::getenv_bytes()` / `setenv()` wrappers. Shell: `export VAR=val`, `$VAR` expansion.
+Default env: PATH=/bin, HOME=/, TERM=vt100, USER=oxide, SHELL=/bin/sh, HOSTNAME=oxideos.
+
+### ✅ Phase 10.3 — Shell Pipes
+Pipeline execution up to 8 stages: `cmd1 | cmd2 | ... | cmdN`.
+fork/dup2/pipe plumbing in sh. Output redirect applies to last stage. Works end-to-end:
+`ls | grep sh | wc -l`, `ls | sort`, `cat file | head -n 5`, etc.
+
+### ✅ Phase 10.5 — More Coreutils
+echo, grep (substring match), wc (-l/-w/-c), head (-n N), tail (-n N), sort (lexicographic),
+sleep (seconds), kill (-signal pid), touch (create file), true (exit 0), false (exit 1).
+
 ### ✅ Phase 10.1 — argv/argc Passing
 System V AMD64 ABI argv block written to user stack by kernel. `oxide-rt::arg(i)` / `argc()` helpers. `ExecArgs` syscall 6 lets shell pass argv[1..] to exec'd programs. Shell updated to call `exec_args(prog, args)`. `ls` and `cat` coreutils updated to use argv.
 SYSCALL/SYSRET, SMEP, ACPI proper shutdown, BSoD crash dump, ATA alignment fix
@@ -890,7 +904,7 @@ Replace kernel-launched terminal with a proper init:
 ## Implementation Priority Order (Updated)
 
 ```
-✅ DONE  Phases 1–9, Phase 10.1 (argv/argc)
+✅ DONE  Phases 1–9, Phase 10.1–10.3, 10.5 (argv, env vars, pipes, coreutils)
 
 ── NEXT: Open-Source Software ──────────────────────────────────────
 
@@ -901,12 +915,6 @@ Replace kernel-launched terminal with a proper init:
 🔥 Phase 10.6.5  envp on stack                         ← full SysV ABI compliance
 🔥 Phase 10.6.6  Run Lua 5.4                           ← proof of concept
 🔥 Phase 10.6.7  Run BusyBox                           ← full Unix userland
-
-── ALSO NEXT: Shell & Tools ────────────────────────────────────────
-
-🔥 Phase 10.3  Shell pipes (cmd1 | cmd2)            ← Core shell feature
-🔥 Phase 10.2  Environment variables                ← PATH, HOME, TERM
-🔥 Phase 10.5  More coreutils (grep, echo, kill...) ← Daily usability
 🔥 Phase 13.1  DHCP client activation               ← Network auto-config
 🔥 Phase 13.2  DNS resolver                         ← wget by hostname
 

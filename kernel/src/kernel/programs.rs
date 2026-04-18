@@ -102,6 +102,52 @@ pub static MV: &[u8] =
 pub static FILEMANAGER: &[u8] =
     include_bytes!("../../../userspace/bin/filemanager.elf");
 
+// ── New coreutils (Phase 10.5) ───────────────────────────────────────────────
+
+/// echo — print arguments.
+pub static ECHO: &[u8] =
+    include_bytes!("../../../userspace/bin/echo.elf");
+
+/// grep — filter lines matching a pattern.
+pub static GREP: &[u8] =
+    include_bytes!("../../../userspace/bin/grep.elf");
+
+/// wc — word, line, and byte count.
+pub static WC: &[u8] =
+    include_bytes!("../../../userspace/bin/wc.elf");
+
+/// head — output first N lines.
+pub static HEAD: &[u8] =
+    include_bytes!("../../../userspace/bin/head.elf");
+
+/// tail — output last N lines.
+pub static TAIL: &[u8] =
+    include_bytes!("../../../userspace/bin/tail.elf");
+
+/// sort — sort lines.
+pub static SORT: &[u8] =
+    include_bytes!("../../../userspace/bin/sort.elf");
+
+/// sleep — pause for N seconds.
+pub static SLEEP: &[u8] =
+    include_bytes!("../../../userspace/bin/sleep.elf");
+
+/// kill — send signal to process.
+pub static KILL: &[u8] =
+    include_bytes!("../../../userspace/bin/kill.elf");
+
+/// touch — create file if not exists.
+pub static TOUCH: &[u8] =
+    include_bytes!("../../../userspace/bin/touch.elf");
+
+/// true — exit 0.
+pub static TRUE: &[u8] =
+    include_bytes!("../../../userspace/bin/true.elf");
+
+/// false — exit 1.
+pub static FALSE: &[u8] =
+    include_bytes!("../../../userspace/bin/false.elf");
+
 /// Look up a built-in program by name.
 pub fn find(name: &str) -> Option<&'static [u8]> {
     match name {
@@ -129,6 +175,17 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
         "rm"          => Some(RM),
         "mv"          => Some(MV),
         "filemanager" => Some(FILEMANAGER),
+        "echo"  => Some(ECHO),
+        "grep"  => Some(GREP),
+        "wc"    => Some(WC),
+        "head"  => Some(HEAD),
+        "tail"  => Some(TAIL),
+        "sort"  => Some(SORT),
+        "sleep" => Some(SLEEP),
+        "kill"  => Some(KILL),
+        "touch" => Some(TOUCH),
+        "true"  => Some(TRUE),
+        "false" => Some(FALSE),
         _             => None,
     }
 }
@@ -140,4 +197,6 @@ pub const NAMES: &[&str] = &[
     "hello_rust", "sh", "terminal",
     "ls", "cat", "ps", "cp", "mkdir", "pwd", "wget", "edit", "nc", "rm", "mv",
     "filemanager",
+    "echo", "grep", "wc", "head", "tail", "sort", "sleep", "kill", "touch",
+    "true", "false",
 ];

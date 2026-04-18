@@ -10,7 +10,7 @@ use crate::gui::window_manager::WindowManager;
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 
-const TITLE_BAR_H: u64 = 31;
+const TITLE_BAR_H: u64 = 34; // matches TITLEBAR_H in window_manager
 const COLS:        usize = 3;
 const TILE_W:      u64 = 160;
 const TILE_H:      u64 = 72;

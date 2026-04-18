@@ -35,6 +35,50 @@ path = "src/rm.rs"
 name = "mv"
 path = "src/mv.rs"
 
+[[bin]]
+name = "echo"
+path = "src/echo.rs"
+
+[[bin]]
+name = "grep"
+path = "src/grep.rs"
+
+[[bin]]
+name = "wc"
+path = "src/wc.rs"
+
+[[bin]]
+name = "head"
+path = "src/head.rs"
+
+[[bin]]
+name = "tail"
+path = "src/tail.rs"
+
+[[bin]]
+name = "sort"
+path = "src/sort.rs"
+
+[[bin]]
+name = "sleep"
+path = "src/sleep.rs"
+
+[[bin]]
+name = "kill"
+path = "src/kill.rs"
+
+[[bin]]
+name = "touch"
+path = "src/touch.rs"
+
+[[bin]]
+name = "true"
+path = "src/true_.rs"
+
+[[bin]]
+name = "false"
+path = "src/false_.rs"
+
 [dependencies]
 oxide-rt = { path = "../oxide-rt" }
 

@@ -258,6 +258,8 @@ pub mod sys {
     pub const SHMGET:       u64 = 110;
     pub const SHMAT:        u64 = 111;
     pub const SHMDT:        u64 = 112;
+    pub const GETENV:       u64 = 79;
+    pub const SETENV:       u64 = 80;
     pub const CHMOD:        u64 = 96;
     pub const CHOWN:        u64 = 97;
 }
@@ -393,6 +395,25 @@ pub fn chmod(path: &str, mode: u16) -> i64 {
 pub fn chown(path: &str, uid: u32, gid: u32) -> i64 {
     let b = path.as_bytes();
     unsafe { raw::syscall4(sys::CHOWN, b.as_ptr() as u64, b.len() as u64, uid as u64, gid as u64) }
+}
+
+/// Read the value of environment variable `key` into `buf`.
+/// Returns bytes written on success, negative if not found.
+#[inline]
+pub fn getenv_bytes(key: &str, buf: &mut [u8]) -> i64 {
+    let kb = key.as_bytes();
+    unsafe { raw::syscall4(sys::GETENV, kb.as_ptr() as u64, kb.len() as u64,
+                           buf.as_mut_ptr() as u64, buf.len() as u64) }
+}
+
+/// Set (or create) environment variable `key=val`.
+/// Passing an empty `val` removes the key. Returns 0 on success.
+#[inline]
+pub fn setenv(key: &str, val: &str) -> i64 {
+    let kb = key.as_bytes();
+    let vb = val.as_bytes();
+    unsafe { raw::syscall4(sys::SETENV, kb.as_ptr() as u64, kb.len() as u64,
+                           vb.as_ptr() as u64, vb.len() as u64) }
 }
 
 /// Remove (unlink) a file at `path`.  Returns 0 on success.

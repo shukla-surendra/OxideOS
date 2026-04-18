@@ -184,6 +184,10 @@ unsafe extern "C" fn kmain() -> ! {
         crate::kernel::fs::ramfs::RAMFS.init();
         SERIAL_PORT.write_str("✓ RamFS initialized\n");
 
+        // Environment variable store — populate defaults before any process runs
+        crate::kernel::env::init_defaults();
+        SERIAL_PORT.write_str("✓ Environment initialized\n");
+
         // ATA disk + FAT16 filesystem (optional — no disk is fine)
         crate::kernel::ata::init();
         crate::kernel::fat::init();
@@ -354,7 +358,7 @@ unsafe fn create_boot_screen(graphics: &Graphics) -> (usize, usize, usize) {
     let ids = init_demo_windows(width, height);
 
     // Initialise the compositor so userspace programs can draw into the terminal window.
-    const TITLE_BAR_H: u64 = 31;
+    const TITLE_BAR_H: u64 = 34; // matches TITLEBAR_H in window_manager
     if let Some(win) = unsafe { (*wm).get_window(ids.0) } {
         unsafe {
             kernel::compositor::init(
@@ -474,7 +478,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                 unsafe {
                     if let Some(wid) = (*wm).get_focused() {
                         if kernel::gui_proc::is_proc_window(wid as u32) {
-                            const TB: u64 = 31;
+                            const TB: u64 = 34; // matches TITLEBAR_H in window_manager
                             if let Some(win) = (*wm).get_window(wid) {
                                 let content_y = win.y + TB;
                                 let mx64 = mx as u64; let my64 = my as u64;
@@ -528,7 +532,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                 unsafe {
                     if let Some(wid) = (*wm).get_focused() {
                         if kernel::gui_proc::is_proc_window(wid as u32) {
-                            const TB: u64 = 31;
+                            const TB: u64 = 34; // matches TITLEBAR_H in window_manager
                             if let Some(win) = (*wm).get_window(wid) {
                                 let content_y = win.y + TB;
                                 let mx64 = mx as u64; let my64 = my as u64;
@@ -726,7 +730,7 @@ unsafe fn init_demo_windows(screen_width: u64, screen_height: u64) -> (usize, us
 
 /// Re-compute the terminal window's content area and refresh the compositor.
 unsafe fn refresh_compositor_geometry(graphics: &Graphics, wm: &gui::window_manager::WindowManager, terminal_id: usize) {
-    const TITLE_BAR_H: u64 = 31; // 30 px gradient + 1 px accent line
+    const TITLE_BAR_H: u64 = 34; // matches TITLEBAR_H in window_manager
     if let Some(win) = wm.get_window(terminal_id) {
         let cx = win.x;
         let cy = win.y + TITLE_BAR_H;

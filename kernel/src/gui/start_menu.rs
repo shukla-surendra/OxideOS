@@ -9,16 +9,16 @@ use crate::gui::graphics::Graphics;
 // ── Button geometry ────────────────────────────────────────────────────────
 const BTN_X: u64 = 0;
 const BTN_W: u64 = 100;
-const BTN_H: u64 = 40;
+const BTN_H: u64 = 48; // matches TASKBAR_HEIGHT
 
 // ── Menu geometry ──────────────────────────────────────────────────────────
 const MENU_X:    u64 = 6;
-const MENU_Y:    u64 = 46;
-const MENU_W:    u64 = 260;
-const HDR_H:     u64 = 42;
+const MENU_Y:    u64 = 54;  // sits just below 48px taskbar + 6px gap
+const MENU_W:    u64 = 290;
+const HDR_H:     u64 = 52;
 const SEC_H:     u64 = 20;
-const ITEM_H:    u64 = 34;
-const FOOTER_H:  u64 = 40;
+const ITEM_H:    u64 = 36;
+const FOOTER_H:  u64 = 46;
 
 // ── Colour palette (Professional Slate Theme) ──────────────────────────────
 const COL_BTN_IDLE:   u32 = 0x00000000;
@@ -26,18 +26,18 @@ const COL_BTN_HOVER:  u32 = 0x20FFFFFF;
 const COL_BTN_ACTIVE: u32 = 0x30FFFFFF;
 const COL_BTN_TEXT:   u32 = 0xFFE0E0E0;
 
-const COL_MENU_BG:    u32 = 0xF51A1C22; // Very dark slate-gray
-const COL_MENU_BDR:   u32 = 0xFF3A3F4B;
-const COL_HDR_TOP:    u32 = 0xFF252A33;
-const COL_HDR_BOT:    u32 = 0xFF1A1C22;
+const COL_MENU_BG:    u32 = 0xF51A1C24; // Very dark slate-gray
+const COL_MENU_BDR:   u32 = 0xFF2E3344;
+const COL_HDR_TOP:    u32 = 0xFF1E2538;
+const COL_HDR_BOT:    u32 = 0xFF141824;
 const COL_HDR_TEXT:   u32 = 0xFFFFFFFF;
-const COL_SEC_BG:     u32 = 0xFF14161B;
-const COL_SEC_TEXT:   u32 = 0xFF5C6370;
-const COL_ITEM_HOVER: u32 = 0xFF2C313A;
-const COL_ITEM_TEXT:  u32 = 0xFFD1D5DA;
-const COL_ITEM_DESC:  u32 = 0xFF6A737D;
-const COL_FOOT_BG:    u32 = 0xFF21252B;
-const COL_ACCENT:     u32 = 0xFF4EC9B0; // Professional Teal
+const COL_SEC_BG:     u32 = 0xFF10121A;
+const COL_SEC_TEXT:   u32 = 0xFF4A5268;
+const COL_ITEM_HOVER: u32 = 0xFF222840;
+const COL_ITEM_TEXT:  u32 = 0xFFCDD5E0;
+const COL_ITEM_DESC:  u32 = 0xFF5A6475;
+const COL_FOOT_BG:    u32 = 0xFF181C28;
+const COL_ACCENT:     u32 = 0xFF3A8FE0; // Bright blue accent
 
 // ── Program registry ────────────────────────────────────────────────────────
 
@@ -167,77 +167,98 @@ impl StartMenu {
         }
 
         if self.open {
-            graphics.fill_rect(BTN_X, BTN_H - 3, BTN_W, 3, COL_ACCENT);
+            // Blue bottom indicator line (Windows 11-style)
+            graphics.fill_rect(BTN_X + 20, BTN_H - 3, 60, 3, COL_ACCENT);
         }
 
-        // Sleek Icon: 4 circles
-        let ix = BTN_X + 14;
-        let iy = 15u64;
-        let r  = 4u64;
+        // 2×2 grid icon (Windows-style), vertically centered
+        let ix = BTN_X + 15;
+        let iy = (BTN_H - 15) / 2;
+        let r  = 5u64;
         let gap = 3u64;
         graphics.fill_rounded_rect(ix,           iy,           r, r, 2, COL_ACCENT);
         graphics.fill_rounded_rect(ix + r + gap, iy,           r, r, 2, COL_ACCENT);
         graphics.fill_rounded_rect(ix,           iy + r + gap, r, r, 2, COL_ACCENT);
         graphics.fill_rounded_rect(ix + r + gap, iy + r + gap, r, r, 2, COL_ACCENT);
 
-        fonts::draw_string(graphics, BTN_X + 38, 14, "Start", COL_BTN_TEXT);
+        fonts::draw_string(graphics, BTN_X + 42, (BTN_H - 8) / 2, "Start", COL_BTN_TEXT);
     }
 
     pub fn draw_menu(&self, graphics: &Graphics) {
         if !self.open { return; }
 
         let mh = menu_height();
-        graphics.draw_soft_shadow(MENU_X, MENU_Y, MENU_W, mh, 16, 0x70);
+
+        // Large shadow for elevated feel
+        graphics.draw_soft_shadow(MENU_X, MENU_Y, MENU_W, mh, 20, 0x80);
         graphics.fill_rounded_rect(MENU_X, MENU_Y, MENU_W, mh, 10, COL_MENU_BG);
 
-        // Header
+        // ── Header ─────────────────────────────────────────────────────────────
         graphics.fill_rounded_rect(MENU_X, MENU_Y, MENU_W, HDR_H, 10, COL_HDR_TOP);
         graphics.fill_rect(MENU_X, MENU_Y + HDR_H / 2, MENU_W, HDR_H / 2, COL_HDR_TOP);
         graphics.fill_rect_gradient_v(MENU_X, MENU_Y, MENU_W, HDR_H, COL_HDR_TOP, COL_HDR_BOT);
-        
-        fonts::draw_string(graphics, MENU_X + 14, MENU_Y + 14, "OxideOS", COL_HDR_TEXT);
-        fonts::draw_string(graphics, MENU_X + 180, MENU_Y + 16, "v0.1.0", COL_ITEM_DESC);
 
+        // Blue left accent bar in header
+        graphics.fill_rounded_rect(MENU_X + 1, MENU_Y + 10, 3, HDR_H - 20, 1, COL_ACCENT);
+
+        // OS name + version
+        fonts::draw_string(graphics, MENU_X + 16, MENU_Y + 12, "OxideOS", 0xFFFFFFFF);
+        fonts::draw_string(graphics, MENU_X + 16, MENU_Y + 28, "v0.1.0-dev", COL_ITEM_DESC);
+
+        // Divider line below header
+        graphics.fill_rect(MENU_X + 1, MENU_Y + HDR_H - 1, MENU_W - 2, 1, 0xFF202840);
+
+        // ── Items ──────────────────────────────────────────────────────────────
         let mut y = MENU_Y + HDR_H;
         let mut last_sec: Option<u8> = None;
         for (i, entry) in ENTRIES.iter().enumerate() {
             if last_sec != Some(entry.section) {
                 last_sec = Some(entry.section);
                 graphics.fill_rect(MENU_X + 1, y, MENU_W - 2, SEC_H, COL_SEC_BG);
-                fonts::draw_string(graphics, MENU_X + 14, y + 4,
+                // Section label with left indent dot
+                graphics.fill_rounded_rect(MENU_X + 8, y + 7, 4, 4, 2, 0xFF2A3A5A);
+                fonts::draw_string(graphics, MENU_X + 18, y + 5,
                     SEC_NAMES[entry.section as usize], COL_SEC_TEXT);
                 y += SEC_H;
             }
 
             let hovered = self.hovered_item == Some(i);
             if hovered {
-                graphics.fill_rect(MENU_X + 4, y, MENU_W - 8, ITEM_H, COL_ITEM_HOVER);
-                graphics.fill_rect(MENU_X + 1, y + 4, 3, ITEM_H - 8, COL_ACCENT);
+                graphics.fill_rounded_rect(MENU_X + 4, y + 2, MENU_W - 8, ITEM_H - 4, 5, COL_ITEM_HOVER);
+                // Left accent bar on hover
+                graphics.fill_rounded_rect(MENU_X + 1, y + 6, 3, ITEM_H - 12, 1, COL_ACCENT);
             }
 
-            let text_col = if hovered { 0xFFFFFFFF } else { COL_ITEM_TEXT };
-            fonts::draw_string(graphics, MENU_X + 14, y + 6,  entry.name, text_col);
-            fonts::draw_string(graphics, MENU_X + 14, y + 20, entry.desc, COL_ITEM_DESC);
+            let text_col  = if hovered { 0xFFFFFFFF } else { COL_ITEM_TEXT };
+            let desc_col  = if hovered { 0xFF8090A8 } else { COL_ITEM_DESC };
+            // Accent dot beside name
+            graphics.fill_rounded_rect(MENU_X + 10, y + 14, 4, 4, 2, entry.accent);
+            fonts::draw_string(graphics, MENU_X + 20, y + 9,  entry.name, text_col);
+            fonts::draw_string(graphics, MENU_X + 20, y + 23, entry.desc, desc_col);
 
             y += ITEM_H;
         }
 
-        // Footer
+        // ── Footer ─────────────────────────────────────────────────────────────
         let footer_y = MENU_Y + mh - FOOTER_H;
         graphics.fill_rounded_rect(MENU_X, footer_y, MENU_W, FOOTER_H, 10, COL_FOOT_BG);
         graphics.fill_rect(MENU_X, footer_y, MENU_W, FOOTER_H / 2, COL_FOOT_BG);
-        graphics.fill_rect(MENU_X, footer_y, MENU_W, 1, COL_MENU_BDR);
+        graphics.fill_rect(MENU_X, footer_y, MENU_W, 1, 0xFF1E2438);
 
         let half = MENU_W / 2;
-        // Hit area feedback (if mouse in footer)
-        if self.hovered_item.is_none() {
-            // we use a custom check for footer hover if we wanted feedback, 
-            // but let's keep it simple for now.
-        }
+        let btn_y = footer_y + (FOOTER_H - 26) / 2;
 
-        fonts::draw_string(graphics, MENU_X + 20, footer_y + 14, "Shut Down", 0xFFF14C4C);
-        fonts::draw_string(graphics, MENU_X + half + 25, footer_y + 14, "Reboot", 0xFF569CD6);
+        // Shut Down button
+        graphics.fill_rounded_rect(MENU_X + 12, btn_y, half - 20, 26, 5, 0xFF2A1214);
+        graphics.draw_rounded_rect(MENU_X + 12, btn_y, half - 20, 26, 5, 0xFF6A2020, 1);
+        fonts::draw_string(graphics, MENU_X + 22, btn_y + 9, "Shut Down", 0xFFE05050);
 
+        // Reboot button
+        graphics.fill_rounded_rect(MENU_X + half + 8, btn_y, half - 20, 26, 5, 0xFF101828);
+        graphics.draw_rounded_rect(MENU_X + half + 8, btn_y, half - 20, 26, 5, 0xFF1E3A6A, 1);
+        fonts::draw_string(graphics, MENU_X + half + 22, btn_y + 9, "Reboot", 0xFF569CD6);
+
+        // Outer border
         graphics.draw_rounded_rect(MENU_X, MENU_Y, MENU_W, mh, 10, COL_MENU_BDR, 1);
     }
 }

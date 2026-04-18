@@ -6,7 +6,8 @@ use super::fonts;
 use crate::kernel::serial::SERIAL_PORT;
 
 const MAX_WINDOWS: usize = 16;
-const TASKBAR_HEIGHT: u64 = 40;
+const TASKBAR_HEIGHT: u64 = 48;
+const TITLEBAR_H:    u64 = 34;
 
 /// Format timer ticks as "HH:MM:SS" into `buf` (exactly 8 bytes).
 /// The timer runs at 100 Hz, so ticks / 100 = seconds since boot.
@@ -376,30 +377,24 @@ impl WindowManager {
     }
 
     fn is_close_button_clicked(&self, window: &Window, mouse_x: u64, mouse_y: u64) -> bool {
-        let button_x = window.x + window.width - 25;
-        let button_y = window.y + 5;
-        let button_size = 20;
-
-        mouse_x >= button_x && mouse_x < button_x + button_size &&
-        mouse_y >= button_y && mouse_y < button_y + button_size
+        let button_x = window.x + window.width.saturating_sub(26);
+        let button_y = window.y + 9;
+        mouse_x >= button_x && mouse_x < button_x + 16 &&
+        mouse_y >= button_y && mouse_y < button_y + 16
     }
 
     fn is_maximize_button_clicked(&self, window: &Window, mouse_x: u64, mouse_y: u64) -> bool {
-        let button_x = window.x + window.width - 50;
-        let button_y = window.y + 5;
-        let button_size = 20;
-
-        mouse_x >= button_x && mouse_x < button_x + button_size &&
-        mouse_y >= button_y && mouse_y < button_y + button_size
+        let button_x = window.x + window.width.saturating_sub(47);
+        let button_y = window.y + 9;
+        mouse_x >= button_x && mouse_x < button_x + 16 &&
+        mouse_y >= button_y && mouse_y < button_y + 16
     }
 
     fn is_minimize_button_clicked(&self, window: &Window, mouse_x: u64, mouse_y: u64) -> bool {
-        let button_x = window.x + window.width - 75;
-        let button_y = window.y + 5;
-        let button_size = 20;
-
-        mouse_x >= button_x && mouse_x < button_x + button_size &&
-        mouse_y >= button_y && mouse_y < button_y + button_size
+        let button_x = window.x + window.width.saturating_sub(68);
+        let button_y = window.y + 9;
+        mouse_x >= button_x && mouse_x < button_x + 16 &&
+        mouse_y >= button_y && mouse_y < button_y + 16
     }
 
     pub fn handle_drag(&mut self, mouse_x: u64, mouse_y: u64) {
@@ -452,8 +447,8 @@ impl WindowManager {
     }
 
     fn draw_window_with_controls(&self, graphics: &Graphics, window: &Window, is_focused: bool, is_maximized: bool) {
-        // Soft shadow
-        graphics.draw_soft_shadow(window.x, window.y, window.width, window.height, 12, 0x50);
+        // Deeper drop shadow for depth
+        graphics.draw_soft_shadow(window.x, window.y, window.width, window.height, 18, 0x60);
 
         // Window body
         graphics.fill_rounded_rect(window.x, window.y, window.width, window.height, 8, window.bg_color);
@@ -465,84 +460,108 @@ impl WindowManager {
             (colors::ui::TITLEBAR_UNFOCUSED_LEFT, colors::ui::TITLEBAR_UNFOCUSED_RIGHT, colors::ui::TITLEBAR_ACCENT_UNFOCUSED)
         };
 
-        graphics.fill_rounded_rect(window.x, window.y, window.width, 30, 8, tb_left);
-        // Fill the bottom part of the title bar to make it flat where it meets the content
-        graphics.fill_rect(window.x, window.y + 15, window.width, 15, tb_left);
-        graphics.fill_rect_gradient_h(window.x, window.y, window.width, 30, tb_left, tb_right);
+        graphics.fill_rounded_rect(window.x, window.y, window.width, TITLEBAR_H, 8, tb_left);
+        // Flatten bottom half so it joins the content area cleanly
+        graphics.fill_rect(window.x, window.y + TITLEBAR_H / 2, window.width, TITLEBAR_H / 2, tb_left);
+        graphics.fill_rect_gradient_h(window.x, window.y, window.width, TITLEBAR_H, tb_left, tb_right);
+
+        // Top edge specular highlight (glass feel)
+        graphics.fill_rect(window.x, window.y, window.width, 1, 0x30FFFFFF);
 
         // Thin accent line at bottom of titlebar
-        graphics.fill_rect(window.x, window.y + 29, window.width, 1, accent);
+        graphics.fill_rect(window.x, window.y + TITLEBAR_H - 1, window.width, 1, accent);
 
         // Outer border
         let border_col = if is_focused { colors::ui::WINDOW_BORDER_FOCUSED } else { colors::ui::WINDOW_BORDER_UNFOCUSED };
         graphics.draw_rounded_rect(window.x, window.y, window.width, window.height, 8, border_col, 1);
 
-        // Title text with subtle text-shadow offset (+1,+1)
+        // Title text — vertically centered in titlebar
+        let title_y = window.y + TITLEBAR_H / 2 - 4;
         let shadow_txt = 0xFF000000;
         let title_color = if is_focused { colors::ui::TASKBAR_TEXT } else { colors::dark_theme::TEXT_SECONDARY };
-        fonts::draw_string(graphics, window.x + 11, window.y + 12, window.title, shadow_txt);
-        fonts::draw_string(graphics, window.x + 10, window.y + 11, window.title, title_color);
+        fonts::draw_string(graphics, window.x + 11, title_y + 1, window.title, shadow_txt);
+        fonts::draw_string(graphics, window.x + 10, title_y, window.title, title_color);
 
-        // Control buttons
+        // Control buttons (right side)
         self.draw_close_button(graphics, window);
         self.draw_maximize_button(graphics, window, is_maximized);
         self.draw_minimize_button(graphics, window);
     }
 
+    // ── Window control button helpers ──────────────────────────────────────────
+    // Layout: right-aligned, 3 buttons of 14×14, 4px gaps, 10px from right edge.
+    //   Close    at window.width - 24  (right edge at window.width - 10)
+    //   Maximize at window.width - 42  (gap 4px)
+    //   Minimize at window.width - 60  (gap 4px)
+    // Vertical: centered in TITLEBAR_H=34 → by = window.y + 10
+    const BTN_SIZE:   u64 = 14;
+    const BTN_RADIUS: u64 = 7;   // = BTN_SIZE/2 → circle
+    const BTN_CLOSE_OX:  u64 = 24; // offset from right
+    const BTN_MAX_OX:    u64 = 42;
+    const BTN_MIN_OX:    u64 = 60;
+
+    #[inline(always)]
+    fn btn_by(window: &Window) -> u64 { window.y + (TITLEBAR_H - Self::BTN_SIZE) / 2 }
+
     fn draw_close_button(&self, graphics: &Graphics, window: &Window) {
-        let bx = window.x + window.width - 26;
-        let by = window.y + 5;
-        // Red rounded button
-        graphics.fill_rounded_rect(bx, by, 20, 20, 4, colors::dark_theme::ERROR);
-        graphics.draw_rounded_rect(bx, by, 20, 20, 4, 0xFFFF7070, 1);
-        let cx = bx + 10; let cy = by + 10;
-        for d in -4i64..=4 {
-            graphics.put_pixel_safe(cx as i64 + d, cy as i64 + d, colors::WHITE);
-            graphics.put_pixel_safe(cx as i64 + d, cy as i64 - d, colors::WHITE);
+        let bx = window.x + window.width.saturating_sub(Self::BTN_CLOSE_OX);
+        let by = Self::btn_by(window);
+        // macOS traffic-light red (#FF5F57)
+        graphics.fill_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFFFF5F57);
+        // 1px darker border for definition
+        graphics.draw_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFFBF3830, 1);
+        // × icon: two 5-pixel diagonals (skip the exact centre to avoid 3-pixel blob)
+        let cx = bx as i64 + 7; let cy = by as i64 + 7;
+        for d in [-2i64, -1, 1, 2] {
+            graphics.put_pixel_safe(cx + d, cy + d, 0xFF8A1A15);
+            graphics.put_pixel_safe(cx + d, cy - d, 0xFF8A1A15);
         }
+        graphics.put_pixel_safe(cx, cy, 0xFF8A1A15);
     }
 
     fn draw_maximize_button(&self, graphics: &Graphics, window: &Window, is_maximized: bool) {
-        let bx = window.x + window.width - 50;
-        let by = window.y + 5;
-        // Green rounded button
-        graphics.fill_rounded_rect(bx, by, 20, 20, 4, colors::dark_theme::SUCCESS);
-        graphics.draw_rounded_rect(bx, by, 20, 20, 4, 0xFF60E060, 1);
+        let bx = window.x + window.width.saturating_sub(Self::BTN_MAX_OX);
+        let by = Self::btn_by(window);
+        // macOS traffic-light green (#28C940)
+        graphics.fill_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFF28C940);
+        graphics.draw_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFF1A8A28, 1);
+        let icon_col = 0xFF0A5A14u32;
         if is_maximized {
-            graphics.draw_rect(bx + 6, by + 8, 6, 6, colors::WHITE, 1);
-            graphics.draw_rect(bx + 8, by + 6, 6, 6, colors::WHITE, 1);
+            // Restore: two small overlapping squares
+            graphics.draw_rect(bx + 3, by + 6, 4, 4, icon_col, 1);
+            graphics.draw_rect(bx + 6, by + 4, 4, 4, icon_col, 1);
         } else {
-            graphics.draw_rect(bx + 6, by + 6, 8, 8, colors::WHITE, 1);
+            // Maximize: single square
+            graphics.draw_rect(bx + 4, by + 4, 6, 6, icon_col, 1);
         }
     }
 
     fn draw_minimize_button(&self, graphics: &Graphics, window: &Window) {
-        let bx = window.x + window.width - 74;
-        let by = window.y + 5;
-        // Yellow rounded button
-        graphics.fill_rounded_rect(bx, by, 20, 20, 4, colors::dark_theme::WARNING);
-        graphics.draw_rounded_rect(bx, by, 20, 20, 4, 0xFFFFCC40, 1);
-        // Minus icon
-        graphics.fill_rect(bx + 6, by + 10, 8, 2, colors::WHITE);
+        let bx = window.x + window.width.saturating_sub(Self::BTN_MIN_OX);
+        let by = Self::btn_by(window);
+        // macOS traffic-light yellow (#FFBD2E)
+        graphics.fill_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFFFFBD2E);
+        graphics.draw_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFFAA8010, 1);
+        // − icon: 2-pixel-tall bar centred horizontally
+        graphics.fill_rect(bx + 4, by + 6, 6, 2, 0xFF7A5A08);
     }
 
     pub fn draw_taskbar(&self, graphics: &Graphics) {
-        // Translucent gradient taskbar
-        let color = colors::ui::TASKBAR_BG;
-        for y in 0..TASKBAR_HEIGHT {
-            for x in 0..self.screen_width {
-                graphics.put_pixel_alpha(x, y, color);
-            }
-        }
+        // Glass-look taskbar: dark gradient background
+        graphics.fill_rect_gradient_v(0, 0, self.screen_width, TASKBAR_HEIGHT,
+            0xFF252830, 0xFF191D26);
 
-        // Bright blue accent line at the very bottom
-        graphics.fill_rect(0, TASKBAR_HEIGHT - 2, self.screen_width, 2, colors::ui::TASKBAR_ACCENT);
+        // Top 1px specular highlight (glass reflection)
+        graphics.fill_rect(0, 0, self.screen_width, 1, 0xFF454A5C);
 
-        // Separator after Start button (starts at BTN_W = 90)
-        graphics.fill_rect(95, 8, 1, 24, 0x40FFFFFF);
+        // Bottom accent line
+        graphics.fill_rect(0, TASKBAR_HEIGHT - 1, self.screen_width, 1, 0xFF0A3A68);
+
+        // Separator after Start button area
+        graphics.fill_rect(96, 10, 1, 28, 0x28FFFFFF);
 
         // Taskbar window items
-        let start_x = 110u64; // Adjusted to be after the separator
+        let start_x = 110u64;
         for i in 0..self.window_count {
             let window_id = self.z_order[i];
             let item_x = start_x + (i as u64) * (TASKBAR_ITEM_WIDTH + TASKBAR_ITEM_SPACING);
@@ -551,85 +570,95 @@ impl WindowManager {
             }
         }
 
-        // ── Clock box ──────────────────────────────────────────────────────────
-        const CLOCK_CHARS: u64 = 8;
-        const CHAR_W:  u64 = 9;
-        const CLOCK_W: u64 = CLOCK_CHARS * CHAR_W; // 72
+        // System tray
+        self.draw_system_tray(graphics);
+    }
+
+    fn draw_system_tray(&self, graphics: &Graphics) {
+        // ── Clock pill ────────────────────────────────────────────────────────
+        const CLOCK_W: u64 = 8 * 9; // 8 chars × 9px = 72
         const BOX_PAD: u64 = 8;
-        const BOX_W:   u64 = CLOCK_W + BOX_PAD * 2;  // 88
-        let box_x = self.screen_width.saturating_sub(BOX_W + 8);
+        const BOX_W:   u64 = CLOCK_W + BOX_PAD * 2; // 88
+        const BOX_H:   u64 = 34;
+        const BOX_Y:   u64 = (TASKBAR_HEIGHT - BOX_H) / 2; // vertically centered
+        let box_x = self.screen_width.saturating_sub(BOX_W + 10);
 
-        // Clock background pill
-        graphics.fill_rect_gradient_v(box_x, 5, BOX_W, 30, 0xFF1E2840, 0xFF141C30);
-        graphics.draw_rect(box_x, 5, BOX_W, 30, 0xFF007ACC, 1);
+        graphics.fill_rounded_rect(box_x, BOX_Y, BOX_W, BOX_H, 6, 0xFF14192A);
+        graphics.draw_rounded_rect(box_x, BOX_Y, BOX_W, BOX_H, 6, 0xFF1E3048, 1);
 
-        // Clock text
+        // Time (top line)
         let mut time_buf = [0u8; 8];
         let ticks = unsafe { crate::kernel::timer::get_ticks() };
         format_uptime(ticks, &mut time_buf);
         let time_str = core::str::from_utf8(&time_buf).unwrap_or("00:00:00");
-        fonts::draw_string(graphics, box_x + BOX_PAD, 14, time_str, 0xFF7FC8FF);
+        fonts::draw_string(graphics, box_x + BOX_PAD, BOX_Y + 7, time_str, 0xFF8AC8FF);
 
-        // ── Network indicator — left of clock ──────────────────────────────────
-        // "● 10.0.2.15" (green) or "● No NIC" (dim red), pill background.
+        // Sub-label (bottom line)
+        fonts::draw_string(graphics, box_x + BOX_PAD + 14, BOX_Y + 20, "uptime", 0xFF384A5E);
+
+        // ── Network indicator pill — left of clock ────────────────────────────
+        const NET_W:   u64 = 118;
+        const NET_H:   u64 = BOX_H;
+        const NET_Y:   u64 = BOX_Y;
         const NET_PAD: u64 = 8;
-        const NET_DOT: u64 = 8;   // dot width
-        const NET_GAP: u64 = 5;   // dot → text gap
-        // Longest label: "10.0.2.15" = 9 chars × 9 = 81 px; +dot+gap+2×pad = 102
-        const NET_W: u64 = NET_DOT + NET_GAP + 81 + NET_PAD * 2; // 110
         let net_box_x = box_x.saturating_sub(NET_W + 8);
 
         let net_present = crate::kernel::net::is_present();
-        let (dot_col, label, label_col) = if net_present {
-            (0xFF30C040u32, "10.0.2.15", 0xFF60D870u32)
+        let (dot_col, label, label_col, pill_bg, pill_bdr) = if net_present {
+            (0xFF2ECC71u32, "10.0.2.15", 0xFF58D87Eu32,
+             0xFF0B2016u32, 0xFF165530u32)
         } else {
-            (0xFF803030u32, "No NIC   ", 0xFF805050u32)
+            (0xFF8B2020u32, "No NIC   ", 0xFF804040u32,
+             0xFF1A1020u32, 0xFF3A1830u32)
         };
 
-        // Background pill
-        let (pill_top, pill_bot, pill_bdr) = if net_present {
-            (0xFF0E2818u32, 0xFF091810u32, 0xFF1A6030u32)
-        } else {
-            (0xFF1E2230u32, 0xFF141820u32, 0xFF3A2030u32)
-        };
-        graphics.fill_rect_gradient_v(net_box_x, 5, NET_W, 30, pill_top, pill_bot);
-        graphics.draw_rect(net_box_x, 5, NET_W, 30, pill_bdr, 1);
+        graphics.fill_rounded_rect(net_box_x, NET_Y, NET_W, NET_H, 6, pill_bg);
+        graphics.draw_rounded_rect(net_box_x, NET_Y, NET_W, NET_H, 6, pill_bdr, 1);
 
-        // Dot
+        // Status dot
         let dot_x = net_box_x + NET_PAD;
-        let dot_y = 5 + (30 - NET_DOT) / 2; // vertically centered
-        graphics.fill_rect(dot_x, dot_y, NET_DOT, NET_DOT, dot_col);
+        let dot_y = NET_Y + (NET_H - 8) / 2;
+        graphics.fill_rounded_rect(dot_x, dot_y, 8, 8, 4, dot_col);
 
-        // Label
-        fonts::draw_string(graphics, dot_x + NET_DOT + NET_GAP, 14, label, label_col);
+        fonts::draw_string(graphics, dot_x + 12, NET_Y + 7, label, label_col);
+        fonts::draw_string(graphics, dot_x + 12, NET_Y + 20, "Network", 0xFF2A3A4E);
     }
 
     fn draw_taskbar_item(&self, graphics: &Graphics, window: &Window, window_id: usize, x: u64) {
         let is_focused   = self.focused_window == Some(window_id);
         let is_minimized = self.window_states[window_id] == WindowState::Minimized;
 
+        const ITEM_Y: u64 = 6;
+        const ITEM_H: u64 = 36;
+
         let (bg_c, border_c, text_c) = if is_focused && !is_minimized {
-            (0xFF2C313A, 0xFF4EC9B0, 0xFFFFFFFF) // Focused: lighter slate + teal border
+            (0xFF1E2438, 0xFF2F6FAE, 0xFFE8F0FE) // Focused: dark slate + blue border
         } else if is_minimized {
-            (0x00000000, 0xFF3A3F4B, 0xFF6A737D) // Minimized: transparent + gray border
+            (0x00000000, 0xFF2D3244, 0xFF6A737D)  // Minimized: no bg, dim text
         } else {
-            (0x00000000, 0x00000000, 0xFFD1D5DA) // Inactive: no bg, subtle text
+            (0x00000000, 0x00000000, 0xFFB8C4D4)  // Normal: transparent bg
         };
 
         if bg_c != 0 {
-            graphics.fill_rounded_rect(x, 4, TASKBAR_ITEM_WIDTH, 32, 6, bg_c);
+            graphics.fill_rounded_rect(x, ITEM_Y, TASKBAR_ITEM_WIDTH, ITEM_H, 6, bg_c);
         }
         if border_c != 0 {
-            graphics.draw_rounded_rect(x, 4, TASKBAR_ITEM_WIDTH, 32, 6, border_c, 1);
+            graphics.draw_rounded_rect(x, ITEM_Y, TASKBAR_ITEM_WIDTH, ITEM_H, 6, border_c, 1);
         }
 
-        // Active indicator dot
-        if !is_minimized {
-            let dot_col = if is_focused { 0xFF4EC9B0 } else { 0xFF6A737D };
-            graphics.fill_rounded_rect(x + 8, 30, 4, 2, 1, dot_col);
+        // Windows 11-style bottom indicator
+        if is_focused && !is_minimized {
+            // Wide bar for active
+            let ind_w = 28u64;
+            let ind_x = x + (TASKBAR_ITEM_WIDTH - ind_w) / 2;
+            graphics.fill_rounded_rect(ind_x, TASKBAR_HEIGHT - 4, ind_w, 3, 1, 0xFF3A8FE0);
+        } else if !is_minimized {
+            // Small dot for open but unfocused
+            let ind_x = x + TASKBAR_ITEM_WIDTH / 2 - 2;
+            graphics.fill_rounded_rect(ind_x, TASKBAR_HEIGHT - 4, 4, 3, 1, 0xFF3A4B6A);
         }
 
-        fonts::draw_string(graphics, x + 16, 15, window.title, text_c);
+        fonts::draw_string(graphics, x + 12, ITEM_Y + 14, window.title, text_c);
     }
 
     // ── Context menu ───────────────────────────────────────────────────────────

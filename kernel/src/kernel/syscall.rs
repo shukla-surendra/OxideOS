@@ -515,6 +515,21 @@ impl SyscallRuntime for KernelRuntime {
         }
     }
 
+    fn getenv_impl(&mut self, key: &[u8], buf: &mut [u8]) -> i64 {
+        match crate::kernel::env::getenv(key) {
+            None => -7, // ENOENT
+            Some(val) => {
+                let n = val.len().min(buf.len());
+                buf[..n].copy_from_slice(&val[..n]);
+                n as i64
+            }
+        }
+    }
+
+    fn setenv_impl(&mut self, key: &[u8], val: &[u8]) -> i64 {
+        if crate::kernel::env::setenv(key, val) { 0 } else { -1 }
+    }
+
     fn shmget_impl(&mut self, key: u32, size: u64, flags: u32) -> i64 {
         unsafe { crate::kernel::shm::shmget(key, size, flags) }
     }

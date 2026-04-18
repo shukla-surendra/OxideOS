@@ -29,7 +29,7 @@ use crate::kernel::shm;
 const MAX_ENTRIES:      usize = 12;
 const EVENT_RING_SIZE:  usize = 64;
 const TITLE_BUF_LEN:    usize = 64;
-const TITLE_BAR_H:      u64   = 31; // pixels (30 gradient + 1 accent)
+const TITLE_BAR_H:      u64   = 34; // pixels — matches TITLEBAR_H in window_manager
 
 // ── Event type tags ───────────────────────────────────────────────────────────
 
