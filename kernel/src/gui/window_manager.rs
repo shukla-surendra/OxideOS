@@ -452,35 +452,34 @@ impl WindowManager {
     }
 
     fn draw_window_with_controls(&self, graphics: &Graphics, window: &Window, is_focused: bool, is_maximized: bool) {
-        // Layered drop shadow — 4 progressively darker rectangles
-        let shadow_cols = [0xFF0C1826u32, 0xFF0A1420u32, 0xFF08101Au32, 0xFF060C14u32];
-        for (i, &sc) in shadow_cols.iter().enumerate() {
-            let o = (i as u64 + 1) * 2;
-            graphics.fill_rect(window.x + o, window.y + o, window.width, window.height, sc);
-        }
+        // Soft shadow
+        graphics.draw_soft_shadow(window.x, window.y, window.width, window.height, 12, 0x50);
 
         // Window body
-        graphics.fill_rect(window.x, window.y, window.width, window.height, window.bg_color);
+        graphics.fill_rounded_rect(window.x, window.y, window.width, window.height, 8, window.bg_color);
 
-        // Title bar — horizontal gradient
-        let (tb_left, tb_right) = if is_focused {
-            (0xFF0D5FA0, 0xFF072C50) // vivid blue → deep blue
+        // Title bar — horizontal gradient with rounded top
+        let (tb_left, tb_right, accent) = if is_focused {
+            (colors::ui::TITLEBAR_FOCUSED_LEFT, colors::ui::TITLEBAR_FOCUSED_RIGHT, colors::ui::TITLEBAR_ACCENT_FOCUSED)
         } else {
-            (0xFF2A2D38, 0xFF1C1F28) // dark slate → darker slate
+            (colors::ui::TITLEBAR_UNFOCUSED_LEFT, colors::ui::TITLEBAR_UNFOCUSED_RIGHT, colors::ui::TITLEBAR_ACCENT_UNFOCUSED)
         };
+
+        graphics.fill_rounded_rect(window.x, window.y, window.width, 30, 8, tb_left);
+        // Fill the bottom part of the title bar to make it flat where it meets the content
+        graphics.fill_rect(window.x, window.y + 15, window.width, 15, tb_left);
         graphics.fill_rect_gradient_h(window.x, window.y, window.width, 30, tb_left, tb_right);
 
         // Thin accent line at bottom of titlebar
-        let accent_line = if is_focused { 0xFF00AAFF } else { 0xFF3A3F50 };
-        graphics.fill_rect(window.x, window.y + 29, window.width, 1, accent_line);
+        graphics.fill_rect(window.x, window.y + 29, window.width, 1, accent);
 
         // Outer border
-        let border_col = if is_focused { 0xFF1A5F9A } else { 0xFF2A2F3E };
-        graphics.draw_rect(window.x, window.y, window.width, window.height, border_col, 1);
+        let border_col = if is_focused { colors::ui::WINDOW_BORDER_FOCUSED } else { colors::ui::WINDOW_BORDER_UNFOCUSED };
+        graphics.draw_rounded_rect(window.x, window.y, window.width, window.height, 8, border_col, 1);
 
         // Title text with subtle text-shadow offset (+1,+1)
         let shadow_txt = 0xFF000000;
-        let title_color = if is_focused { 0xFFE8F0FE } else { colors::dark_theme::TEXT_SECONDARY };
+        let title_color = if is_focused { colors::ui::TASKBAR_TEXT } else { colors::dark_theme::TEXT_SECONDARY };
         fonts::draw_string(graphics, window.x + 11, window.y + 12, window.title, shadow_txt);
         fonts::draw_string(graphics, window.x + 10, window.y + 11, window.title, title_color);
 
@@ -493,60 +492,57 @@ impl WindowManager {
     fn draw_close_button(&self, graphics: &Graphics, window: &Window) {
         let bx = window.x + window.width - 26;
         let by = window.y + 5;
-        // Red gradient button
-        graphics.fill_rect_gradient_v(bx, by, 20, 20, 0xFFE05050, 0xFFA02020);
-        graphics.draw_rect(bx, by, 20, 20, 0xFFFF7070, 1);
+        // Red rounded button
+        graphics.fill_rounded_rect(bx, by, 20, 20, 4, colors::dark_theme::ERROR);
+        graphics.draw_rounded_rect(bx, by, 20, 20, 4, 0xFFFF7070, 1);
         let cx = bx + 10; let cy = by + 10;
         for d in -4i64..=4 {
-            graphics.put_pixel_safe(cx as i64 + d, cy as i64 + d, 0xFFFFFFFF);
-            graphics.put_pixel_safe(cx as i64 + d, cy as i64 - d, 0xFFFFFFFF);
-            // 2px thick
-            graphics.put_pixel_safe(cx as i64 + d + 1, cy as i64 + d, 0xFFFFFFFF);
-            graphics.put_pixel_safe(cx as i64 + d + 1, cy as i64 - d, 0xFFFFFFFF);
+            graphics.put_pixel_safe(cx as i64 + d, cy as i64 + d, colors::WHITE);
+            graphics.put_pixel_safe(cx as i64 + d, cy as i64 - d, colors::WHITE);
         }
     }
 
     fn draw_maximize_button(&self, graphics: &Graphics, window: &Window, is_maximized: bool) {
         let bx = window.x + window.width - 50;
         let by = window.y + 5;
-        // Green gradient button
-        graphics.fill_rect_gradient_v(bx, by, 20, 20, 0xFF38A838, 0xFF1E6E1E);
-        graphics.draw_rect(bx, by, 20, 20, 0xFF60E060, 1);
+        // Green rounded button
+        graphics.fill_rounded_rect(bx, by, 20, 20, 4, colors::dark_theme::SUCCESS);
+        graphics.draw_rounded_rect(bx, by, 20, 20, 4, 0xFF60E060, 1);
         if is_maximized {
-            graphics.draw_rect(bx + 5, by + 7, 7, 7, 0xFFFFFFFF, 1);
-            graphics.draw_rect(bx + 8, by + 5, 7, 7, 0xFFFFFFFF, 1);
+            graphics.draw_rect(bx + 6, by + 8, 6, 6, colors::WHITE, 1);
+            graphics.draw_rect(bx + 8, by + 6, 6, 6, colors::WHITE, 1);
         } else {
-            graphics.draw_rect(bx + 5, by + 5, 10, 10, 0xFFFFFFFF, 2);
+            graphics.draw_rect(bx + 6, by + 6, 8, 8, colors::WHITE, 1);
         }
     }
 
     fn draw_minimize_button(&self, graphics: &Graphics, window: &Window) {
         let bx = window.x + window.width - 74;
         let by = window.y + 5;
-        // Yellow/amber gradient button
-        graphics.fill_rect_gradient_v(bx, by, 20, 20, 0xFFC8A020, 0xFF8A6A10);
-        graphics.draw_rect(bx, by, 20, 20, 0xFFFFCC40, 1);
+        // Yellow rounded button
+        graphics.fill_rounded_rect(bx, by, 20, 20, 4, colors::dark_theme::WARNING);
+        graphics.draw_rounded_rect(bx, by, 20, 20, 4, 0xFFFFCC40, 1);
         // Minus icon
-        graphics.fill_rect(bx + 5, by + 9, 10, 2, 0xFFFFFFFF);
+        graphics.fill_rect(bx + 6, by + 10, 8, 2, colors::WHITE);
     }
 
     pub fn draw_taskbar(&self, graphics: &Graphics) {
-        // Gradient taskbar: slightly lighter at top, darker at bottom
-        graphics.fill_rect_gradient_v(0, 0, self.screen_width, TASKBAR_HEIGHT,
-                                      0xFF252A38, 0xFF161B28);
-        // Bright blue accent line at the very bottom
-        graphics.fill_rect(0, TASKBAR_HEIGHT - 2, self.screen_width, 2, 0xFF007ACC);
+        // Translucent gradient taskbar
+        let color = colors::ui::TASKBAR_BG;
+        for y in 0..TASKBAR_HEIGHT {
+            for x in 0..self.screen_width {
+                graphics.put_pixel_alpha(x, y, color);
+            }
+        }
 
-        // OS logo / name — bold with accent colour + small icon dot
-        graphics.fill_rect(8, 12, 16, 16, 0xFF007ACC);       // coloured square icon
-        graphics.fill_rect(10, 14, 12, 12, 0xFF00AAFF);      // inner lighter square
-        graphics.fill_rect(12, 16, 8, 8, 0xFFE8F0FE);        // white core
-        fonts::draw_string(graphics, 30, 13, "OxideOS", 0xFF007ACC);
-        // thin vertical separator after the name
-        graphics.fill_rect(95, 8, 1, 24, 0xFF3A4060);
+        // Bright blue accent line at the very bottom
+        graphics.fill_rect(0, TASKBAR_HEIGHT - 2, self.screen_width, 2, colors::ui::TASKBAR_ACCENT);
+
+        // Separator after Start button (starts at BTN_W = 90)
+        graphics.fill_rect(95, 8, 1, 24, 0x40FFFFFF);
 
         // Taskbar window items
-        let start_x = 100u64;
+        let start_x = 110u64; // Adjusted to be after the separator
         for i in 0..self.window_count {
             let window_id = self.z_order[i];
             let item_x = start_x + (i as u64) * (TASKBAR_ITEM_WIDTH + TASKBAR_ITEM_SPACING);
@@ -612,27 +608,28 @@ impl WindowManager {
         let is_focused   = self.focused_window == Some(window_id);
         let is_minimized = self.window_states[window_id] == WindowState::Minimized;
 
-        let (top_c, bot_c, border_c) = if is_focused && !is_minimized {
-            (0xFF1A6FB0, 0xFF0D4070, 0xFF00AAFF) // bright blue gradient
+        let (bg_c, border_c, text_c) = if is_focused && !is_minimized {
+            (0xFF2C313A, 0xFF4EC9B0, 0xFFFFFFFF) // Focused: lighter slate + teal border
         } else if is_minimized {
-            (0xFF2A2E40, 0xFF1C2030, 0xFF4A5070) // muted dark
+            (0x00000000, 0xFF3A3F4B, 0xFF6A737D) // Minimized: transparent + gray border
         } else {
-            (0xFF242840, 0xFF181C2E, 0xFF3A4060) // resting state
+            (0x00000000, 0x00000000, 0xFFD1D5DA) // Inactive: no bg, subtle text
         };
 
-        graphics.fill_rect_gradient_v(x, 5, TASKBAR_ITEM_WIDTH, 30, top_c, bot_c);
-        graphics.draw_rect(x, 5, TASKBAR_ITEM_WIDTH, 30, border_c, 1);
-
-        // Active indicator: 2-px bottom bar
-        if is_focused && !is_minimized {
-            graphics.fill_rect(x + 2, 33, TASKBAR_ITEM_WIDTH - 4, 2, 0xFF00D4FF);
+        if bg_c != 0 {
+            graphics.fill_rounded_rect(x, 4, TASKBAR_ITEM_WIDTH, 32, 6, bg_c);
+        }
+        if border_c != 0 {
+            graphics.draw_rounded_rect(x, 4, TASKBAR_ITEM_WIDTH, 32, 6, border_c, 1);
         }
 
-        let text_color = if is_focused && !is_minimized { 0xFFE8F4FF }
-                         else if is_minimized           { 0xFF6080A0 }
-                         else                           { 0xFFB0C0D8 };
+        // Active indicator dot
+        if !is_minimized {
+            let dot_col = if is_focused { 0xFF4EC9B0 } else { 0xFF6A737D };
+            graphics.fill_rounded_rect(x + 8, 30, 4, 2, 1, dot_col);
+        }
 
-        fonts::draw_string(graphics, x + 8, 16, window.title, text_color);
+        fonts::draw_string(graphics, x + 16, 15, window.title, text_c);
     }
 
     // ── Context menu ───────────────────────────────────────────────────────────

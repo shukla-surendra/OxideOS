@@ -46,7 +46,7 @@ pub static mut CURRENT_SYSCALL_CTX: Option<TaskContext> = None;
 const PAGE_SIZE: usize = 4096;
 const USER_CODE_ADDR: u64 = 0x0040_0000;
 const USER_STACK_TOP: u64 = 0x0080_0000;
-const USER_STACK_PAGES: usize = 4;
+const USER_STACK_PAGES: usize = 64;
 
 // ── Output capture ─────────────────────────────────────────────────────────
 // Routed to per-task buffers in the scheduler.

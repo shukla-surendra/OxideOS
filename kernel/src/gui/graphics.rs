@@ -275,6 +275,125 @@ impl Graphics {
         }
     }
 
+    /// Put a pixel with alpha blending.
+    pub fn put_pixel_alpha(&self, x: u64, y: u64, color: u32) {
+        if x >= self.width || y >= self.height {
+            return;
+        }
+        
+        let alpha = ((color >> 24) & 0xFF) as u8;
+        if alpha == 255 {
+            self.put_pixel(x, y, color);
+            return;
+        }
+        if alpha == 0 {
+            return;
+        }
+
+        let bg = self.get_pixel(x, y);
+        let blended = crate::gui::colors::blend_colors(color, bg);
+        self.put_pixel(x, y, blended);
+    }
+
+    /// Put a pixel with alpha blending and bounds checking.
+    pub fn put_pixel_alpha_safe(&self, x: i64, y: i64, color: u32) {
+        if x >= 0 && y >= 0 && x < self.width as i64 && y < self.height as i64 {
+            self.put_pixel_alpha(x as u64, y as u64, color);
+        }
+    }
+
+    /// Draw a filled rounded rectangle.
+    pub fn fill_rounded_rect(&self, x: u64, y: u64, w: u64, h: u64, r: u64, color: u32) {
+        if w == 0 || h == 0 { return; }
+        let r = r.min(w / 2).min(h / 2);
+        
+        // Central parts
+        self.fill_rect(x + r, y, w - 2 * r, h, color);
+        self.fill_rect(x, y + r, r, h - 2 * r, color);
+        self.fill_rect(x + w - r, y + r, r, h - 2 * r, color);
+
+        // Four corners (circles)
+        self.fill_circle_corner(x + r, y + r, r, 0, color); // Top-left
+        self.fill_circle_corner(x + w - r - 1, y + r, r, 1, color); // Top-right
+        self.fill_circle_corner(x + r, y + h - r - 1, r, 2, color); // Bottom-left
+        self.fill_circle_corner(x + w - r - 1, y + h - r - 1, r, 3, color); // Bottom-right
+    }
+
+    fn fill_circle_corner(&self, cx: u64, cy: u64, r: u64, corner: u8, color: u32) {
+        let r_i = r as i64;
+        let cx_i = cx as i64;
+        let cy_i = cy as i64;
+
+        for dy in -r_i..=r_i {
+            for dx in -r_i..=r_i {
+                if dx * dx + dy * dy <= r_i * r_i {
+                    let (px, py) = (cx_i + dx, cy_i + dy);
+                    let matches = match corner {
+                        0 => dx <= 0 && dy <= 0, // TL
+                        1 => dx >= 0 && dy <= 0, // TR
+                        2 => dx <= 0 && dy >= 0, // BL
+                        3 => dx >= 0 && dy >= 0, // BR
+                        _ => false,
+                    };
+                    if matches {
+                        self.put_pixel_safe(px, py, color);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Draw a rounded rectangle outline.
+    pub fn draw_rounded_rect(&self, x: u64, y: u64, w: u64, h: u64, r: u64, color: u32, thickness: u64) {
+        let r = r.min(w / 2).min(h / 2);
+        
+        // Straight lines
+        for t in 0..thickness {
+            self.draw_line((x + r) as i64, (y + t) as i64, (x + w - r) as i64, (y + t) as i64, color); // Top
+            self.draw_line((x + r) as i64, (y + h - 1 - t) as i64, (x + w - r) as i64, (y + h - 1 - t) as i64, color); // Bottom
+            self.draw_line((x + t) as i64, (y + r) as i64, (x + t) as i64, (y + h - r) as i64, color); // Left
+            self.draw_line((x + w - 1 - t) as i64, (y + r) as i64, (x + w - 1 - t) as i64, (y + h - r) as i64, color); // Right
+        }
+
+        // Corners
+        self.draw_arc(x + w - r - 1, y + h - r - 1, r, 0, color, thickness); // BR
+        self.draw_arc(x + r,           y + h - r - 1, r, 1, color, thickness); // BL
+        self.draw_arc(x + r,           y + r,           r, 2, color, thickness); // TL
+        self.draw_arc(x + w - r - 1, y + r,           r, 3, color, thickness); // TR
+    }
+
+    fn draw_arc(&self, cx: u64, cy: u64, r: u64, quadrant: u8, color: u32, thickness: u64) {
+        let r_i = r as i64;
+        let t_i = thickness as i64;
+        let r_inner = r_i - t_i;
+        for dy in -r_i..=r_i {
+            for dx in -r_i..=r_i {
+                let dist_sq = dx * dx + dy * dy;
+                if dist_sq <= r_i * r_i && dist_sq > r_inner * r_inner {
+                    let matches = match quadrant {
+                        0 => dx >= 0 && dy >= 0, // BR
+                        1 => dx <= 0 && dy >= 0, // BL
+                        2 => dx <= 0 && dy <= 0, // TL
+                        3 => dx >= 0 && dy <= 0, // TR
+                        _ => false,
+                    };
+                    if matches {
+                        self.put_pixel_safe(cx as i64 + dx, cy as i64 + dy, color);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Draw a soft shadow for a rectangle.
+    pub fn draw_soft_shadow(&self, x: u64, y: u64, w: u64, h: u64, radius: u64, strength: u8) {
+        for i in 1..=radius {
+            let alpha = (strength as u32 * (radius - i + 1) as u32 / radius as u32) as u8;
+            let color = ((alpha as u32) << 24) | 0x000000;
+            self.draw_rounded_rect(x + i, y + i, w, h, 8, color, 1);
+        }
+    }
+
     /// Put a pixel with bounds checking (accepts signed coords).
     pub fn put_pixel_safe(&self, x: i64, y: i64, color: u32) {
         if x >= 0 && y >= 0 && x < self.width as i64 && y < self.height as i64 {
@@ -290,28 +409,26 @@ impl Graphics {
 
     // ── Cursor helpers ─────────────────────────────────────────────────────────
 
-    /// Draw an arrow cursor at (x, y) into the back buffer.
+    /// Draw a modern arrow cursor at (x, y) into the back buffer.
     pub fn draw_cursor(&self, x: i64, y: i64, color: u32) {
         let cursor_data = [
-            "X          ",
-            "XX         ",
-            "X.X        ",
-            "X..X       ",
-            "X...X      ",
-            "X....X     ",
-            "X.....X    ",
-            "X......X   ",
-            "X.......X  ",
-            "X........X ",
-            "X.........X",
-            "X......XXXX",
-            "X...X..X   ",
-            "X..X X..X  ",
-            "X.X  X..X  ",
-            "XX   X..X  ",
-            "X     X..X ",
-            "      X..X ",
-            "       XX  ",
+            ".          ",
+            ".X.        ",
+            ".XX.       ",
+            ".XXX.      ",
+            ".XXXX.     ",
+            ".XXXXX.    ",
+            ".XXXXXX.   ",
+            ".XXXXXXX.  ",
+            ".XXXXXXXX. ",
+            ".XXXXXXXXX.",
+            ".XXXXX.....",
+            ".XX.XX.    ",
+            ".X. .XX.   ",
+            "..  .XX.   ",
+            "     .XX.  ",
+            "     .XX.  ",
+            "      ..   ",
         ];
 
         for (row, line) in cursor_data.iter().enumerate() {

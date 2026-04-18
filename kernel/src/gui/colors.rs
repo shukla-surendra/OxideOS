@@ -152,6 +152,23 @@ pub mod ui {
     pub const TITLEBAR_ACTIVE: u32   = 0xFF007ACC;  // Active window title bar
     pub const TITLEBAR_TEXT: u32     = 0xFFE1E1E1;  // Title bar text
 
+    // Improved UI gradients and effects
+    pub const TITLEBAR_FOCUSED_LEFT: u32  = 0xFF0D5FA0; // Vivid blue
+    pub const TITLEBAR_FOCUSED_RIGHT: u32 = 0xFF072C50; // Deep blue
+    pub const TITLEBAR_UNFOCUSED_LEFT: u32  = 0xFF2A2D38; // Dark slate
+    pub const TITLEBAR_UNFOCUSED_RIGHT: u32 = 0xFF1C1F28; // Darker slate
+    pub const TITLEBAR_ACCENT_FOCUSED: u32  = 0xFF00AAFF;
+    pub const TITLEBAR_ACCENT_UNFOCUSED: u32 = 0xFF3A3F50;
+
+    pub const WINDOW_SHADOW: u32     = 0x50000000;
+    pub const WINDOW_BORDER_FOCUSED: u32   = 0xFF1A5F9A;
+    pub const WINDOW_BORDER_UNFOCUSED: u32 = 0xFF2A2F3E;
+
+    // Taskbar
+    pub const TASKBAR_BG: u32        = 0xCC1A1E2A; // Translucent dark
+    pub const TASKBAR_ACCENT: u32    = 0xFF007ACC;
+    pub const TASKBAR_TEXT: u32      = 0xFFE8F0FE;
+
     // Menu and toolbar
     pub const MENU_BACKGROUND: u32   = 0xFF2D2D2D;  // Menu background
     pub const MENU_HOVER: u32        = 0xFF484848;  // Menu item hover

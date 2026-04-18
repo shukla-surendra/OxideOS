@@ -31,7 +31,7 @@ use gui::start_menu::StartMenu;
 use core::ptr;
 
 use limine::BaseRevision;
-use limine::request::{FramebufferRequest, MemoryMapRequest, RsdpRequest, RequestsEndMarker, RequestsStartMarker};
+use limine::request::{FramebufferRequest, MemoryMapRequest, RsdpRequest, HhdmRequest, RequestsEndMarker, RequestsStartMarker};
 
 // ============================================================================
 // LIMINE REQUESTS
@@ -48,6 +48,10 @@ static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
 #[used]
 #[unsafe(link_section = ".requests")]
 static MEMORY_MAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
+
+#[used]
+#[unsafe(link_section = ".requests")]
+pub static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
 
 #[used]
 #[unsafe(link_section = ".requests")]
@@ -858,7 +862,7 @@ unsafe fn draw_sysinfo_panel(
     } else {
         (0xFF803030u32, "No NIC ", 0xFF805050u32)
     };
-    graphics.fill_rect(cx + 80, cy + 3, 8, 8, dot_col);
+    graphics.fill_rounded_rect(cx + 80, cy + 3, 8, 8, 2, dot_col);
     fonts::draw_string(graphics, cx + 94, cy, net_label, net_col);
     cy += row;
 
@@ -880,8 +884,9 @@ unsafe fn draw_sysinfo_panel(
     } else {
         (0xFF1C2030u32, 0xFF111520u32, 0xFF2A3044u32, 0xFF404060u32)
     };
-    graphics.fill_rect_gradient_v(cx, cy, btn_w, btn_h, bt, bb);
-    graphics.draw_rect(cx, cy, btn_w, btn_h, bd, 1);
+    graphics.fill_rounded_rect(cx, cy, btn_w, btn_h, 4, bt);
+    graphics.fill_rect_gradient_v(cx + 1, cy + 1, btn_w - 2, btn_h - 2, bt, bb);
+    graphics.draw_rounded_rect(cx, cy, btn_w, btn_h, 4, bd, 1);
     // Centred label
     let label_chars = 24u64; // "Test Internet Connection"
     let label_px    = label_chars * 9;
@@ -903,11 +908,11 @@ unsafe fn draw_sysinfo_panel(
                 2 => "Connecting... ",
                 _ => "Connecting....",
             };
-            graphics.fill_rect(cx, cy + 3, 8, 8, 0xFFC8A020);
+            graphics.fill_rounded_rect(cx, cy + 3, 8, 8, 2, 0xFFC8A020);
             fonts::draw_string(graphics, cx + 14, cy, anim, 0xFFC8A020);
         }
         NetProbePhase::Connected { ms } => {
-            graphics.fill_rect(cx, cy + 3, 8, 8, 0xFF30C040);
+            graphics.fill_rounded_rect(cx, cy + 3, 8, 8, 2, 0xFF30C040);
             fonts::draw_string(graphics, cx + 14, cy, "Connected!", 0xFF40D050);
             // Format "NNNms"
             let mut mbuf = [0u8; 8]; let mlen = fmt_decimal(ms, &mut mbuf);
@@ -917,7 +922,7 @@ unsafe fn draw_sysinfo_panel(
             }
         }
         NetProbePhase::Failed => {
-            graphics.fill_rect(cx, cy + 3, 8, 8, 0xFFC03030);
+            graphics.fill_rounded_rect(cx, cy + 3, 8, 8, 2, 0xFFC03030);
             fonts::draw_string(graphics, cx + 14, cy, "Failed / timeout", 0xFFD04040);
         }
     }

@@ -396,10 +396,10 @@ impl TerminalApp {
         let is_focused = wm.get_focused() == Some(self.window_id);
 
         // ── Geometry ──────────────────────────────────────────────────────
-        let cx = window.x + 2;
+        let cx = window.x + 1;
         let cy = window.y + 31;
-        let cw = window.width.saturating_sub(4);
-        let ch = window.height.saturating_sub(33);
+        let cw = window.width.saturating_sub(2);
+        let ch = window.height.saturating_sub(32);
 
         // ── Colour palette (VS Code Dark+ / Windows Terminal) ─────────────
         const BG:         u32 = 0xFF0C0C0C;
@@ -447,14 +447,18 @@ impl TerminalApp {
         let text_top = cy + SBAR_H + 1;
         let text_h   = ch.saturating_sub(SBAR_H + 1);
 
-        graphics.fill_rect(cx, text_top, cw, text_h, BG);
+        // Background with rounded bottom (matching window)
+        graphics.fill_rounded_rect(cx, text_top, cw, text_h, 8, BG);
+        // Cover top part of rounding
+        graphics.fill_rect(cx, text_top, cw, 10, BG);
 
         // Focus accent (left edge)
         let accent_col = if is_focused { C_BRAND } else { 0xFF1E1E1E };
-        graphics.fill_rect(cx, text_top, ACC_W, text_h, accent_col);
+        graphics.fill_rect(cx, text_top, ACC_W, text_h - 8, accent_col);
 
         // Scrollbar track
-        graphics.fill_rect(cx + cw - SB_W, text_top, SB_W, text_h, C_SCROLL_T);
+        graphics.fill_rect(cx + cw - SB_W, text_top, SB_W, text_h - 8, C_SCROLL_T);
+
 
         // Usable text column metrics
         let text_x   = cx + ACC_W + MARGIN;

@@ -36,19 +36,19 @@ const CMD_HIST_CAP: usize = 32;
 
 // ── Colours ───────────────────────────────────────────────────────────────────
 
-const COL_BG:         u32 = 0xFF0A1220;
-const COL_STATUS_BG:  u32 = 0xFF071018;
-const COL_STATUS_FG:  u32 = 0xFF3A7ACC;
-const COL_INPUT_BG:   u32 = 0xFF0E1A2E;
-const COL_CURSOR:     u32 = 0xFF00AAFF;
-const COL_PROMPT:     u32 = 0xFF00AAFF;
-const COL_DEFAULT:    u32 = 0xFFCCDCEC;
-const COL_ERROR:      u32 = 0xFFFF5050;
-const COL_INFO:       u32 = 0xFF40C8A0;
-const COL_WARN:       u32 = 0xFFFFB030;
-const COL_DIM:        u32 = 0xFF506070;
-const COL_CMD_ECHO:   u32 = 0xFF6080A0;
-const COL_ACCENT:     u32 = 0xFF1A5F9A;
+const COL_BG:         u32 = 0xFF0C0C0C; // Matches terminal.rs BG
+const COL_STATUS_BG:  u32 = 0xFF1A1A1A; // Matches terminal.rs STATUS_BG
+const COL_STATUS_FG:  u32 = 0xFF4EC9B0; // Matches terminal.rs C_BRAND (Teal)
+const COL_INPUT_BG:   u32 = 0xFF121212;
+const COL_CURSOR:     u32 = 0xFF4EC9B0;
+const COL_PROMPT:     u32 = 0xFF569CD6; // Matches terminal.rs C_CWD_COL (Blue)
+const COL_DEFAULT:    u32 = 0xFFCCCCCC;
+const COL_ERROR:      u32 = 0xFFF14C4C;
+const COL_INFO:       u32 = 0xFF4EC9B0;
+const COL_WARN:       u32 = 0xFFDDBB00;
+const COL_DIM:        u32 = 0xFF555555;
+const COL_CMD_ECHO:   u32 = 0xFF608060;
+const COL_ACCENT:     u32 = 0xFF2A2A2A; // Matches terminal.rs STATUS_SEP
 const COL_PROG_NAME:  u32 = 0xFF7FC8FF;
 const COL_PROG_DESC:  u32 = 0xFF4A6880;
 const COL_SEPARATOR:  u32 = 0xFF1E2840;

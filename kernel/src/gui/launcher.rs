@@ -248,27 +248,37 @@ impl LauncherApp {
                      else if is_hovered { COL_TILE_ACTIVE }
                      else { COL_TILE_BORDER };
 
-        // Background & border
-        graphics.fill_rect(ax, ay, TILE_W, TILE_H, bg);
-        graphics.draw_rect(ax, ay, TILE_W, TILE_H, border, 1);
+        // Soft shadow for hovered tile
+        if is_hovered {
+            graphics.draw_soft_shadow(ax, ay, TILE_W, TILE_H, 6, 0x30);
+        }
 
-        // Accent strip
-        let accent_alpha = if is_launched { entry.accent } else { entry.accent };
-        graphics.fill_rect(ax + 1, ay + 1, TILE_W - 2, 5, accent_alpha);
+        // Background & border
+        graphics.fill_rounded_rect(ax, ay, TILE_W, TILE_H, 6, bg);
+        graphics.draw_rounded_rect(ax, ay, TILE_W, TILE_H, 6, border, 1);
+
+        // Accent strip (rounded at top)
+        graphics.fill_rounded_rect(ax + 1, ay + 1, TILE_W - 2, 8, 4, entry.accent);
+        // Cover bottom part of accent strip to make it flat
+        graphics.fill_rect(ax + 1, ay + 5, TILE_W - 2, 4, entry.accent);
+        
         // Subtle gradient fade below accent
         let dimmed = (entry.accent & 0xFFFFFF) | 0x44000000;
-        graphics.fill_rect(ax + 1, ay + 6, TILE_W - 2, 2, dimmed);
+        graphics.fill_rect(ax + 1, ay + 9, TILE_W - 2, 2, dimmed);
 
         // Program name (bold feel: draw twice offset by 1)
-        fonts::draw_string(graphics, ax + 8, ay + 14, entry.name, 0xFF000000); // shadow
-        fonts::draw_string(graphics, ax + 7, ay + 13, entry.name, COL_NAME);
+        fonts::draw_string(graphics, ax + 8, ay + 17, entry.name, 0xFF000000); // shadow
+        fonts::draw_string(graphics, ax + 7, ay + 16, entry.name, COL_NAME);
 
         // Description
-        fonts::draw_string(graphics, ax + 8, ay + 31, entry.desc, COL_DESC);
+        fonts::draw_string(graphics, ax + 8, ay + 34, entry.desc, COL_DESC);
 
         // Bottom hint row
         let hint_bg = if is_hovered || is_launched { 0xFF0A1C34 } else { 0xFF090F1A };
-        graphics.fill_rect(ax + 1, ay + TILE_H - 18, TILE_W - 2, 17, hint_bg);
+        graphics.fill_rounded_rect(ax + 1, ay + TILE_H - 18, TILE_W - 2, 17, 4, hint_bg);
+        // Cover top part of hint bg to make it flat
+        graphics.fill_rect(ax + 1, ay + TILE_H - 18, TILE_W - 2, 8, hint_bg);
+        
         graphics.fill_rect(ax + 1, ay + TILE_H - 19, TILE_W - 2, 1, border);
 
         let hint_txt = if is_launched { "  spawning..." }

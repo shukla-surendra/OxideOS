@@ -59,17 +59,17 @@ impl Layout {
 
 // ── Colour palette ────────────────────────────────────────────────────────────
 
-const COL_BG:         u32 = 0xFF0D1117;
+const COL_BG:         u32 = 0xFF0C0C0C; // Matches terminal.rs BG
 const COL_PANEL:      u32 = 0xFF161B22;
-const COL_TOOLBAR_BG: u32 = 0xFF1C2128;
-const COL_STATUS_BG:  u32 = 0xFF0D1117;
+const COL_TOOLBAR_BG: u32 = 0xFF1A1A1A; // Matches terminal.rs STATUS_BG
+const COL_STATUS_BG:  u32 = 0xFF0C0C0C;
 const COL_SELECTED:   u32 = 0xFF1A3A5C;
 const COL_HOVER:      u32 = 0xFF1A2433;
-const COL_BORDER:     u32 = 0xFF30363D;
+const COL_BORDER:     u32 = 0xFF2A2A2A; // Matches terminal.rs STATUS_SEP
 const COL_TEXT_DIM:   u32 = 0xFF636E7B;
 const COL_DIR:        u32 = 0xFF79C0FF;
 const COL_FILE:       u32 = 0xFFCDD9E5;
-const COL_ACCENT:     u32 = 0xFF2F81F7;
+const COL_ACCENT:     u32 = 0xFF4EC9B0; // Matches terminal.rs C_BRAND (Teal)
 const COL_STATUS_TXT: u32 = 0xFF6E7681;
 
 // ── Tiny heap-free fixed string ───────────────────────────────────────────────

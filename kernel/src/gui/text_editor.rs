@@ -59,23 +59,26 @@ impl TextEditor {
             return;
         }
 
-        // Shadow
-        graphics.fill_rect(self.x + 3, self.y + 3, self.width, self.height, 0x30000000);
+        // Soft shadow
+        graphics.draw_soft_shadow(self.x, self.y, self.width, self.height, 10, 0x40);
 
         // Window background
-        graphics.fill_rect(self.x, self.y, self.width, self.height, self.bg_color);
+        graphics.fill_rounded_rect(self.x, self.y, self.width, self.height, 8, self.bg_color);
 
-        // Title bar
-        graphics.fill_rect(self.x, self.y, self.width, 30, colors::ui::TITLEBAR_ACTIVE);
-        graphics.draw_rect(self.x, self.y, self.width, self.height, colors::dark_theme::BORDER, 1);
+        // Modern title bar with rounded top corners
+        graphics.fill_rounded_rect(self.x, self.y, self.width, 30, 8, colors::ui::TITLEBAR_ACTIVE);
+        graphics.fill_rect(self.x, self.y + 20, self.width, 10, colors::ui::TITLEBAR_ACTIVE);
+
+        // Subtle border
+        graphics.draw_rounded_rect(self.x, self.y, self.width, self.height, 8, colors::dark_theme::BORDER, 1);
 
         // Title text
         fonts::draw_string(graphics, self.x + 10, self.y + 11, self.title, colors::WHITE);
 
         // Text area background (slightly darker)
         let text_area_y = self.y + 30;
-        let text_area_height = self.height - 30;
-        graphics.fill_rect(self.x, text_area_y, self.width, text_area_height, colors::dark_theme::BACKGROUND);
+        let text_area_height = self.height - 50; // Leave space for status bar
+        graphics.fill_rect(self.x + 1, text_area_y, self.width - 2, text_area_height, colors::dark_theme::BACKGROUND);
 
         // Draw text content
         self.draw_text(graphics);
@@ -86,6 +89,7 @@ impl TextEditor {
         // Draw status bar at bottom
         self.draw_status_bar(graphics);
     }
+
 
     fn draw_text(&self, graphics: &Graphics) {
         let char_width = 9;

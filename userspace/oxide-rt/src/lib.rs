@@ -1181,18 +1181,29 @@ unsafe extern "C" {
     fn oxide_main();
 }
 
+core::arch::global_asm!(
+    r#"
+    .intel_syntax noprefix
+    .global _start
+    _start:
+        /* At entry, rsp points to argc. Save it in rdi for oxide_rt_start. */
+        mov rdi, rsp
+        /* Align stack to 16 bytes for System V ABI. */
+        and rsp, -16
+        call oxide_rt_start
+        /* oxide_rt_start never returns. */
+        ud2
+    "#
+);
+
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn _start() -> ! {
-    // Read the argv block that the kernel placed at our initial RSP.
-    let rsp: u64;
+pub unsafe extern "C" fn oxide_rt_start(stack_ptr: *const u64) -> ! {
     unsafe {
-        core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nostack, nomem));
-        let argc_val = *(rsp as *const u64);
-        let argc = argc_val as usize;
+        let argc = *stack_ptr as usize;
         PROC_ARGC = argc;
         let max = argc.min(32);
         for i in 0..max {
-            let ptr_va = *((rsp + 8 + i as u64 * 8) as *const u64);
+            let ptr_va = *stack_ptr.add(1 + i);
             PROC_ARGV[i] = ptr_va as *const u8;
         }
     }
