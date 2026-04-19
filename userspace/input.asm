@@ -1,7 +1,7 @@
 ; input.asm — stdin echo test for OxideOS
 ;
-; Reads characters one at a time via GetChar (syscall 31) and echoes
-; them back to stdout with Write (syscall 21 / fd=1).
+; Reads characters one at a time via GetChar (syscall 401) and echoes
+; them back to stdout with Write (syscall 1 / fd=1).
 ; Exits when Ctrl+C (byte 0x03) is received.
 ;
 ; Syscall ABI (int 0x80):
@@ -15,14 +15,14 @@ ORG 0x400000
 
 _start:
     ; Print banner
-    mov rax, 30          ; Print
+    mov rax, 400         ; Print
     lea rdi, [rel banner]
     mov rsi, banner_len
     int 0x80
 
 .read_loop:
-    ; GetChar (31) — returns char in rax, EAGAIN (-6) if empty
-    mov rax, 31
+    ; GetChar (401) — returns char in rax, EAGAIN (-6) if empty
+    mov rax, 401
     int 0x80
 
     ; EAGAIN: nothing yet, spin
@@ -35,7 +35,7 @@ _start:
 
     ; Echo the character
     mov [rel char_buf], al
-    mov rax, 21          ; Write
+    mov rax, 1           ; Write
     mov rdi, 1           ; stdout
     lea rsi, [rel char_buf]
     mov rdx, 1
@@ -44,13 +44,13 @@ _start:
     jmp .read_loop
 
 .exit:
-    mov rax, 30
+    mov rax, 400
     lea rdi, [rel bye_msg]
     mov rsi, bye_len
     int 0x80
 
     xor rdi, rdi
-    xor rax, rax         ; Exit
+    mov rax, 60          ; Exit
     int 0x80
 
 ; ── Data ──────────────────────────────────────────────────────────────────────

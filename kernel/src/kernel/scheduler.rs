@@ -261,11 +261,13 @@ pub unsafe fn write_argv_to_stack(
         str_bytes += a.len() + 1;
     }
 
-    // Round the whole block to 16 bytes.
-    let total = (ptr_table_bytes + str_bytes + 15) & !15;
+    // Round the whole block to 16 bytes, then add 8 so that initial_rsp ends
+    // up 8-byte aligned (mod-16 = 8).  GCC compiles _start as if entered via
+    // CALL (return address on stack), so it expects rsp % 16 == 8 at entry.
+    let total = ((ptr_table_bytes + str_bytes + 15) & !15) + 8;
     if total > 512 {
         // Shouldn't happen for normal program names; fall back to a safe default.
-        return stack_top - 16;
+        return stack_top - 8; // 8-byte aligned fallback
     }
 
     let initial_rsp = stack_top - total as u64;

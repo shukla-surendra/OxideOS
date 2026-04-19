@@ -8,9 +8,9 @@
 ;   offset 24: process_count u32
 ;
 ; Syscall ABI (int 0x80):
-;   50 (GetSystemInfo): rdi = *SystemInfo  → fills the struct
-;   30 (Print):         rdi = buf ptr, rsi = len
-;    0 (Exit):          rdi = exit code
+;  402 (GetSystemInfo): rdi = *SystemInfo  → fills the struct
+;  400 (Print):         rdi = buf ptr, rsi = len
+;   60 (Exit):          rdi = exit code
 ;
 ; Number formatting: itoa64 subroutine (unsigned decimal, result in scratch_buf).
 
@@ -23,7 +23,7 @@ org 0x400000
     and  rsp, ~0xF          ; 16-byte align
 
     ; GetSystemInfo(rdi = &info)
-    mov  rax, 50
+    mov  rax, 402
     mov  rdi, rsp
     int  0x80
 
@@ -33,13 +33,13 @@ org 0x400000
     mov  r14, [rsp + 16]    ; uptime_ms
 
     ; --- header ---
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel hdr]
     mov  rsi, hdr.end - hdr
     int  0x80
 
     ; --- uptime in seconds ---
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel lbl_up]
     mov  rsi, lbl_up.end - lbl_up
     int  0x80
@@ -50,17 +50,17 @@ org 0x400000
     div  rbx                ; rax = seconds
     lea  rdi, [rel scratch]
     call itoa64             ; rsi = length written
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel scratch]
     int  0x80               ; rsi already set by itoa64
 
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel unit_s]
     mov  rsi, unit_s.end - unit_s
     int  0x80
 
     ; --- total memory in MB ---
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel lbl_tot]
     mov  rsi, lbl_tot.end - lbl_tot
     int  0x80
@@ -69,17 +69,17 @@ org 0x400000
     shr  rax, 20            ; bytes → MB
     lea  rdi, [rel scratch]
     call itoa64
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel scratch]
     int  0x80
 
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel unit_mb]
     mov  rsi, unit_mb.end - unit_mb
     int  0x80
 
     ; --- free memory in MB ---
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel lbl_free]
     mov  rsi, lbl_free.end - lbl_free
     int  0x80
@@ -88,18 +88,18 @@ org 0x400000
     shr  rax, 20
     lea  rdi, [rel scratch]
     call itoa64
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel scratch]
     int  0x80
 
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel unit_mb]
     mov  rsi, unit_mb.end - unit_mb
     int  0x80
 
     ; --- exit ---
     xor  rdi, rdi
-    xor  rax, rax
+    mov  rax, 60
     int  0x80
 
 ; ── itoa64 ───────────────────────────────────────────────────────────────────

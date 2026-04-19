@@ -1,13 +1,13 @@
 ; primes.asm — Print all prime numbers up to 100
 ;
 ; Syscalls used:
-;   30 (Print): rdi = buf ptr, rsi = len
-;    0 (Exit):  rdi = exit code
+;  400 (Print): rdi = buf ptr, rsi = len
+;   60 (Exit):  rdi = exit code
 
 bits 64
 org 0x400000
 
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel hdr]
     mov  rsi, hdr.end - hdr
     int  0x80
@@ -58,7 +58,7 @@ org 0x400000
     mov  byte [rdi], 10
     inc  rsi
 
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel nbuf]
     int  0x80
 
@@ -68,7 +68,7 @@ org 0x400000
 
 .done:
     xor  rdi, rdi
-    xor  rax, rax
+    mov  rax, 60
     int  0x80
 
 ; ── itoa64 ──────────────────────────────────────────────────────────────────

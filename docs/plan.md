@@ -938,7 +938,131 @@ Replace kernel-launched terminal with a proper init:
 ⚙  Phase 19    Hardware V2 (AHCI, USB, audio, NVMe) ← Real hardware
 ⚙  Phase 20    POSIX libc compatibility             ← C program support
 ⚙  Phase 21    Package manager + init + self-host   ← OS maturity
+✅ Phase 22    Installable OS (USB image, installer, pre-built image, /bin/install) ← done
 ```
+
+---
+
+## Phase 22 — Installable OS
+
+**Goal:** OxideOS can be written to a USB stick, booted on real x86-64 hardware, and
+installed to an internal disk with a persistent filesystem — `/bin`, `/etc`, `/home`
+survive reboot just like Ubuntu.
+
+### Prerequisites (must complete first)
+- Phase 12.1 (ext2 write) — persistent root filesystem
+- Phase 12.7 (FHS-lite) — `/etc`, `/home`, `/bin`, `/usr` directory structure
+- Phase 19.2 (AHCI/SATA) — real disk I/O beyond QEMU ATA PIO
+- Phase 21.1 (init system) — PID 1 mounts filesystems, starts services
+
+### 22.1 Bootable USB image
+
+Create a single-file `.img` that can be written to USB with `dd`:
+- MBR partition table: partition 1 = FAT32 (EFI system / Limine boot), partition 2 = ext2 root
+- Limine bootloader installed to MBR + FAT32 `/EFI/BOOT/BOOTX64.EFI` (UEFI) and `/limine-bios.sys` (BIOS)
+- Root partition pre-populated with `/bin`, `/etc`, `/lib`, `/home`
+- Build target: `make usb-image` → `oxideos.img`
+
+```
+Disk layout (example, 2 GB):
+  Partition 1: FAT32  64 MB  → /boot (Limine, kernel ELF, initrd)
+  Partition 2: ext2  ~2 GB   → /     (root filesystem, writable)
+```
+
+### 22.2 Live mode (run without installing)
+
+On first boot from USB, default to **live mode**:
+- Root mounts the ext2 read-only; overlay RamFS on top for writes.
+- User can explore OxideOS, run programs, connect to network.
+- A desktop shortcut / shell command `install-oxide` launches the installer.
+
+Implementation:
+- Kernel detects `live=1` boot parameter (Limine config entry).
+- VFS overlay: writes go to RAM, reads fall through to ext2.
+
+### 22.3 Installer (`/sbin/oxide-install`)
+
+A text-UI (or GUI) installer program:
+
+```
+Step 1: Detect disks
+  - Enumerate ATA/AHCI devices via PCI scan
+  - Show: /dev/sda (320 GB, WD), /dev/sdb (64 GB, SSD)
+
+Step 2: Partition target disk
+  - Option A: Use entire disk (automatic)
+  - Option B: Manual (show current layout, let user pick partition)
+  - Write MBR partition table via syscall or direct ATA write
+
+Step 3: Format partitions
+  - mkfs.fat32 → boot partition
+  - mkfs.ext2 → root partition
+
+Step 4: Copy root filesystem
+  - rsync-style: walk live ext2, copy each inode to target ext2
+  - Show progress bar
+
+Step 5: Install bootloader
+  - Write Limine MBR stage to disk sector 0
+  - Copy limine-bios.sys + kernel ELF to boot partition
+  - Write /boot/limine.conf with correct root UUID
+
+Step 6: Configure
+  - Set hostname (/etc/hostname)
+  - Create first user (/etc/passwd entry, /home/<user>)
+  - Set root password hash (/etc/shadow)
+
+Step 7: Done
+  - Eject USB, reboot from internal disk
+```
+
+Files: `userspace/install/src/main.rs` (new), `kernel/src/kernel/fs/ext2_write.rs` (Phase 12.1)
+
+### 22.4 Persistent filesystem layout on disk
+
+After installation, the disk has a real FHS-compliant ext2 root:
+```
+/bin/         → shell, coreutils, busybox applets
+/sbin/        → init, oxide-install, fsck
+/etc/         → hostname, passwd, shadow, resolv.conf, hosts, fstab
+/etc/rc.d/    → startup scripts (network, sshd, gui)
+/home/        → per-user home directories (writable, persists)
+/lib/         → shared libraries (Phase 15)
+/usr/bin/     → additional programs
+/usr/lib/     → more shared libs
+/var/log/     → system logs
+/var/www/     → httpd document root
+/tmp/         → tmpfs (cleared each boot)
+/dev/         → devfs (populated at boot)
+/proc/        → procfs (Phase 12.3)
+/mnt/         → mount points for removable media
+```
+
+`/etc/fstab`:
+```
+UUID=<root-uuid>  /      ext2  defaults        0 1
+UUID=<boot-uuid>  /boot  fat32 ro,defaults     0 2
+tmpfs             /tmp   tmpfs size=64M        0 0
+```
+
+Kernel reads `fstab` at boot via init to mount all partitions.
+
+### 22.5 First-boot setup wizard
+
+On the very first boot after installation (detected by `/etc/firstboot` marker):
+- Text-UI wizard: set timezone, create user account, configure network.
+- Removes `/etc/firstboot` when complete.
+- Equivalent of Ubuntu's OOBE (out-of-box experience).
+
+### 22.6 Upgrade path
+
+```
+opkg upgrade   →  download new kernel + packages, install to /boot and /usr,
+                  keep /etc and /home untouched, reboot into new version
+```
+
+- `/boot/limine.conf` keeps a fallback entry pointing to the previous kernel.
+- On bad boot, user can select previous version from Limine menu.
 
 ---
 
@@ -962,6 +1086,9 @@ The milestones that cross the line from hobby OS to real OS:
 | libc + C programs | 20.2 | ⬡ |
 | Python 3 runs | 20.4 | ⬡ |
 | Self-compiling | 21.3 | ⬡ |
+| Persistent /home + /etc on real disk | 22.4 | ⬡ |
+| Bootable USB image | 22.1 | ✅ |
+| Installer program | 22.3 | ✅ |
 
 ---
 

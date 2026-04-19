@@ -31,6 +31,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "install"
+version = "0.1.0"
+dependencies = [
+ "oxide-rt",
+]
+
+[[package]]
 name = "nc"
 version = "0.1.0"
 dependencies = [

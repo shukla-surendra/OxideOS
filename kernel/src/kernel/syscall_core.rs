@@ -87,6 +87,11 @@ pub enum Syscall {
     GuiPollEvent  = 430,
     GuiGetSize    = 431,
     GuiBlitShm    = 432,
+    // ── Installer syscalls (OxideOS-specific, 433–434) ────────────────────
+    /// Returns sector count of secondary disk, or negative if not present.
+    InstallQuery  = 433,
+    /// Run full installation to secondary disk; blocks until done.
+    InstallBegin  = 434,
     Invalid       = u64::MAX,
 }
 
@@ -158,6 +163,8 @@ impl Syscall {
             Self::GuiPollEvent  => "gui_poll_event",
             Self::GuiGetSize    => "gui_get_size",
             Self::GuiBlitShm    => "gui_blit_shm",
+            Self::InstallQuery  => "install_query",
+            Self::InstallBegin  => "install_begin",
             Self::Invalid       => "invalid",
         }
     }
@@ -233,6 +240,8 @@ impl From<u64> for Syscall {
             430 => Self::GuiPollEvent,
             431 => Self::GuiGetSize,
             432 => Self::GuiBlitShm,
+            433 => Self::InstallQuery,
+            434 => Self::InstallBegin,
             _   => Self::Invalid,
         }
     }
@@ -476,6 +485,10 @@ pub trait SyscallRuntime {
     fn gui_blit_shm_impl(&mut self, _pid: u64, _win_id: u32, _shm_id: u32,
                          _sx: u32, _sy: u32, _sw: u32, _sh: u32,
                          _dx: u32, _dy: u32) -> i64 { ENOSYS }
+    /// Return secondary disk sector count (positive), or -1 if no disk.
+    fn install_query_impl(&mut self) -> i64 { -1 }
+    /// Run the full installer to the secondary disk. Blocks until done.
+    fn install_begin_impl(&mut self) -> i64 { ENOSYS }
 }
 
 // ── Validation ─────────────────────────────────────────────────────────────
@@ -712,6 +725,14 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
             let r = runtime.gui_blit_shm_impl(pid, win_id, shm_id, sx, sy, sw, sh, dx, dy);
             if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
         }
+        Syscall::InstallQuery => {
+            let r = runtime.install_query_impl();
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::InstallBegin => {
+            let r = runtime.install_begin_impl();
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
         Syscall::Invalid       => SyscallResult::err(ENOSYS),
     }
 }
@@ -769,9 +790,9 @@ unsafe fn sys_write<R: SyscallRuntime>(
     let buf = unsafe { slice::from_raw_parts(buf_ptr as *const u8, count as usize) };
     if fd == 1 || fd == 2 {
         // Try FD-table first (supports dup2-redirected stdout/stderr to a pipe).
-        // fs_write_file returns EBADF (-5) when fd=1/2 has no FdTable entry.
+        // write_fd returns fs::EBADF (-9) when fd=1/2 has no FdTable entry.
         let r = runtime.fs_write_file(fd, buf);
-        if r != EBADF {
+        if r != crate::kernel::fs::EBADF {
             return if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) };
         }
         // Fallback: plain console.

@@ -350,22 +350,26 @@ unsafe fn fat_next(bpb: &Bpb, cluster: u16) -> u16 {
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
-/// Initialise the FAT16 driver. Reads the BPB from sector 0.
+/// Initialise the FAT16 driver.
 ///
-/// Must be called after `ata::init()`.
+/// Must be called after `ata::init()` and `mbr::init()`.  Supports both
+/// whole-disk FAT16 (legacy oxide_disk.img) and a FAT16 partition on a
+/// partitioned install image — the partition offset is read from the MBR.
 pub unsafe fn init() {
     if !ata::is_present() {
         unsafe { SERIAL_PORT.write_str("FAT16: no ATA disk, skipping\n"); }
         return;
     }
 
+    // Whole-disk FAT16 → part_offset = 0; partitioned disk → MBR entry start LBA.
+    let part_offset = unsafe { crate::kernel::mbr::fat16_lba_offset() };
+
     let mut buf = [0u8; 512];
-    if !unsafe { read_sector_buf(0, &mut buf) } {
+    if !unsafe { read_sector_buf(part_offset, &mut buf) } {
         unsafe { SERIAL_PORT.write_str("FAT16: failed to read boot sector\n"); }
         return;
     }
 
-    // Validate FAT signature
     if buf[510] != 0x55 || buf[511] != 0xAA {
         unsafe { SERIAL_PORT.write_str("FAT16: bad boot sector signature\n"); }
         return;
@@ -385,14 +389,17 @@ pub unsafe fn init() {
     let fat_size  = (*fs).bpb.fat_size_16 as u32;
     let rde       = (*fs).bpb.root_entry_count as u32;
 
-    (*fs).bpb.fat_start_lba  = reserved;
-    (*fs).bpb.root_dir_lba   = reserved + fat_count * fat_size;
+    // All stored LBAs are absolute disk LBAs (partition offset already baked in).
+    (*fs).bpb.fat_start_lba  = part_offset + reserved;
+    (*fs).bpb.root_dir_lba   = part_offset + reserved + fat_count * fat_size;
     (*fs).bpb.data_start_lba = (*fs).bpb.root_dir_lba + (rde * 32 + 511) / 512;
 
     (*fs).ready = true;
 
     unsafe {
-        SERIAL_PORT.write_str("FAT16: mounted, root_dir_lba=");
+        SERIAL_PORT.write_str("FAT16: mounted at part_lba=");
+        SERIAL_PORT.write_decimal(part_offset);
+        SERIAL_PORT.write_str(" root_dir_lba=");
         SERIAL_PORT.write_decimal((*fs).bpb.root_dir_lba);
         SERIAL_PORT.write_str(" data_start_lba=");
         SERIAL_PORT.write_decimal((*fs).bpb.data_start_lba);

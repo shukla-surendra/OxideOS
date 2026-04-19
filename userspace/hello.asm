@@ -6,21 +6,21 @@
 ;   rdi = arg1,  rsi = arg2,  rdx = arg3
 ;
 ; Syscalls used:
-;   30 (Print):  rdi = buf ptr, rsi = byte count  → prints to terminal
-;    0 (Exit):   rdi = exit code
+;  400 (Print):  rdi = buf ptr, rsi = byte count  → prints to terminal
+;   60 (Exit):   rdi = exit code
 
 bits 64
 org 0x400000
 
     ; --- print greeting ---
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel msg]
     mov  rsi, msg.end - msg
     int  0x80
 
     ; --- exit(0) ---
     xor  rdi, rdi
-    xor  rax, rax
+    mov  rax, 60
     int  0x80
 
 msg:

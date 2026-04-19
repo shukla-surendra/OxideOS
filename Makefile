@@ -24,6 +24,23 @@ override DISK_SECTORS := 8192
 # ext2 secondary disk image (32 MB).
 override EXT2_IMAGE  := oxide_ext2.img
 override EXT2_SIZE_MB := 32
+# Installable single-disk image (MBR, BIOS+UEFI bootable).
+# Partition 1 (type EF, 64 MB): EFI System — Limine + kernel.
+# Partition 2 (type 06, 64 MB): FAT16 data — OxideOS filesystem.
+# Total: ~192 MB.  Guaranteed FAT16 (not FAT32) at the data partition size.
+override INSTALL_IMAGE      := oxide_install.img
+override INSTALL_SIZE_MB    := 192
+# EFI partition: starts at LBA 2048 (1 MB), 131072 sectors = 64 MB.
+override INSTALL_EFI_START  := 2048
+override INSTALL_EFI_SECTORS := 131072
+# Data partition: starts immediately after, 131072 sectors = 64 MB.
+override INSTALL_DATA_START := 133120
+override INSTALL_DATA_SECTORS := 131072
+# Byte offsets for mtools (sectors * 512).
+# EFI  : 2048   * 512 = 1 048 576  = 1 MB
+# Data : 133120 * 512 = 68 157 440 = 65 MB
+override INSTALL_EFI_OFFSET  := 1M
+override INSTALL_DATA_OFFSET := 65M
 
 .PHONY: all
 all: $(IMAGE_NAME).iso
@@ -50,6 +67,77 @@ ext2-disk: $(EXT2_IMAGE)
 $(EXT2_IMAGE):
 	dd if=/dev/zero bs=1M count=$(EXT2_SIZE_MB) of=$(EXT2_IMAGE)
 	mke2fs -t ext2 -L OXIDEEXT2 $(EXT2_IMAGE)
+
+# ── Installable disk image ─────────────────────────────────────────────────
+# Creates a single 192 MB bootable disk image with two MBR partitions:
+#   Partition 1 (EF): EFI System — Limine bootloader + kernel (64 MB)
+#   Partition 2 (06): FAT16 data — OxideOS filesystem           (64 MB)
+# The image can be written to a USB drive or hard disk with install.sh.
+# Requires: sfdisk, mtools (mformat/mmd/mcopy), xorriso.
+.PHONY: install-image
+install-image: limine/limine kernel
+	# Blank image
+	dd if=/dev/zero bs=1M count=$(INSTALL_SIZE_MB) of=$(INSTALL_IMAGE)
+	# MBR partition table: EFI (EF) + FAT16 data (06)
+	printf 'label: dos\nunit: sectors\n\n1 : start=$(INSTALL_EFI_START), size=$(INSTALL_EFI_SECTORS), type=ef\n2 : start=$(INSTALL_DATA_START), size=$(INSTALL_DATA_SECTORS), type=06\n' | sfdisk $(INSTALL_IMAGE)
+	# Install Limine BIOS boot code into the MBR
+	./limine/limine bios-install $(INSTALL_IMAGE)
+	# Format EFI partition (FAT for UEFI)
+	mformat -i $(INSTALL_IMAGE)@@$(INSTALL_EFI_OFFSET) -F -v OXIDEEFI ::
+	# Copy boot files into EFI partition
+	mmd -i $(INSTALL_IMAGE)@@$(INSTALL_EFI_OFFSET) ::/EFI ::/EFI/BOOT ::/boot ::/boot/limine
+	mcopy -i $(INSTALL_IMAGE)@@$(INSTALL_EFI_OFFSET) limine/BOOTX64.EFI  ::/EFI/BOOT/
+	mcopy -i $(INSTALL_IMAGE)@@$(INSTALL_EFI_OFFSET) limine/BOOTIA32.EFI ::/EFI/BOOT/
+	mcopy -i $(INSTALL_IMAGE)@@$(INSTALL_EFI_OFFSET) limine/limine-bios.sys  ::/boot/limine/
+	mcopy -i $(INSTALL_IMAGE)@@$(INSTALL_EFI_OFFSET) limine/limine-bios-cd.bin ::/boot/limine/
+	mcopy -i $(INSTALL_IMAGE)@@$(INSTALL_EFI_OFFSET) limine/limine-uefi-cd.bin ::/boot/limine/
+	mcopy -i $(INSTALL_IMAGE)@@$(INSTALL_EFI_OFFSET) limine.conf          ::/boot/limine/
+	mcopy -i $(INSTALL_IMAGE)@@$(INSTALL_EFI_OFFSET) kernel/kernel        ::/boot/
+	# Format FAT16 data partition (no -F flag so mformat picks FAT16 for 64 MB)
+	mformat -i $(INSTALL_IMAGE)@@$(INSTALL_DATA_OFFSET) -v OXIDEDATA ::
+	@echo ""
+	@echo "✓  $(INSTALL_IMAGE) ready ($(INSTALL_SIZE_MB) MB)"
+	@echo "   Boot from USB:  sudo ./install.sh /dev/sdX"
+	@echo "   Test in QEMU:   make run-install-x86_64"
+
+# UEFI boot from the install image (SDL window, same flags as run-gui-x86_64)
+.PHONY: run-install-x86_64
+run-install-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd
+	@test -f $(INSTALL_IMAGE) || (echo "Run 'make install-image' first."; exit 1)
+	qemu-system-$(KARCH) \
+		-M q35 \
+		-serial stdio \
+		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
+		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
+		-drive file=$(INSTALL_IMAGE),format=raw,if=ide,index=0 \
+		-display sdl \
+		$(NETFLAGS) \
+		$(QEMUFLAGS)
+
+# BIOS boot from the install image (serial output, no GUI display)
+.PHONY: run-install-bios
+run-install-bios:
+	@test -f $(INSTALL_IMAGE) || (echo "Run 'make install-image' first."; exit 1)
+	qemu-system-$(KARCH) \
+		-M pc \
+		-serial stdio \
+		-drive file=$(INSTALL_IMAGE),format=raw,if=ide,index=0 \
+		$(NETFLAGS) \
+		$(QEMUFLAGS)
+
+# Convert the raw install image to VirtualBox VDI format.
+# Usage: make install-vdi
+# Then in VirtualBox: New VM → Use existing VDI → select oxide_install.vdi
+.PHONY: install-vdi
+install-vdi: install-image
+	VBoxManage convertfromraw $(INSTALL_IMAGE) oxide_install.vdi --format VDI
+	@echo ""
+	@echo "✓  oxide_install.vdi ready"
+	@echo "   In VirtualBox: New VM → skip ISO → 'Use an existing virtual hard disk' → oxide_install.vdi"
+
+.PHONY: clean-install
+clean-install:
+	rm -f $(INSTALL_IMAGE) oxide_install.vdi
 
 .PHONY: run
 run: run-$(KARCH)
@@ -341,6 +429,6 @@ clean-ext2:
 	rm -f $(EXT2_IMAGE)
 
 .PHONY: distclean
-distclean: clean
+distclean: clean clean-install
 	$(MAKE) -C kernel distclean
 	rm -rf limine ovmf

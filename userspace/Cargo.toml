@@ -9,5 +9,6 @@ members = [
     "edit",
     "nc",
     "filemanager",
+    "install",
 ]
 resolver = "2"

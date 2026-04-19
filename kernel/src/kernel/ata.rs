@@ -338,6 +338,37 @@ pub unsafe fn init_secondary() {
 /// Secondary disk presence.
 pub fn is_present_sec() -> bool { unsafe { SEC_DISK_PRESENT } }
 
+/// Number of 512-byte sectors on the secondary disk.
+pub fn sector_count_sec() -> u32 { unsafe { SEC_DISK_SECTORS } }
+
+/// Write one 512-byte sector to the secondary disk. Returns `false` on error.
+pub unsafe fn write_sector_sec(lba: u32, buf: &[u8; 512]) -> bool {
+    if !unsafe { SEC_DISK_PRESENT } { return false; }
+    if !unsafe { sec_wait_not_busy() } { return false; }
+
+    unsafe {
+        outb(SEC_DRVHD,   0xE0 | ((lba >> 24) as u8 & 0x0F));
+        outb(SEC_ERR,     0x00);
+        outb(SEC_SECNT,   1);
+        outb(SEC_LBA0,    (lba       & 0xFF) as u8);
+        outb(SEC_LBA1,    (lba >> 8  & 0xFF) as u8);
+        outb(SEC_LBA2,    (lba >> 16 & 0xFF) as u8);
+        outb(SEC_STATCMD, CMD_WRITE);
+        for _ in 0..4 { let _ = inb(SEC_CTRL); } // 400 ns
+    }
+
+    if !unsafe { sec_wait_drq() } { return false; }
+
+    for i in 0..256usize {
+        let lo = buf[i * 2]     as u16;
+        let hi = buf[i * 2 + 1] as u16;
+        unsafe { outw(SEC_DATA, lo | (hi << 8)); }
+    }
+
+    unsafe { outb(SEC_STATCMD, CMD_FLUSH); }
+    unsafe { sec_wait_not_busy() }
+}
+
 /// Read one 512-byte sector from the secondary disk into `buf`.
 pub unsafe fn read_sector_sec(lba: u32, buf: &mut [u8; 512]) -> bool {
     if !unsafe { SEC_DISK_PRESENT } { return false; }

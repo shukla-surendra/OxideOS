@@ -675,7 +675,7 @@ pub unsafe fn copy_user_page_table(src_cr3: u64) -> Option<u64> {
     for l4i in 0..256usize {
         let l4e = unsafe { *src_l4.add(l4i) };
         if l4e & 1 == 0 { continue; }
-        let src_l3 = (l4e & 0x000F_FFFF_FFFF_F000 + hho) as *const u64;
+        let src_l3 = ((l4e & 0x000F_FFFF_FFFF_F000) + hho) as *const u64;
         let dst_l3_pa = fa.allocate_frame()?;
         let dst_l3    = (dst_l3_pa + hho) as *mut u64;
         unsafe {

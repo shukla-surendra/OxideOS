@@ -1,9 +1,9 @@
 ; spinner.asm — Animate a spinning cursor for ~3 seconds then exit
 ;
 ; Syscalls used:
-;   30 (Print): rdi = buf ptr, rsi = len
-;   41 (Sleep): rdi = milliseconds
-;    0 (Exit):  rdi = exit code
+;  400 (Print): rdi = buf ptr, rsi = len
+;   35 (Sleep): rdi = milliseconds
+;   60 (Exit):  rdi = exit code
 ;
 ; Terminal trick: print frame char, then '\r' to return to column 0,
 ; so next frame overwrites the previous one.
@@ -11,7 +11,7 @@
 bits 64
 org 0x400000
 
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel msg_start]
     mov  rsi, msg_start.end - msg_start
     int  0x80
@@ -29,13 +29,13 @@ org 0x400000
     movzx eax, byte [rax + rcx]
     mov  [rel frame_buf], al
 
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel frame_buf]
     mov  rsi, 3             ; char + space + '\r'
     int  0x80
 
     ; sleep 100 ms
-    mov  rax, 41
+    mov  rax, 35
     mov  rdi, 100
     int  0x80
 
@@ -44,18 +44,18 @@ org 0x400000
 
 .done:
     ; print newline to leave cursor on clean line
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel newline]
     mov  rsi, 1
     int  0x80
 
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel msg_done]
     mov  rsi, msg_done.end - msg_done
     int  0x80
 
     xor  rdi, rdi
-    xor  rax, rax
+    mov  rax, 60
     int  0x80
 
 ; ── Data ─────────────────────────────────────────────────────────────────────

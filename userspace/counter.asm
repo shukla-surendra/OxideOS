@@ -4,14 +4,14 @@
 ; Demonstrates: loop in user mode, per-iteration syscall, single-digit formatting.
 ;
 ; Syscall ABI (int 0x80):
-;   30 (Print): rdi = buf ptr, rsi = len
-;    0 (Exit):  rdi = exit code
+;  400 (Print): rdi = buf ptr, rsi = len
+;   60 (Exit):  rdi = exit code
 
 bits 64
 org 0x400000
 
     ; --- print header ---
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel header]
     mov  rsi, header.end - header
     int  0x80
@@ -25,7 +25,7 @@ org 0x400000
     mov  [rel buf], al
 
     ; print 2 bytes: digit + newline
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel buf]
     mov  rsi, 2
     int  0x80
@@ -35,14 +35,14 @@ org 0x400000
     jl   .next
 
     ; --- print footer ---
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel footer]
     mov  rsi, footer.end - footer
     int  0x80
 
     ; --- exit(0) ---
     xor  rdi, rdi
-    xor  rax, rax
+    mov  rax, 60
     int  0x80
 
 header:

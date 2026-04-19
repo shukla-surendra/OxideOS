@@ -1,9 +1,9 @@
 ; countdown.asm — Count down from 10 to 1, then print "Liftoff!"
 ;
 ; Syscalls used:
-;   30 (Print): rdi = buf ptr, rsi = len
-;   41 (Sleep): rdi = milliseconds
-;    0 (Exit):  rdi = exit code
+;  400 (Print): rdi = buf ptr, rsi = len
+;   35 (Sleep): rdi = milliseconds
+;   60 (Exit):  rdi = exit code
 
 bits 64
 org 0x400000
@@ -23,12 +23,12 @@ org 0x400000
     mov  byte [rdi], 10     ; newline
     inc  rsi
 
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel nbuf]
     int  0x80
 
     ; sleep 500 ms
-    mov  rax, 41
+    mov  rax, 35
     mov  rdi, 500
     int  0x80
 
@@ -36,13 +36,13 @@ org 0x400000
     jmp  .loop
 
 .liftoff:
-    mov  rax, 30
+    mov  rax, 400
     lea  rdi, [rel msg_liftoff]
     mov  rsi, msg_liftoff.end - msg_liftoff
     int  0x80
 
     xor  rdi, rdi
-    xor  rax, rax
+    mov  rax, 60
     int  0x80
 
 ; ── itoa64 ───────────────────────────────────────────────────────────────────

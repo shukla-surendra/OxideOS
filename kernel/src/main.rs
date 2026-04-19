@@ -31,7 +31,7 @@ use gui::start_menu::StartMenu;
 use core::ptr;
 
 use limine::BaseRevision;
-use limine::request::{FramebufferRequest, MemoryMapRequest, RsdpRequest, HhdmRequest, RequestsEndMarker, RequestsStartMarker};
+use limine::request::{FramebufferRequest, MemoryMapRequest, RsdpRequest, HhdmRequest, ExecutableFileRequest, RequestsEndMarker, RequestsStartMarker};
 
 // ============================================================================
 // LIMINE REQUESTS
@@ -58,6 +58,10 @@ pub static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
 pub static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
 
 #[used]
+#[unsafe(link_section = ".requests")]
+static KERNEL_FILE_REQUEST: ExecutableFileRequest = ExecutableFileRequest::new();
+
+#[used]
 #[unsafe(link_section = ".requests_start_marker")]
 static _START_MARKER: RequestsStartMarker = RequestsStartMarker::new();
 
@@ -66,6 +70,10 @@ static _START_MARKER: RequestsStartMarker = RequestsStartMarker::new();
 static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
 
 static mut WINDOW_MANAGER: WindowManager = WindowManager::new();
+
+/// Kernel binary as loaded by Limine — set once in `kmain()`, read by the installer.
+pub static mut KERNEL_BINARY_PTR: *const u8 = core::ptr::null();
+pub static mut KERNEL_BINARY_LEN: usize     = 0;
 
 // ============================================================================
 // NETWORK CONNECTIVITY PROBE
@@ -171,6 +179,18 @@ unsafe extern "C" fn kmain() -> ! {
     assert!(BASE_REVISION.is_supported());
     unsafe { SERIAL_PORT.write_str("Limine base revision supported\n"); }
 
+    // Capture the kernel binary pointer from Limine so the installer can write it to disk.
+    if let Some(resp) = KERNEL_FILE_REQUEST.get_response() {
+        let f = resp.file();
+        unsafe {
+            KERNEL_BINARY_PTR = f.addr();
+            KERNEL_BINARY_LEN = f.size() as usize;
+            SERIAL_PORT.write_str("Kernel file: ");
+            SERIAL_PORT.write_decimal(KERNEL_BINARY_LEN as u32);
+            SERIAL_PORT.write_str(" bytes\n");
+        }
+    }
+
     // ── Stage 2: Interrupt system ──────────────────────────────────────────
     init_interrupt_system();
     crate::kernel::syscall::run_boot_self_tests();
@@ -188,15 +208,15 @@ unsafe extern "C" fn kmain() -> ! {
         crate::kernel::env::init_defaults();
         SERIAL_PORT.write_str("✓ Environment initialized\n");
 
-        // ATA disk + FAT16 filesystem (optional — no disk is fine)
+        // ATA disks — primary then secondary
         crate::kernel::ata::init();
-        crate::kernel::fat::init();
-
-        // Secondary ATA bus (for ext2 disk) — probe after primary is stable
         crate::kernel::ata::init_secondary();
 
-        // MBR partition table — parse primary disk layout
+        // MBR partition table — must run before FAT so fat::init() can find its partition
         crate::kernel::mbr::init();
+
+        // FAT16 filesystem on primary disk (whole-disk or MBR partition)
+        crate::kernel::fat::init();
 
         // ext2 read-only filesystem on secondary disk
         {
@@ -298,15 +318,16 @@ unsafe fn init_interrupt_system() {
     unsafe { crate::kernel::syscall_handler::init(); }
     SERIAL_PORT.write_str("  ✓ SYSCALL/SYSRET enabled\n");
 
-    SERIAL_PORT.write_str("Step 9: Enabling SMEP (Supervisor Mode Execution Prevention)...\n");
+    SERIAL_PORT.write_str("Step 9: Enabling SMEP + SSE...\n");
     unsafe {
-        // CR4.SMEP = bit 20 — prevents kernel from executing user-space pages.
         let mut cr4: u64;
         asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
-        cr4 |= 1 << 20;
+        cr4 |= 1 << 20;  // CR4.SMEP — kernel cannot execute user pages
+        cr4 |= 1 << 9;   // CR4.OSFXSR — enables SSE (FXSAVE/FXRSTOR + SSE insns)
+        cr4 |= 1 << 10;  // CR4.OSXMMEXCPT — enables #XF for unmasked SSE FP exceptions
         asm!("mov cr4, {}", in(reg) cr4, options(nomem, nostack, preserves_flags));
     }
-    SERIAL_PORT.write_str("  ✓ SMEP enabled\n");
+    SERIAL_PORT.write_str("  ✓ SMEP + SSE enabled\n");
 }
 
 // ============================================================================

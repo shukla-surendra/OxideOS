@@ -152,6 +152,10 @@ pub static FALSE: &[u8] =
 pub static HELLO_C: &[u8] =
     include_bytes!("../../../userspace/bin/hello_c.elf");
 
+/// install — interactive disk installer; writes OxideOS to the secondary ATA disk.
+pub static INSTALL: &[u8] =
+    include_bytes!("../../../userspace/bin/install.elf");
+
 /// Look up a built-in program by name.
 pub fn find(name: &str) -> Option<&'static [u8]> {
     match name {
@@ -191,6 +195,7 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
         "true"    => Some(TRUE),
         "false"   => Some(FALSE),
         "hello_c" => Some(HELLO_C),
+        "install" => Some(INSTALL),
         _         => None,
     }
 }
@@ -205,4 +210,5 @@ pub const NAMES: &[&str] = &[
     "echo", "grep", "wc", "head", "tail", "sort", "sleep", "kill", "touch",
     "true", "false",
     "hello_c",
+    "install",
 ];

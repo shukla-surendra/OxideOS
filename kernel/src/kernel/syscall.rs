@@ -883,6 +883,15 @@ impl SyscallRuntime for KernelRuntime {
         unsafe { crate::kernel::gui_proc::blit_shm(pid as u32, win_id, shm_id,
                                                     sx, sy, sw, sh, dx, dy) }
     }
+
+    fn install_query_impl(&mut self) -> i64 {
+        if !crate::kernel::ata::is_present_sec() { return -1; }
+        crate::kernel::ata::sector_count_sec() as i64
+    }
+
+    fn install_begin_impl(&mut self) -> i64 {
+        unsafe { crate::kernel::installer::do_install() }
+    }
 }
 
 // ── exec helpers (not part of the trait; called via exec_program) ─────────
