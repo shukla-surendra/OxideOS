@@ -362,12 +362,16 @@ Requires working: `fork`, `exec`, `wait`, `open`, `read`, `write`, `stat`, `mmap
 ### Implementation order
 
 ```
-10.6.1  Remap syscall numbers to Linux ABI         ← unblocks standard toolchains
-✅ 10.6.3  select/poll (poll syscall 7 implemented)  ← done
-10.6.4  real munmap                                 ← unblocks musl malloc
-10.6.2  musl cross-compilation setup               ← first C programs
-10.6.5  envp on stack                               ← full ABI compliance
-10.6.6  Run Lua 5.4                                 ← proof of concept
+✅ 10.6.1  Remap syscall numbers to Linux ABI
+✅ 10.6.3  select/poll (poll syscall 7 implemented)
+✅ 10.6.4  real munmap — unmap+free physical frames, per-task region tracking
+✅ 10.6.5  envp on stack — full SysV ABI (argc+argv[]+NULL+envp[]+NULL)
+           + uname(63), getppid(110), clock_gettime(228), mprotect(10),
+             fcntl(72), set_tid_address(218), arch_prctl(158)
+✅ 10.6.2  musl cross-compilation setup (musl-gcc, hello_musl, musl_test)
+✅ 10.6.6  Lua 5.4.7 embedded — syscalls: sigprocmask(14), lstat(6), readv(19),
+           mremap(25→ENOMEM), getuid/getgid(102/104)→1000, gettid(186)→pid,
+           futex(202)→0, pipe2(293), lseek(8), exit_group(231)
 10.6.7  Run BusyBox                                 ← full userland replacement
 ```
 
@@ -904,15 +908,13 @@ Replace kernel-launched terminal with a proper init:
 ## Implementation Priority Order (Updated)
 
 ```
-✅ DONE  Phases 1–9, Phase 10.1–10.3, 10.5 (argv, env vars, pipes, coreutils)
+✅ DONE  Phases 1–9, 10.1–10.3, 10.5 (argv, env vars, pipes, coreutils)
+✅ DONE  Phase 10.6.1–10.6.5 (Linux ABI, select/poll, munmap, envp, new syscalls)
+✅ DONE  Phase 22 (installable OS, /bin/install, pre-built image)
 
 ── NEXT: Open-Source Software ──────────────────────────────────────
 
-✅ Phase 10.6.1  Remap syscalls to Linux ABI           ← done
-🔥 Phase 10.6.3  select/poll syscall                   ← unblocks most C programs
-🔥 Phase 10.6.4  Real munmap                           ← musl malloc works
 🔥 Phase 10.6.2  musl libc cross-compilation           ← first real C programs
-🔥 Phase 10.6.5  envp on stack                         ← full SysV ABI compliance
 🔥 Phase 10.6.6  Run Lua 5.4                           ← proof of concept
 🔥 Phase 10.6.7  Run BusyBox                           ← full Unix userland
 🔥 Phase 13.1  DHCP client activation               ← Network auto-config

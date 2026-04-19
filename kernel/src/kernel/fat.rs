@@ -412,6 +412,28 @@ pub fn is_fat_fd(fd: i32) -> bool {
     fd >= FAT_FD_BASE && fd < FAT_FD_BASE + FAT_FD_COUNT as i32
 }
 
+/// Seek within an open FAT16 file.
+/// `whence`: 0=SEEK_SET, 1=SEEK_CUR, 2=SEEK_END.
+/// Returns new file offset (≥0) or -22 (EINVAL) on error.
+pub fn file_seek(fd: i32, offset: i64, whence: u32) -> i64 {
+    if !is_fat_fd(fd) { return -9; } // EBADF
+    let slot = (fd - FAT_FD_BASE) as usize;
+    unsafe {
+        let fs = &raw mut FAT_FS;
+        let fsize = (*fs).fds[slot].file_size as i64;
+        let cur   = (*fs).fds[slot].file_offset as i64;
+        let new_off = match whence {
+            0 => offset,          // SEEK_SET
+            1 => cur + offset,    // SEEK_CUR
+            2 => fsize + offset,  // SEEK_END
+            _ => return -22,
+        };
+        if new_off < 0 { return -22; }
+        (*fs).fds[slot].file_offset = new_off as u32;
+        new_off
+    }
+}
+
 /// Return the size (in bytes) of the open file `fd`.  Returns 0 if `fd` is invalid.
 pub fn file_size(fd: i32) -> u32 {
     if !is_fat_fd(fd) { return 0; }

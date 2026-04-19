@@ -210,12 +210,9 @@ impl SyscallRuntime for KernelRuntime {
     fn mmap_anon(&mut self, _hint: u64, len: u64) -> i64 {
         if len == 0 { return -22; } // EINVAL
         unsafe {
-            use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+            use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX, MmapRegion, MAX_MMAP_REGIONS};
             use crate::kernel::paging_allocator as pa;
 
-            /// Start of the anonymous-mmap virtual address region (128 MB).
-            /// Heap starts at 16 MB (USER_HEAP_BASE) and grows up; mmap area
-            /// starts at 128 MB so the two regions don't collide.
             const USER_MMAP_BASE: u64 = 0x0800_0000;
             const PAGE_SIZE: u64 = 4096;
 
@@ -228,7 +225,6 @@ impl SyscallRuntime for KernelRuntime {
                 if end == 0 { USER_MMAP_BASE } else { end }
             };
 
-            // Round length up to whole pages.
             let pages = ((len + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
 
             if pa::map_user_region_in(cr3, base, pages, true, false).is_err() {
@@ -237,13 +233,125 @@ impl SyscallRuntime for KernelRuntime {
 
             let new_end = base + pages as u64 * PAGE_SIZE;
             (*sched).tasks[idx].mmap_end = new_end;
+
+            // Record this region for munmap.
+            let nr = (*sched).tasks[idx].mmap_nregions;
+            if nr < MAX_MMAP_REGIONS {
+                (*sched).tasks[idx].mmap_regions[nr] = MmapRegion { virt: base, pages: pages as u32, _pad: 0 };
+                (*sched).tasks[idx].mmap_nregions = nr + 1;
+            }
+
             base as i64
+        }
+    }
+
+    fn munmap_impl(&mut self, addr: u64, len: u64) -> i64 {
+        if len == 0 { return -22; } // EINVAL
+        unsafe {
+            use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX, MmapRegion, MAX_MMAP_REGIONS};
+            use crate::kernel::paging_allocator as pa;
+
+            const PAGE_SIZE: u64 = 4096;
+
+            let sched = &raw mut SCHED;
+            let idx   = CURRENT_TASK_IDX;
+            let cr3   = (*sched).tasks[idx].cr3;
+            let pages = ((len + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+
+            pa::unmap_user_region_in(cr3, addr, pages);
+
+            // Remove from the tracked region list (swap-remove).
+            let nr = (*sched).tasks[idx].mmap_nregions;
+            for i in 0..nr {
+                if (*sched).tasks[idx].mmap_regions[i].virt == addr {
+                    (*sched).tasks[idx].mmap_regions[i] = (*sched).tasks[idx].mmap_regions[nr - 1];
+                    (*sched).tasks[idx].mmap_regions[nr - 1] = MmapRegion::empty();
+                    (*sched).tasks[idx].mmap_nregions = nr - 1;
+                    break;
+                }
+            }
+            0
         }
     }
 
     fn kill_pid_sig(&mut self, pid: u64, signum: u8) -> i64 {
         let ok = unsafe { crate::kernel::scheduler::send_signal(pid as u8, signum) };
         if ok { 0 } else { -3 }
+    }
+
+    fn getppid_impl(&mut self) -> i64 {
+        unsafe {
+            let sched = &raw const crate::kernel::scheduler::SCHED;
+            let idx   = crate::kernel::scheduler::CURRENT_TASK_IDX;
+            (*sched).tasks[idx].parent_pid as i64
+        }
+    }
+
+    fn uname_impl(&mut self, buf_ptr: u64) -> i64 {
+        // Linux utsname: 6 fields × 65 bytes each = 390 bytes.
+        // Fields: sysname, nodename, release, version, machine, domainname.
+        if buf_ptr == 0 { return -14; } // EFAULT
+        let buf = buf_ptr as *mut u8;
+        let field = 65usize;
+        unsafe {
+            let write_field = |offset: usize, s: &[u8]| {
+                let dst = buf.add(offset);
+                core::ptr::write_bytes(dst, 0, field);
+                let n = s.len().min(field - 1);
+                core::ptr::copy_nonoverlapping(s.as_ptr(), dst, n);
+            };
+            write_field(0,         b"OxideOS");
+            write_field(field,     b"oxideos");
+            write_field(field * 2, b"0.1.0");
+            write_field(field * 3, b"#1 SMP");
+            write_field(field * 4, b"x86_64");
+            write_field(field * 5, b"(none)");
+        }
+        0
+    }
+
+    fn clock_gettime_impl(&mut self, _clk_id: u64, tp_ptr: u64) -> i64 {
+        if tp_ptr == 0 { return -14; } // EFAULT
+        // Return monotonic time from PIT ticks (100 Hz).
+        let ticks = unsafe { crate::kernel::timer::get_ticks() };
+        let secs  = ticks / 100;
+        let nsecs = (ticks % 100) * 10_000_000;
+        unsafe {
+            core::ptr::write_unaligned(tp_ptr as *mut u64, secs);
+            core::ptr::write_unaligned((tp_ptr + 8) as *mut u64, nsecs);
+        }
+        0
+    }
+
+    fn fcntl_impl(&mut self, fd: i32, cmd: u64, arg: u64) -> i64 {
+        // F_GETFL=3 → return O_RDWR (2); F_SETFL=4 → return 0; others → 0.
+        match cmd {
+            1 => { // F_DUPFD: dup fd to first available ≥ arg
+                unsafe {
+                    use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+                    let sched = &raw mut SCHED;
+                    let idx   = CURRENT_TASK_IDX;
+                    let table = &mut (*sched).tasks[idx].fd_table;
+                    let src = fd as usize;
+                    if src >= crate::kernel::fs::ramfs::MAX_FD { return -9; }
+                    let entry = match table.entries[src] { Some(e) => e, None => return -9 };
+                    let start = arg as usize;
+                    for new_fd in start..crate::kernel::fs::ramfs::MAX_FD {
+                        if table.entries[new_fd].is_none() {
+                            table.entries[new_fd] = Some(entry);
+                            return new_fd as i64;
+                        }
+                    }
+                    -24 // EMFILE
+                }
+            }
+            2 => { // F_GETFD: return close-on-exec flag (always 0)
+                0
+            }
+            3 => 2, // F_GETFL: O_RDWR
+            4 => 0, // F_SETFL: ignore
+            _ => 0,
+        }
     }
 
     // ── Socket syscalls ────────────────────────────────────────────────────
@@ -296,6 +404,92 @@ impl SyscallRuntime for KernelRuntime {
         )}
     }
 
+    fn getdents64_impl(&mut self, fd: i32, buf: &mut [u8]) -> i64 {
+        // struct linux_dirent64: d_ino(8) d_off(8) d_reclen(2) d_type(1) d_name(n+1)
+        // d_type: 4=DT_DIR, 8=DT_REG, 0=DT_UNKNOWN
+        const DT_UNKNOWN: u8 = 0;
+        const DT_DIR: u8 = 4;
+        const DT_REG: u8 = 8;
+
+        unsafe {
+            use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+            use crate::kernel::fs::ramfs::FdBackend;
+
+            if fd < 0 || fd as usize >= crate::kernel::fs::ramfs::MAX_FD { return -9; }
+            let sched = &raw mut SCHED;
+            let idx = CURRENT_TASK_IDX;
+            let entry = match (*sched).tasks[idx].fd_table.entries[fd as usize] {
+                None => return -9,
+                Some(e) => e,
+            };
+
+            if !matches!(entry.backend, FdBackend::Dir) { return -20; } // ENOTDIR
+
+            // Get the directory path from the entry
+            let path_len = entry.dir_path_len as usize;
+            let path_bytes = &entry.dir_path[..path_len];
+            let path_str = match core::str::from_utf8(path_bytes) {
+                Ok(s) => s,
+                Err(_) => return -22,
+            };
+
+            // Get directory entries as newline-separated names
+            let mut name_buf = [0u8; 2048];
+            let n = crate::kernel::vfs::vfs_readdir(path_str, &mut name_buf);
+            if n < 0 { return n; }
+
+            // `offset` tracks how many bytes of name_buf we've consumed
+            let start_off = entry.offset;
+            let names_slice = &name_buf[..n as usize];
+            let remaining = if start_off < n as usize { &names_slice[start_off..] } else { return 0; };
+
+            let mut buf_pos = 0usize;
+            let mut consumed = 0usize;
+            let mut ino: u64 = 1000 + start_off as u64;
+
+            for line in remaining.split(|&b| b == b'\n') {
+                if line.is_empty() { consumed += 1; continue; }
+                let is_dir = line.last() == Some(&b'/');
+                let name = if is_dir { &line[..line.len()-1] } else { line };
+                let name_len = name.len();
+
+                // dirent64 size: 8+8+2+1 = 19 + name_len + 1, rounded up to 8
+                let base = 19 + name_len + 1;
+                let reclen = (base + 7) & !7;
+
+                if buf_pos + reclen > buf.len() { break; }
+
+                // d_ino
+                core::ptr::write_unaligned(buf.as_mut_ptr().add(buf_pos) as *mut u64, ino);
+                // d_off (next entry offset, use consumed+name_len+1)
+                core::ptr::write_unaligned(buf.as_mut_ptr().add(buf_pos + 8) as *mut i64,
+                    (start_off + consumed + line.len() + 1) as i64);
+                // d_reclen
+                core::ptr::write_unaligned(buf.as_mut_ptr().add(buf_pos + 16) as *mut u16,
+                    reclen as u16);
+                // d_type
+                buf[buf_pos + 18] = if is_dir { DT_DIR } else { DT_REG };
+                // d_name (null-terminated)
+                buf[buf_pos + 19..buf_pos + 19 + name_len].copy_from_slice(name);
+                buf[buf_pos + 19 + name_len] = 0;
+                // zero padding
+                for i in (19 + name_len + 1)..reclen {
+                    if buf_pos + i < buf.len() { buf[buf_pos + i] = 0; }
+                }
+
+                buf_pos += reclen;
+                consumed += line.len() + 1; // +1 for the '\n'
+                ino += 1;
+            }
+
+            // Update offset so next call continues where we left off
+            (*sched).tasks[idx].fd_table.entries[fd as usize]
+                .as_mut().unwrap().offset = start_off + consumed;
+
+            buf_pos as i64
+        }
+    }
+
     fn readdir_impl(&mut self, path: &[u8], buf: &mut [u8]) -> i64 {
         let path_str = match core::str::from_utf8(path) {
             Ok(s)  => s,
@@ -334,69 +528,259 @@ impl SyscallRuntime for KernelRuntime {
     fn stat_impl(&mut self, path: &[u8], buf_ptr: u64) -> i64 {
         let path_str = match core::str::from_utf8(path) {
             Ok(s)  => s,
-            Err(_) => return -22, // EINVAL
+            Err(_) => return -22,
         };
         unsafe {
-            crate::kernel::vfs::vfs_stat(
+            crate::kernel::vfs::vfs_stat_linux(
                 path_str,
-                buf_ptr as *mut crate::kernel::vfs::FileStat,
+                buf_ptr as *mut crate::kernel::vfs::LinuxStat,
             )
         }
+    }
+
+    fn lseek_impl(&mut self, fd: i32, offset: i64, whence: u32) -> i64 {
+        unsafe {
+            use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+            use crate::kernel::fs::ramfs::FdBackend;
+
+            if fd < 0 || fd as usize >= crate::kernel::fs::ramfs::MAX_FD { return -9; }
+            let sched = &raw mut SCHED;
+            let idx   = CURRENT_TASK_IDX;
+            let entry = match (*sched).tasks[idx].fd_table.entries[fd as usize] {
+                None    => return -9, // EBADF
+                Some(e) => e,
+            };
+            match entry.backend {
+                FdBackend::Fat16 => {
+                    // fat::seek(raw_fd, offset, whence) → new position or negative
+                    let new_pos = crate::kernel::fat::file_seek(entry.raw_fd, offset, whence);
+                    new_pos
+                }
+                FdBackend::RamFS => {
+                    if let Some(fs) = crate::kernel::fs::ramfs::RAMFS.get() {
+                        let inode = &fs.inodes[entry.inode_idx];
+                        let size = inode.data.len() as i64;
+                        let cur  = entry.offset as i64;
+                        let new_off = match whence {
+                            0 => offset,          // SEEK_SET
+                            1 => cur + offset,    // SEEK_CUR
+                            2 => size + offset,   // SEEK_END
+                            _ => return -22,
+                        };
+                        if new_off < 0 { return -22; }
+                        (*sched).tasks[idx].fd_table.entries[fd as usize]
+                            .as_mut().unwrap().offset = new_off as usize;
+                        new_off
+                    } else { -9 }
+                }
+                _ => -29, // ESPIPE (pipes, ttys, sockets)
+            }
+        }
+    }
+
+    fn readv_impl(&mut self, fd: i32, iov_ptr: u64, iovcnt: u32) -> i64 {
+        let mut total: i64 = 0;
+        for i in 0..iovcnt as u64 {
+            let iov_entry = iov_ptr + i * 16;
+            let base = unsafe { core::ptr::read_unaligned(iov_entry as *const u64) };
+            let len  = unsafe { core::ptr::read_unaligned((iov_entry + 8) as *const u64) };
+            if len == 0 { continue; }
+            let buf = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, len as usize) };
+            let r = self.fs_read(fd, buf);
+            if r < 0 { return if total > 0 { total } else { r }; }
+            total += r;
+            if r < len as i64 { break; }
+        }
+        total
+    }
+
+    fn writev_impl(&mut self, fd: i32, iov_ptr: u64, iovcnt: u32) -> i64 {
+        let mut total: i64 = 0;
+        for i in 0..iovcnt as u64 {
+            let iov_entry = iov_ptr + i * 16;
+            let base = unsafe { core::ptr::read_unaligned(iov_entry as *const u64) };
+            let len  = unsafe { core::ptr::read_unaligned((iov_entry + 8) as *const u64) };
+            if len == 0 { continue; }
+            let buf = unsafe { core::slice::from_raw_parts(base as *const u8, len as usize) };
+            let r = if fd == 1 || fd == 2 {
+                self.write_console(buf);
+                len as i64
+            } else {
+                self.fs_write_file(fd, buf)
+            };
+            if r < 0 { return if total > 0 { total } else { r }; }
+            total += r;
+        }
+        total
+    }
+
+    fn access_impl(&mut self, path: &[u8], _mode: u32) -> i64 {
+        // Just check existence via stat
+        let path_str = match core::str::from_utf8(path) {
+            Ok(s) => s,
+            Err(_) => return -22,
+        };
+        let mut dummy = crate::kernel::vfs::LinuxStat::zeroed();
+        unsafe { crate::kernel::vfs::vfs_stat_linux(path_str, &mut dummy) }
+    }
+
+    fn dup_impl(&mut self, fd: i32) -> i64 {
+        unsafe {
+            use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+            use crate::kernel::fs::ramfs::MAX_FD;
+            if fd < 0 || fd as usize >= MAX_FD { return -9; }
+            let sched = &raw mut SCHED;
+            let idx = CURRENT_TASK_IDX;
+            let entry = match (*sched).tasks[idx].fd_table.entries[fd as usize] {
+                None => return -9,
+                Some(e) => e,
+            };
+            // Find lowest unused fd ≥ 0
+            for new_fd in 0..MAX_FD {
+                if (*sched).tasks[idx].fd_table.entries[new_fd].is_none() {
+                    (*sched).tasks[idx].fd_table.entries[new_fd] = Some(entry);
+                    return new_fd as i64;
+                }
+            }
+            -24 // EMFILE
+        }
+    }
+
+    fn ftruncate_impl(&mut self, fd: i32, length: u64) -> i64 {
+        // Alias to truncate_impl using fd — only FAT16 supported for now
+        unsafe {
+            use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+            use crate::kernel::fs::ramfs::FdBackend;
+            if fd < 0 || fd as usize >= crate::kernel::fs::ramfs::MAX_FD { return -9; }
+            let sched = &raw const SCHED;
+            let idx = CURRENT_TASK_IDX;
+            let entry = match (*sched).tasks[idx].fd_table.entries[fd as usize] {
+                None => return -9,
+                Some(e) => e,
+            };
+            match entry.backend {
+                FdBackend::Fat16 => 0, // FAT16 truncate not yet implemented
+                _ => 0,
+            }
+        }
+    }
+
+    fn rmdir_impl(&mut self, path: &[u8]) -> i64 {
+        // FAT16 rmdir — for now alias to unlink (FAT16 treats empty dirs like files for removal)
+        self.unlink_impl(path)
+    }
+
+    fn fchdir_impl(&mut self, fd: i32) -> i64 {
+        // Stub: we don't track per-fd path info; return success
+        let _ = fd;
+        0
+    }
+
+    fn getrlimit_impl(&mut self, resource: u32, rlim_ptr: u64) -> i64 {
+        // struct rlimit { rlim_cur: u64, rlim_max: u64 } = 16 bytes
+        // Return RLIM_INFINITY for all resources
+        if rlim_ptr == 0 { return -22; }
+        const RLIM_INF: u64 = u64::MAX;
+        unsafe {
+            core::ptr::write_unaligned(rlim_ptr as *mut u64, RLIM_INF);
+            core::ptr::write_unaligned((rlim_ptr + 8) as *mut u64, RLIM_INF);
+        }
+        let _ = resource;
+        0
+    }
+
+    fn getrusage_impl(&mut self, _who: i32, buf_ptr: u64) -> i64 {
+        // struct rusage is 144 bytes — zero it out
+        if buf_ptr == 0 { return -22; }
+        unsafe {
+            core::ptr::write_bytes(buf_ptr as *mut u8, 0, 144);
+        }
+        0
+    }
+
+    fn sysinfo_impl(&mut self, buf_ptr: u64) -> i64 {
+        // struct sysinfo (Linux) = 112 bytes
+        if buf_ptr == 0 { return -22; }
+        unsafe {
+            core::ptr::write_bytes(buf_ptr as *mut u8, 0, 112);
+            // uptime at offset 0 (i64), totalram at 8 (u64)
+            let ticks = crate::kernel::timer::get_ticks();
+            core::ptr::write_unaligned(buf_ptr as *mut i64, (ticks / 100) as i64);
+            core::ptr::write_unaligned((buf_ptr + 8) as *mut u64, 128 * 1024 * 1024); // 128MB total
+            core::ptr::write_unaligned((buf_ptr + 16) as *mut u64, 64 * 1024 * 1024); // 64MB free
+            core::ptr::write_unaligned((buf_ptr + 104) as *mut u32, 4096); // mem_unit
+        }
+        0
+    }
+
+    fn pread64_impl(&mut self, fd: i32, buf_ptr: u64, count: u64, offset: i64) -> i64 {
+        // Save position, seek, read, restore
+        let saved = self.lseek_impl(fd, 0, 1); // SEEK_CUR
+        if saved < 0 { return saved; }
+        let r = self.lseek_impl(fd, offset, 0); // SEEK_SET
+        if r < 0 { return r; }
+        let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, count as usize) };
+        let n = self.fs_read(fd, buf);
+        let _ = self.lseek_impl(fd, saved, 0); // restore
+        n
+    }
+
+    fn pwrite64_impl(&mut self, fd: i32, buf_ptr: u64, count: u64, offset: i64) -> i64 {
+        let saved = self.lseek_impl(fd, 0, 1);
+        if saved < 0 { return saved; }
+        let r = self.lseek_impl(fd, offset, 0);
+        if r < 0 { return r; }
+        let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, count as usize) };
+        let n = self.fs_write_file(fd, buf);
+        let _ = self.lseek_impl(fd, saved, 0);
+        n
     }
 
     fn fstat_impl(&mut self, fd: i32, buf_ptr: u64) -> i64 {
         unsafe {
             use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
             use crate::kernel::fs::ramfs::FdBackend;
-            use crate::kernel::vfs::{FileStat, StatKind};
+            use crate::kernel::vfs::{LinuxStat, S_IFIFO};
 
             if fd < 0 || fd as usize >= crate::kernel::fs::ramfs::MAX_FD { return -9; }
             let sched = &raw const SCHED;
             let idx   = CURRENT_TASK_IDX;
             let entry = match (*sched).tasks[idx].fd_table.entries[fd as usize] {
-                None    => return -9, // EBADF
+                None    => return -9,
                 Some(e) => e,
             };
-            let out = buf_ptr as *mut FileStat;
+            let out = buf_ptr as *mut LinuxStat;
+            *out = LinuxStat::zeroed();
 
             match entry.backend {
                 FdBackend::DevNull | FdBackend::DevTty => {
-                    (*out).size = 0;
-                    (*out).kind = StatKind::Device as u32;
-                    (*out)._pad = 0;
+                    *out = LinuxStat::fill_chardev(fd as u64 + 1);
                     0
                 }
                 FdBackend::Fat16 => {
                     let size = crate::kernel::fat::file_size(entry.raw_fd) as u64;
-                    (*out).size = size;
-                    (*out).kind = StatKind::File as u32;
-                    (*out)._pad = 0;
+                    *out = LinuxStat::fill_file(size, 100 + entry.raw_fd as u64);
                     0
                 }
                 FdBackend::RamFS => {
                     let size = match crate::kernel::fs::ramfs::RAMFS.get() {
-                        Some(fs) => {
-                            let inode = &fs.inodes[entry.inode_idx];
-                            inode.data.len() as u64
-                        }
+                        Some(fs) => fs.inodes[entry.inode_idx].data.len() as u64,
                         None => 0,
                     };
-                    (*out).size = size;
-                    (*out).kind = StatKind::File as u32;
-                    (*out)._pad = 0;
+                    *out = LinuxStat::fill_file(size, 300 + entry.inode_idx as u64);
                     0
                 }
                 FdBackend::Pipe => {
-                    (*out).size = 0;
-                    (*out).kind = StatKind::File as u32;
-                    (*out)._pad = 0;
+                    (*out).st_mode = S_IFIFO | 0o666;
+                    (*out).st_ino  = 500 + fd as u64;
                     0
                 }
                 FdBackend::Ext2 => {
-                    // For fstat on ext2 fd, return size 0 (we'd need to seek to get it).
-                    (*out).size = 0;
-                    (*out).kind = StatKind::File as u32;
-                    (*out)._pad = 0;
+                    *out = LinuxStat::fill_file(0, 200 + entry.raw_fd as u64);
+                    0
+                }
+                FdBackend::Dir => {
+                    *out = LinuxStat::fill_dir(600 + fd as u64);
                     0
                 }
             }
@@ -475,7 +859,7 @@ impl SyscallRuntime for KernelRuntime {
                             }
                         }
                     }
-                    FdBackend::RamFS | FdBackend::Fat16 | FdBackend::Ext2 => {
+                    FdBackend::RamFS | FdBackend::Fat16 | FdBackend::Ext2 | FdBackend::Dir => {
                         if (pfd.events & POLLIN)  != 0 { pfd.revents |= POLLIN; }
                         if (pfd.events & POLLOUT) != 0 { pfd.revents |= POLLOUT; }
                     }

@@ -1,6 +1,7 @@
-NASM   := nasm
-BINDIR := bin
-CARGO  := cargo
+NASM      := nasm
+BINDIR    := bin
+CARGO     := cargo
+MUSL_GCC  := /home/surendra/musl-oxide/bin/musl-gcc
 
 SRCS := hello.asm counter.asm sysinfo.asm input.asm \
         fib.asm primes.asm countdown.asm spinner.asm filetest.asm
@@ -9,9 +10,9 @@ BINS := $(SRCS:%.asm=$(BINDIR)/%.bin)
 # Rust programs (output = bin/<name>.elf)
 RUST_BINS := $(BINDIR)/hello_rust.elf
 
-.PHONY: all clean rust-programs c-programs
+.PHONY: all clean rust-programs c-programs musl-programs
 
-all: $(BINDIR) $(BINS) c-programs rust-programs
+all: $(BINDIR) $(BINS) c-programs musl-programs rust-programs
 
 $(BINDIR):
 	mkdir -p $(BINDIR)
@@ -24,6 +25,25 @@ c-programs: $(BINDIR)
 	x86_64-linux-gnu-gcc -static -nostdlib -nostartfiles \
 	    -O2 -fno-stack-protector -fno-asynchronous-unwind-tables \
 	    -o $(BINDIR)/hello_c.elf hello_c/hello_c.c
+
+# ── musl-libc C programs (static, no syscall wrapper needed) ─────────────────
+musl-programs: $(BINDIR)
+	$(MUSL_GCC) -static -O2 -o $(BINDIR)/hello_musl.elf hello_musl/hello_musl.c
+	$(MUSL_GCC) -static -O2 -o $(BINDIR)/musl_test.elf  hello_musl/musl_test.c
+
+# ── Lua 5.4 interpreter (pre-built, copy from source tree) ───────────────────
+lua: $(BINDIR)
+	cp /home/surendra/lua-5.4.7/src/lua $(BINDIR)/lua.elf
+
+# ── BusyBox 1.36.1 (pre-built, copy from source tree) ────────────────────────
+busybox: $(BINDIR)
+	cp /home/surendra/busybox-1.36.1/busybox $(BINDIR)/busybox.elf
+
+# ── Rebuild BusyBox from source ───────────────────────────────────────────────
+busybox-rebuild:
+	cd /home/surendra/busybox-1.36.1 && \
+	    CC=$(MUSL_GCC) LDFLAGS="-static" make -j$(shell nproc)
+	cp /home/surendra/busybox-1.36.1/busybox $(BINDIR)/busybox.elf
 
 # ── Rust programs ─────────────────────────────────────────────────────────────
 rust-programs: $(BINDIR)

@@ -51,6 +51,20 @@ impl TaskState {
 
 pub const CWD_MAX: usize = 128;
 
+/// Maximum number of tracked anonymous mmap regions per process.
+pub const MAX_MMAP_REGIONS: usize = 32;
+
+/// A tracked anonymous mmap allocation (virtual_base, page_count).
+#[derive(Clone, Copy)]
+pub struct MmapRegion {
+    pub virt:  u64,
+    pub pages: u32,
+    pub _pad:  u32,
+}
+impl MmapRegion {
+    pub const fn empty() -> Self { Self { virt: 0, pages: 0, _pad: 0 } }
+}
+
 /// Number of signal slots (POSIX requires at least 32).
 pub const NSIG: usize = 32;
 
@@ -138,6 +152,9 @@ pub struct Task {
     /// Initial RSP for the first-run launch — points to the argc value on the
     /// user stack (System V AMD64 ABI). Set by spawn() / exec_binary().
     pub initial_rsp: u64,
+    /// Tracked anonymous mmap allocations (for munmap).
+    pub mmap_regions:  [MmapRegion; MAX_MMAP_REGIONS],
+    pub mmap_nregions: usize,
 }
 
 impl Task {
@@ -165,6 +182,8 @@ impl Task {
             signal_handlers: [0u64; NSIG],
             shm_attaches: [const { crate::kernel::shm::ShmAttach::empty() }; crate::kernel::shm::MAX_ATTACH],
             initial_rsp: USER_STACK_TOP - 16,
+            mmap_regions:  [const { MmapRegion::empty() }; MAX_MMAP_REGIONS],
+            mmap_nregions: 0,
         }
     }
 
@@ -232,72 +251,76 @@ pub fn output_drain_task(idx: usize, mut f: impl FnMut(&str)) {
 
 // ── argv/argc helpers ──────────────────────────────────────────────────────
 
-/// Build a System V AMD64 ABI argv block at the top of the user stack and copy
-/// it into `cr3`.  Returns the initial RSP value (points to `argc`).
+/// Build a System V AMD64 ABI argv+envp block at the top of the user stack
+/// and copy it into the page table at `cr3`.
 ///
-/// Stack layout written (little-endian u64 values):
-///   [rsp +  0]               = argc
-///   [rsp +  8 * 1]           = argv[0] ptr  (→ string data below)
-///   [rsp +  8 * (1+argc)]    = NULL          (end of argv)
-///   [rsp +  8 * (2+argc)]    = NULL          (end of envp)
-///   [rsp + ptr_table_bytes]  = argv[0]\0 argv[1]\0 …
+/// Stack layout (little-endian u64 values):
+///   [rsp +  0]                        = argc
+///   [rsp +  8 .. 8+argc*8]            = argv[0..argc] ptrs
+///   [rsp +  8+argc*8]                 = NULL  (end of argv)
+///   [rsp +  8+(argc+1)*8 .. ...]      = envp[0..envc] ptrs
+///   [rsp +  8+(argc+1+envc)*8]        = NULL  (end of envp)
+///   [rsp + ptr_section_size]          = argv strings, then envp "K=V\0" strings
 ///
 /// `stack_top` is the first byte **above** the mapped stack region.
-/// The entire block is 16-byte aligned.
-pub unsafe fn write_argv_to_stack(
-    cr3:       u64,
-    stack_top: u64,
-    args:      &[&str],
-) -> u64 {
-    // Cap argv at 31 entries (leaves room for the NULL and keeps the buffer small).
+pub unsafe fn write_argv_to_stack(cr3: u64, stack_top: u64, args: &[&str]) -> u64 {
     let argc = args.len().min(31);
 
-    // Size of the pointer table:  argc_u64 + argc pointers + NULL + envp-NULL.
-    let ptr_table_bytes = 8 * (1 + argc + 2);
+    // Collect all env vars as "KEY=VALUE\0" strings into a temporary buffer.
+    let mut env_raw = [0u8; 1024];
+    let (envc, env_raw_len) = crate::kernel::env::write_env_strings(&mut env_raw);
 
-    // Total string-data bytes (each arg + NUL terminator).
-    let mut str_bytes = 0usize;
-    for a in &args[..argc] {
-        str_bytes += a.len() + 1;
-    }
+    // Pointer table: [argc] + [argv*argc] + [NULL] + [envp*envc] + [NULL]
+    let ptr_table_bytes = 8 * (1 + argc + 1 + envc + 1);
 
-    // Round the whole block to 16 bytes, then add 8 so that initial_rsp ends
-    // up 8-byte aligned (mod-16 = 8).  GCC compiles _start as if entered via
-    // CALL (return address on stack), so it expects rsp % 16 == 8 at entry.
-    let total = ((ptr_table_bytes + str_bytes + 15) & !15) + 8;
-    if total > 512 {
-        // Shouldn't happen for normal program names; fall back to a safe default.
-        return stack_top - 8; // 8-byte aligned fallback
-    }
+    let mut argv_str_bytes = 0usize;
+    for a in &args[..argc] { argv_str_bytes += a.len() + 1; }
+
+    // Total = pointer table + argv strings + envp strings, aligned.
+    let raw_total = ptr_table_bytes + argv_str_bytes + env_raw_len;
+    let total = ((raw_total + 15) & !15) + 8;
+
+    if total > 2048 { return stack_top - 8; }
 
     let initial_rsp = stack_top - total as u64;
+    let mut buf = [0u8; 2048];
 
-    // Build the block in a zero-initialised kernel stack buffer.
-    let mut buf = [0u8; 512];
-
-    // Write argc.
+    // argc
     buf[0..8].copy_from_slice(&(argc as u64).to_le_bytes());
 
-    // Write string data and argv pointers interleaved.
-    let mut str_off = ptr_table_bytes; // byte offset in `buf` where strings start
+    // argv pointers + argv strings
+    let mut str_off = ptr_table_bytes;
     for i in 0..argc {
-        // argv[i] is at virtual address `initial_rsp + str_off`.
         let va = initial_rsp + str_off as u64;
         let slot = 8 + i * 8;
         buf[slot..slot + 8].copy_from_slice(&va.to_le_bytes());
-
-        // Copy the string bytes.
         let b = args[i].as_bytes();
-        let end = str_off + b.len();
-        buf[str_off..end].copy_from_slice(b);
-        buf[end] = 0; // NUL terminator
-        str_off = end + 1;
+        buf[str_off..str_off + b.len()].copy_from_slice(b);
+        buf[str_off + b.len()] = 0;
+        str_off += b.len() + 1;
     }
-    // argv[argc] = NULL and envp[0] = NULL are already 0.
+    // argv[argc] = NULL: slot = 8 + argc*8, already 0
 
-    // Copy into the user address space.
+    // Copy raw env strings after argv strings
+    buf[str_off..str_off + env_raw_len].copy_from_slice(&env_raw[..env_raw_len]);
+
+    // envp pointers: scan env_raw to find each "KEY=VAL\0" entry
+    let envp_str_base_off = str_off; // buf offset where env strings begin
+    let mut scan = 0usize;
+    let mut ei   = 0usize;
+    while scan < env_raw_len && ei < envc {
+        // VA of the start of this env string
+        let va = initial_rsp + (envp_str_base_off + scan) as u64;
+        let slot = 8 + (argc + 1 + ei) * 8;
+        buf[slot..slot + 8].copy_from_slice(&va.to_le_bytes());
+        // Advance past this NUL-terminated string
+        while scan < env_raw_len && env_raw[scan] != 0 { scan += 1; }
+        scan += 1; // skip NUL
+        ei   += 1;
+    }
+    // envp[envc] = NULL: slot = 8 + (argc+1+envc)*8, already 0
+
     unsafe { paging_allocator::copy_to_region_in(cr3, initial_rsp, &buf[..total]); }
-
     initial_rsp
 }
 
@@ -386,6 +409,8 @@ pub unsafe fn spawn(code: &[u8], name: &str) -> Result<u8, &'static str> {
     (*task).pending_signals = 0;
     (*task).signal_handlers = [0u64; NSIG];
     (*task).shm_attaches    = [const { crate::kernel::shm::ShmAttach::empty() }; crate::kernel::shm::MAX_ATTACH];
+    (*task).mmap_regions    = [const { MmapRegion::empty() }; MAX_MMAP_REGIONS];
+    (*task).mmap_nregions   = 0;
 
     // Map the signal-return trampoline page as writable so copy_to_region_in
     // can write to it in supervisor mode (CR0.WP faults on non-writable pages
@@ -719,9 +744,11 @@ pub unsafe fn fork_task(
     let parent_pid = (*sched).tasks[parent_idx].pid;
 
     // Copy all task fields from parent; override the child-specific ones.
-    let parent_fd      = (*sched).tasks[parent_idx].fd_table;
-    let parent_heap    = (*sched).tasks[parent_idx].heap_end;
-    let parent_mmap    = (*sched).tasks[parent_idx].mmap_end;
+    let parent_fd       = (*sched).tasks[parent_idx].fd_table;
+    let parent_heap     = (*sched).tasks[parent_idx].heap_end;
+    let parent_mmap     = (*sched).tasks[parent_idx].mmap_end;
+    let parent_mregions = (*sched).tasks[parent_idx].mmap_regions;
+    let parent_nregions = (*sched).tasks[parent_idx].mmap_nregions;
     let parent_entry   = (*sched).tasks[parent_idx].entry;
     let parent_name    = (*sched).tasks[parent_idx].name;
     let parent_nlen    = (*sched).tasks[parent_idx].name_len;
@@ -747,6 +774,8 @@ pub unsafe fn fork_task(
     (*child).pending_signals = 0;
     (*child).signal_handlers = parent_sighand;
     (*child).shm_attaches    = [const { crate::kernel::shm::ShmAttach::empty() }; crate::kernel::shm::MAX_ATTACH];
+    (*child).mmap_regions    = parent_mregions;
+    (*child).mmap_nregions   = parent_nregions;
     // Addref every pipe end the child inherited so reference counts stay correct.
     for slot in &(*child).fd_table.entries {
         if let Some(e) = slot {

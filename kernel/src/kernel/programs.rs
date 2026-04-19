@@ -156,6 +156,22 @@ pub static HELLO_C: &[u8] =
 pub static INSTALL: &[u8] =
     include_bytes!("../../../userspace/bin/install.elf");
 
+/// hello_musl — "Hello from musl libc!" compiled with musl-gcc -static.
+pub static HELLO_MUSL: &[u8] =
+    include_bytes!("../../../userspace/bin/hello_musl.elf");
+
+/// musl_test — tests malloc/free, envp, clock_gettime, getcwd via musl libc.
+pub static MUSL_TEST: &[u8] =
+    include_bytes!("../../../userspace/bin/musl_test.elf");
+
+/// lua — Lua 5.4.7 interpreter compiled with musl-gcc -static.
+pub static LUA: &[u8] =
+    include_bytes!("../../../userspace/bin/lua.elf");
+
+/// busybox — BusyBox 1.36.1 compiled with musl-gcc -static.
+pub static BUSYBOX: &[u8] =
+    include_bytes!("../../../userspace/bin/busybox.elf");
+
 /// Look up a built-in program by name.
 pub fn find(name: &str) -> Option<&'static [u8]> {
     match name {
@@ -195,8 +211,12 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
         "true"    => Some(TRUE),
         "false"   => Some(FALSE),
         "hello_c" => Some(HELLO_C),
-        "install" => Some(INSTALL),
-        _         => None,
+        "install"    => Some(INSTALL),
+        "hello_musl" => Some(HELLO_MUSL),
+        "musl_test"  => Some(MUSL_TEST),
+        "lua"        => Some(LUA),
+        "busybox"    => Some(BUSYBOX),
+        _            => None,
     }
 }
 
@@ -211,4 +231,8 @@ pub const NAMES: &[&str] = &[
     "true", "false",
     "hello_c",
     "install",
+    "hello_musl",
+    "musl_test",
+    "lua",
+    "busybox",
 ];

@@ -597,6 +597,25 @@ pub unsafe fn map_user_region_in(
     result
 }
 
+/// Unmap `num_pages` consecutive pages starting at `virt_addr` from the
+/// page table at `cr3_phys`, freeing the backing physical frames.
+/// Silently skips pages that are not mapped.
+pub unsafe fn unmap_user_region_in(cr3_phys: u64, virt_addr: u64, num_pages: usize) {
+    let inner = unsafe { &mut *ALLOCATOR.inner.get() };
+    if !inner.initialized.load(Ordering::Relaxed) { return; }
+    let ptm = match inner.page_table_manager.as_mut() {
+        Some(p) => p,
+        None    => return,
+    };
+    let saved = ptm.l4_table_phys;
+    ptm.l4_table_phys = cr3_phys;
+    for page in 0..num_pages {
+        let virt = virt_addr + (page * 4096) as u64;
+        let _ = unsafe { ptm.unmap(virt, &mut inner.frame_allocator) };
+    }
+    inner.page_table_manager.as_mut().unwrap().l4_table_phys = saved;
+}
+
 /// Walk the user-space half (L4 indices 0–255) of the page table at
 /// `cr3_phys`, free every mapped leaf frame and every intermediate
 /// page-table frame, then free the L4 frame itself.

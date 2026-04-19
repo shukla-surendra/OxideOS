@@ -25,6 +25,49 @@ pub enum Syscall {
     Close         = 3,   // closes files and sockets
     Stat          = 4,
     Fstat         = 5,
+    Pread64       = 17,  // positioned read
+    Pwrite64      = 18,  // positioned write
+    Writev        = 20,  // scatter write
+    Access        = 21,  // access(path, mode)
+    SchedYield    = 24,  // sched_yield
+    Msync         = 26,  // msync — stub
+    Mincore       = 27,  // mincore — stub
+    Madvise       = 28,  // madvise — stub
+    Shmctl        = 31,  // shmctl
+    Dup           = 32,  // dup(fd)
+    Pause         = 34,  // pause — stub
+    Getitimer     = 36,  // getitimer — stub
+    Alarm         = 37,  // alarm — stub
+    Setitimer     = 38,  // setitimer — stub
+    Sendfile      = 40,  // sendfile — stub
+    Vfork         = 58,  // vfork — alias to fork
+    Flock         = 73,  // flock — stub
+    Fsync         = 74,  // fsync — stub
+    Fdatasync     = 75,  // fdatasync — stub
+    Ftruncate     = 77,  // ftruncate(fd, length)
+    Fchdir        = 81,  // fchdir(fd)
+    Rmdir         = 84,  // rmdir(path)
+    Creat         = 85,  // creat(path, mode) → open(O_CREAT|O_WRONLY|O_TRUNC)
+    Readlink      = 89,  // readlink — EINVAL (no symlinks)
+    Fchmod        = 91,  // fchmod — stub
+    Fchown        = 93,  // fchown — stub
+    Lchown        = 94,  // lchown — stub
+    Umask         = 95,  // umask — returns 0o022
+    Getrlimit     = 97,  // getrlimit — returns sensible max
+    Getrusage     = 98,  // getrusage — returns zeros
+    Sysinfo       = 99,  // sysinfo — fills struct sysinfo
+    Times         = 100, // times — stub
+    Syslog        = 103, // syslog — stub
+    Setpgid       = 109, // setpgid — stub
+    Getpgrp       = 111, // getpgrp → getpid
+    Setsid        = 112, // setsid → getpid
+    Setreuid      = 113, // setreuid — stub
+    Setregid      = 114, // setregid — stub
+    Getgroups     = 115, // getgroups — returns []
+    Setresuid     = 117, // setresuid — stub
+    Setresgid     = 119, // setresgid — stub
+    Getresuid     = 121, // getresuid — stub
+    Prlimit64     = 302, // prlimit64 — resource limit with pid
     Poll          = 7,   // poll(fds, nfds, timeout_ms)
     Mmap          = 9,   // already matched Linux
     Munmap        = 11,
@@ -48,6 +91,8 @@ pub enum Syscall {
     Exit          = 60,
     Wait          = 61,  // wait4
     Kill          = 62,
+    Uname         = 63,
+    Fcntl         = 72,
     Truncate      = 76,
     ReadDir       = 78,  // getdents64
     Getcwd        = 79,
@@ -57,7 +102,24 @@ pub enum Syscall {
     Unlink        = 87,
     Chmod         = 90,
     Chown         = 92,
+    Lseek         = 8,
+    Lstat         = 6,   // stat for symlinks → alias to stat
+    Readv         = 19,  // scatter read
+    Mremap        = 25,  // memory remap — stub
+    Sigprocmask   = 14,  // rt_sigprocmask
     GetTime       = 96,  // gettimeofday
+    Mprotect      = 10,
+    Getppid       = 110,
+    Getuid        = 102,
+    Getgid        = 104,
+    Setuid        = 105, // stub → 0
+    Gettid        = 186, // → getpid (single-threaded)
+    Futex         = 202, // stub → 0
+    ArchPrctl     = 158,
+    SetTidAddress = 218,
+    ClockGettime  = 228,
+    ExitGroup     = 231, // musl uses this instead of exit(60)
+    Pipe2         = 293, // pipe with flags — ignore flags, call pipe
     // ── SysV shared memory (Linux x86-64 numbers) ───────────────────────
     Shmget        = 29,
     Shmat         = 30,
@@ -131,6 +193,25 @@ impl Syscall {
             Self::Setenv        => "setenv",
             Self::Dup2          => "dup2",
             Self::Kill          => "kill",
+            Self::Uname         => "uname",
+            Self::Fcntl         => "fcntl",
+            Self::Lseek         => "lseek",
+            Self::Lstat         => "lstat",
+            Self::Readv         => "readv",
+            Self::Mremap        => "mremap",
+            Self::Sigprocmask   => "sigprocmask",
+            Self::Getuid        => "getuid",
+            Self::Getgid        => "getgid",
+            Self::Setuid        => "setuid",
+            Self::Gettid        => "gettid",
+            Self::Futex         => "futex",
+            Self::Pipe2         => "pipe2",
+            Self::Mprotect      => "mprotect",
+            Self::Getppid       => "getppid",
+            Self::ArchPrctl     => "arch_prctl",
+            Self::SetTidAddress => "set_tid_address",
+            Self::ClockGettime  => "clock_gettime",
+            Self::ExitGroup     => "exit_group",
             Self::Ioctl         => "ioctl",
             Self::Sigaction     => "sigaction",
             Self::Sigreturn     => "sigreturn",
@@ -165,6 +246,49 @@ impl Syscall {
             Self::GuiBlitShm    => "gui_blit_shm",
             Self::InstallQuery  => "install_query",
             Self::InstallBegin  => "install_begin",
+            Self::Pread64       => "pread64",
+            Self::Pwrite64      => "pwrite64",
+            Self::Writev        => "writev",
+            Self::Access        => "access",
+            Self::SchedYield    => "sched_yield",
+            Self::Msync         => "msync",
+            Self::Mincore       => "mincore",
+            Self::Madvise       => "madvise",
+            Self::Shmctl        => "shmctl",
+            Self::Dup           => "dup",
+            Self::Pause         => "pause",
+            Self::Getitimer     => "getitimer",
+            Self::Alarm         => "alarm",
+            Self::Setitimer     => "setitimer",
+            Self::Sendfile      => "sendfile",
+            Self::Vfork         => "vfork",
+            Self::Flock         => "flock",
+            Self::Fsync         => "fsync",
+            Self::Fdatasync     => "fdatasync",
+            Self::Ftruncate     => "ftruncate",
+            Self::Fchdir        => "fchdir",
+            Self::Rmdir         => "rmdir",
+            Self::Creat         => "creat",
+            Self::Readlink      => "readlink",
+            Self::Fchmod        => "fchmod",
+            Self::Fchown        => "fchown",
+            Self::Lchown        => "lchown",
+            Self::Umask         => "umask",
+            Self::Getrlimit     => "getrlimit",
+            Self::Getrusage     => "getrusage",
+            Self::Sysinfo       => "sysinfo",
+            Self::Times         => "times",
+            Self::Syslog        => "syslog",
+            Self::Setpgid       => "setpgid",
+            Self::Getpgrp       => "getpgrp",
+            Self::Setsid        => "setsid",
+            Self::Setreuid      => "setreuid",
+            Self::Setregid      => "setregid",
+            Self::Getgroups     => "getgroups",
+            Self::Setresuid     => "setresuid",
+            Self::Setresgid     => "setresgid",
+            Self::Getresuid     => "getresuid",
+            Self::Prlimit64     => "prlimit64",
             Self::Invalid       => "invalid",
         }
     }
@@ -181,7 +305,10 @@ impl From<u64> for Syscall {
             4   => Self::Stat,
             5   => Self::Fstat,
             7   => Self::Poll,
+            6   => Self::Lstat,
+            8   => Self::Lseek,
             9   => Self::Mmap,
+            10  => Self::Mprotect,
             11  => Self::Munmap,
             12  => Self::Brk,
             13  => Self::Sigaction,
@@ -201,21 +328,80 @@ impl From<u64> for Syscall {
             49  => Self::Bind,
             50  => Self::Listen,
             57  => Self::Fork,
+            58  => Self::Vfork,
             59  => Self::Exec,
             60  => Self::Exit,
             61  => Self::Wait,
             62  => Self::Kill,
+            63  => Self::Uname,
             67  => Self::Shmdt,
+            72  => Self::Fcntl,
+            73  => Self::Flock,
+            74  => Self::Fsync,
+            75  => Self::Fdatasync,
             76  => Self::Truncate,
+            77  => Self::Ftruncate,
             78  => Self::ReadDir,
             79  => Self::Getcwd,
             80  => Self::Chdir,
+            81  => Self::Fchdir,
             82  => Self::Rename,
             83  => Self::Mkdir,
+            84  => Self::Rmdir,
+            85  => Self::Creat,
             87  => Self::Unlink,
+            89  => Self::Readlink,
             90  => Self::Chmod,
+            91  => Self::Fchmod,
             92  => Self::Chown,
+            93  => Self::Fchown,
+            94  => Self::Lchown,
+            95  => Self::Umask,
             96  => Self::GetTime,
+            97  => Self::Getrlimit,
+            98  => Self::Getrusage,
+            99  => Self::Sysinfo,
+            100 => Self::Times,
+            103 => Self::Syslog,
+            109 => Self::Setpgid,
+            111 => Self::Getpgrp,
+            112 => Self::Setsid,
+            113 => Self::Setreuid,
+            114 => Self::Setregid,
+            115 => Self::Getgroups,
+            117 => Self::Setresuid,
+            119 => Self::Setresgid,
+            121 => Self::Getresuid,
+            302 => Self::Prlimit64,
+            17  => Self::Pread64,
+            18  => Self::Pwrite64,
+            14  => Self::Sigprocmask,
+            19  => Self::Readv,
+            20  => Self::Writev,
+            21  => Self::Access,
+            24  => Self::SchedYield,
+            25  => Self::Mremap,
+            26  => Self::Msync,
+            27  => Self::Mincore,
+            28  => Self::Madvise,
+            31  => Self::Shmctl,
+            32  => Self::Dup,
+            34  => Self::Pause,
+            36  => Self::Getitimer,
+            37  => Self::Alarm,
+            38  => Self::Setitimer,
+            40  => Self::Sendfile,
+            102 => Self::Getuid,
+            104 => Self::Getgid,
+            105 => Self::Setuid,
+            110 => Self::Getppid,
+            158 => Self::ArchPrctl,
+            186 => Self::Gettid,
+            202 => Self::Futex,
+            218 => Self::SetTidAddress,
+            228 => Self::ClockGettime,
+            231 => Self::ExitGroup,
+            293 => Self::Pipe2,
             // ── OxideOS-specific ─────────────────────────────────────────
             400 => Self::Print,
             401 => Self::GetChar,
@@ -346,8 +532,184 @@ pub trait SyscallRuntime {
     /// or a negative error code. Only MAP_ANONYMOUS|MAP_PRIVATE is supported.
     fn mmap_anon(&mut self, _addr: u64, _len: u64) -> i64 { ENOSYS }
 
-    /// Unmap a previously mapped region. No-op stub (returns 0).
+    /// Unmap a previously mapped region and free its physical frames.
     fn munmap_impl(&mut self, _addr: u64, _len: u64) -> i64 { 0 }
+
+    /// Change memory protection on a range — stub, returns 0 (success).
+    fn mprotect_impl(&mut self, _addr: u64, _len: u64, _prot: u64) -> i64 { 0 }
+
+    /// Return the parent PID of the calling process.
+    fn getppid_impl(&mut self) -> i64 { 0 }
+
+    /// Write kernel version info into a `utsname`-like struct at `buf_ptr`.
+    fn uname_impl(&mut self, _buf_ptr: u64) -> i64 { ENOSYS }
+
+    /// Set the clear-child-tid address (Linux threading).  Returns current PID.
+    fn set_tid_address_impl(&mut self) -> i64 { self.current_pid() as i64 }
+
+    /// arch_prctl — stub returning EINVAL (no TLS support yet).
+    fn arch_prctl_impl(&mut self, _code: u64, _addr: u64) -> i64 { -22 }
+
+    /// clock_gettime — fill a `timespec` at `tp_ptr` with CLOCK_MONOTONIC time.
+    fn clock_gettime_impl(&mut self, _clk_id: u64, _tp_ptr: u64) -> i64 { ENOSYS }
+
+    /// fcntl — basic file-descriptor control (F_GETFL / F_SETFL / F_DUPFD).
+    fn fcntl_impl(&mut self, _fd: i32, _cmd: u64, _arg: u64) -> i64 { 0 }
+
+    /// lseek — reposition file offset.  Returns new offset or negative error.
+    fn lseek_impl(&mut self, _fd: i32, _offset: i64, _whence: u32) -> i64 { -29 } // ESPIPE
+
+    /// exit_group — terminate all threads (musl uses this).  Identical to exit.
+    fn exit_group(&mut self, code: i32) -> ! { self.exit(code) }
+
+    /// sigprocmask — stub returns 0 (no signals blocked, single-threaded).
+    fn sigprocmask_impl(&mut self, _how: u32, _set_ptr: u64, _old_ptr: u64) -> i64 { 0 }
+
+    /// lstat — like stat but for symlinks; alias to stat (no symlinks in OxideOS).
+    fn lstat_impl(&mut self, path: &[u8], buf_ptr: u64) -> i64 { self.stat_impl(path, buf_ptr) }
+
+    /// readv — scatter read: read into multiple iovec buffers.
+    fn readv_impl(&mut self, _fd: i32, _iov_ptr: u64, _iovcnt: u32) -> i64 { ENOSYS }
+
+    /// mremap — stub returns ENOMEM (not implemented).
+    fn mremap_impl(&mut self, _old_addr: u64, _old_len: u64, _new_len: u64) -> i64 { -12 }
+
+    /// getuid — stub returns 1000 (unprivileged user).
+    fn getuid_impl(&mut self) -> i64 { 1000 }
+
+    /// getgid — stub returns 1000.
+    fn getgid_impl(&mut self) -> i64 { 1000 }
+
+    /// setuid — stub returns 0 (success, single-user OS).
+    fn setuid_impl(&mut self, _uid: u32) -> i64 { 0 }
+
+    /// gettid — returns current PID (single-threaded, tid == pid).
+    fn gettid_impl(&mut self) -> i64 { self.current_pid() as i64 }
+
+    /// futex — stub returns 0 (no contention in single-threaded processes).
+    fn futex_impl(&mut self, _uaddr: u64, _op: u32, _val: u32) -> i64 { 0 }
+
+    /// pipe2 — like pipe but with flags; ignore flags, delegate to pipe_alloc.
+    fn pipe2_impl(&mut self, read_fd_ptr: u64, write_fd_ptr: u64, _flags: u32) -> i64 {
+        self.pipe_alloc(read_fd_ptr, write_fd_ptr)
+    }
+
+    /// writev — scatter write from multiple iovec buffers.
+    fn writev_impl(&mut self, _fd: i32, _iov_ptr: u64, _iovcnt: u32) -> i64 { ENOSYS }
+
+    /// access — check if file exists/is accessible. Returns 0 if exists, -ENOENT if not.
+    fn access_impl(&mut self, _path: &[u8], _mode: u32) -> i64 { ENOSYS }
+
+    /// sched_yield — yield the CPU. Returns 0.
+    fn sched_yield_impl(&mut self) -> i64 { 0 }
+
+    /// msync — flush mapped memory. Stub returns 0.
+    fn msync_impl(&mut self, _addr: u64, _len: u64, _flags: u32) -> i64 { 0 }
+
+    /// mincore — check if pages are in core. Stub returns ENOMEM.
+    fn mincore_impl(&mut self, _addr: u64, _len: u64, _vec_ptr: u64) -> i64 { -12 }
+
+    /// madvise — advise on memory usage. Stub returns 0.
+    fn madvise_impl(&mut self, _addr: u64, _len: u64, _advice: u32) -> i64 { 0 }
+
+    /// dup — duplicate fd to the lowest available fd.
+    fn dup_impl(&mut self, _fd: i32) -> i64 { ENOSYS }
+
+    /// vfork — call fork (no copy-on-write distinction yet).
+    fn vfork_impl(&mut self) -> i64 { self.fork_child() }
+
+    /// flock — file locking stub. Returns 0.
+    fn flock_impl(&mut self, _fd: i32, _op: u32) -> i64 { 0 }
+
+    /// fsync — flush file to disk. Stub returns 0.
+    fn fsync_impl(&mut self, _fd: i32) -> i64 { 0 }
+
+    /// fdatasync — flush file data. Stub returns 0.
+    fn fdatasync_impl(&mut self, _fd: i32) -> i64 { 0 }
+
+    /// ftruncate — truncate an open fd to length bytes.
+    fn ftruncate_impl(&mut self, _fd: i32, _length: u64) -> i64 { ENOSYS }
+
+    /// fchdir — change directory via open fd. Stub: resolves fd path.
+    fn fchdir_impl(&mut self, _fd: i32) -> i64 { ENOSYS }
+
+    /// rmdir — remove an empty directory.
+    fn rmdir_impl(&mut self, _path: &[u8]) -> i64 { ENOSYS }
+
+    /// creat — create or truncate a file (open shorthand).
+    fn creat_impl(&mut self, path: &[u8], _mode: u32) -> i64 {
+        // O_WRONLY|O_CREAT|O_TRUNC = 0x241
+        self.fs_open(path, 0x241)
+    }
+
+    /// readlink — no symlinks in OxideOS; always returns EINVAL.
+    fn readlink_impl(&mut self, _path: &[u8], _buf_ptr: u64, _bufsiz: u64) -> i64 { -22 }
+
+    /// fchmod — stub returns 0.
+    fn fchmod_impl(&mut self, _fd: i32, _mode: u16) -> i64 { 0 }
+
+    /// fchown — stub returns 0.
+    fn fchown_impl(&mut self, _fd: i32, _uid: u32, _gid: u32) -> i64 { 0 }
+
+    /// lchown — stub returns 0 (no symlinks).
+    fn lchown_impl(&mut self, _path: &[u8], _uid: u32, _gid: u32) -> i64 { 0 }
+
+    /// umask — returns 0o022 (fixed, no per-process mask yet).
+    fn umask_impl(&mut self, _mask: u32) -> i64 { 0o022 }
+
+    /// getrlimit — returns generous limits.
+    fn getrlimit_impl(&mut self, _resource: u32, _rlim_ptr: u64) -> i64 { ENOSYS }
+
+    /// getrusage — returns zeroed struct rusage.
+    fn getrusage_impl(&mut self, _who: i32, _buf_ptr: u64) -> i64 { ENOSYS }
+
+    /// sysinfo — fills a minimal struct sysinfo.
+    fn sysinfo_impl(&mut self, _buf_ptr: u64) -> i64 { ENOSYS }
+
+    /// times — fills tms struct with zeros.
+    fn times_impl(&mut self, _buf_ptr: u64) -> i64 { 0 }
+
+    /// syslog — stub returns 0.
+    fn syslog_impl(&mut self, _type_: u32, _buf_ptr: u64, _len: u32) -> i64 { 0 }
+
+    /// setpgid — stub returns 0.
+    fn setpgid_impl(&mut self, _pid: u32, _pgid: u32) -> i64 { 0 }
+
+    /// getpgrp — returns current PID.
+    fn getpgrp_impl(&mut self) -> i64 { self.current_pid() as i64 }
+
+    /// setsid — returns current PID (no session support).
+    fn setsid_impl(&mut self) -> i64 { self.current_pid() as i64 }
+
+    /// setreuid/setregid/setresuid/setresgid — stubs return 0.
+    fn setreuid_impl(&mut self, _ruid: u32, _euid: u32) -> i64 { 0 }
+    fn setregid_impl(&mut self, _rgid: u32, _egid: u32) -> i64 { 0 }
+    fn setresuid_impl(&mut self, _ruid: u32, _euid: u32, _suid: u32) -> i64 { 0 }
+    fn setresgid_impl(&mut self, _rgid: u32, _egid: u32, _sgid: u32) -> i64 { 0 }
+
+    /// getgroups — returns 0 groups.
+    fn getgroups_impl(&mut self, _size: u32, _list_ptr: u64) -> i64 { 0 }
+
+    /// getresuid — writes (1000, 1000, 1000) to the three u32 pointers.
+    fn getresuid_impl(&mut self, _ruid_ptr: u64, _euid_ptr: u64, _suid_ptr: u64) -> i64 { 0 }
+
+    /// pread64 — positioned read without changing offset.
+    fn pread64_impl(&mut self, _fd: i32, _buf_ptr: u64, _count: u64, _offset: i64) -> i64 { ENOSYS }
+
+    /// pwrite64 — positioned write without changing offset.
+    fn pwrite64_impl(&mut self, _fd: i32, _buf_ptr: u64, _count: u64, _offset: i64) -> i64 { ENOSYS }
+
+    /// sendfile — copy between fds. Stub returns ENOSYS.
+    fn sendfile_impl(&mut self, _out_fd: i32, _in_fd: i32, _offset_ptr: u64, _count: u64) -> i64 { ENOSYS }
+
+    /// prlimit64 — get/set resource limits. Returns 0 (no enforcement).
+    fn prlimit64_impl(&mut self, _pid: u32, _resource: u32, _new_ptr: u64, _old_ptr: u64) -> i64 { 0 }
+
+    /// alarm — stub returns 0 (no previous alarm).
+    fn alarm_impl(&mut self, _seconds: u32) -> i64 { 0 }
+
+    /// pause — block until signal. Stub returns -EINTR.
+    fn pause_impl(&mut self) -> i64 { -4 }
 
     /// Send `signum` to the process with the given PID.  Returns 0 on success.
     fn kill_pid_sig(&mut self, _pid: u64, _signum: u8) -> i64 { ENOSYS }
@@ -391,6 +753,10 @@ pub trait SyscallRuntime {
                           _addr_ptr: u64, _addr_len: usize) -> i64 { ENOSYS }
     unsafe fn recvfrom_impl(&mut self, _sfd: u64, _buf_ptr: u64, _len: usize, _flags: u32,
                             _addr_ptr: u64, _addr_len_ptr: u64) -> i64 { ENOSYS }
+
+    /// Linux getdents64 — fill `buf` with struct linux_dirent64 entries from a directory fd.
+    /// Returns bytes written, 0 on end, or negative error.
+    fn getdents64_impl(&mut self, _fd: i32, _buf: &mut [u8]) -> i64 { ENOSYS }
 
     /// Fill `buf` with newline-separated directory entries under `path`.
     /// Each entry is `<name>\n` for files, `<name>/\n` for directories.
@@ -547,8 +913,23 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
         Syscall::Sleep         => sys_sleep(runtime, request.arg1),
         Syscall::GetSystemInfo => unsafe { sys_get_system_info(runtime, request.arg1) },
         Syscall::Pipe          => unsafe { sys_pipe(runtime, request.arg1, request.arg2) },
-        Syscall::ReadDir       => unsafe { sys_readdir(runtime, request.arg1, request.arg2,
-                                                        request.arg3, request.arg4) },
+        Syscall::ReadDir       => unsafe {
+            // Linux getdents64(fd, buf, count) — arg1 is fd (small), OR
+            // OxideOS readdir(path_ptr, path_len, buf_ptr, buf_len) — arg1 is a pointer.
+            if request.arg1 < 4096 {
+                // Linux ABI: fd-based getdents64
+                let fd = request.arg1 as i32;
+                let buf_ptr = request.arg2;
+                let count   = request.arg3 as usize;
+                if let Err(e) = validate_user_range(buf_ptr, count as u64) { return SyscallResult::err(e); }
+                let buf = slice::from_raw_parts_mut(buf_ptr as *mut u8, count);
+                let r = runtime.getdents64_impl(fd, buf);
+                if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+            } else {
+                // OxideOS legacy path-based readdir
+                sys_readdir(runtime, request.arg1, request.arg2, request.arg3, request.arg4)
+            }
+        },
         Syscall::Mkdir         => unsafe { sys_mkdir(runtime, request.arg1, request.arg2) },
         Syscall::Chdir         => unsafe { sys_chdir(runtime, request.arg1, request.arg2) },
         Syscall::Getcwd        => unsafe { sys_getcwd(runtime, request.arg1, request.arg2) },
@@ -733,6 +1114,137 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
             let r = runtime.install_begin_impl();
             if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
         }
+        Syscall::Mprotect => {
+            let r = runtime.mprotect_impl(request.arg1, request.arg2, request.arg3);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Getppid => SyscallResult::ok(runtime.getppid_impl()),
+        Syscall::Uname   => {
+            let r = runtime.uname_impl(request.arg1);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::SetTidAddress => SyscallResult::ok(runtime.set_tid_address_impl()),
+        Syscall::ArchPrctl => {
+            let r = runtime.arch_prctl_impl(request.arg1, request.arg2);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::ClockGettime => {
+            let r = runtime.clock_gettime_impl(request.arg1, request.arg2);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Fcntl => {
+            let r = runtime.fcntl_impl(request.arg1 as i32, request.arg2, request.arg3);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Lseek => {
+            let r = runtime.lseek_impl(request.arg1 as i32, request.arg2 as i64, request.arg3 as u32);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::ExitGroup => runtime.exit_group(request.arg1 as i32),
+        Syscall::Sigprocmask => {
+            let r = runtime.sigprocmask_impl(request.arg1 as u32, request.arg2, request.arg3);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Lstat => unsafe {
+            if let Err(e) = validate_user_range(request.arg1, request.arg2) { return SyscallResult::err(e); }
+            if let Err(e) = validate_user_range(request.arg3, 144) { return SyscallResult::err(e); }
+            let path = slice::from_raw_parts(request.arg1 as *const u8, request.arg2 as usize);
+            let r = runtime.lstat_impl(path, request.arg3);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Readv => {
+            let r = runtime.readv_impl(request.arg1 as i32, request.arg2, request.arg3 as u32);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Mremap => {
+            let r = runtime.mremap_impl(request.arg1, request.arg2, request.arg3);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Getuid    => SyscallResult::ok(runtime.getuid_impl()),
+        Syscall::Getgid    => SyscallResult::ok(runtime.getgid_impl()),
+        Syscall::Setuid    => SyscallResult::ok(runtime.setuid_impl(request.arg1 as u32)),
+        Syscall::Gettid    => SyscallResult::ok(runtime.gettid_impl()),
+        Syscall::Futex     => {
+            let r = runtime.futex_impl(request.arg1, request.arg2 as u32, request.arg3 as u32);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Pipe2 => unsafe {
+            if let Err(code) = validate_user_range(request.arg1, 4) { return SyscallResult::err(code); }
+            if let Err(code) = validate_user_range(request.arg2, 4) { return SyscallResult::err(code); }
+            let r = runtime.pipe2_impl(request.arg1, request.arg2, request.arg3 as u32);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Writev => {
+            let r = runtime.writev_impl(request.arg1 as i32, request.arg2, request.arg3 as u32);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Access => unsafe {
+            if let Err(e) = validate_user_range(request.arg1, request.arg2) { return SyscallResult::err(e); }
+            let path = slice::from_raw_parts(request.arg1 as *const u8, request.arg2 as usize);
+            let r = runtime.access_impl(path, request.arg3 as u32);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::SchedYield  => SyscallResult::ok(runtime.sched_yield_impl()),
+        Syscall::Msync       => SyscallResult::ok(runtime.msync_impl(request.arg1, request.arg2, request.arg3 as u32)),
+        Syscall::Mincore     => { let r = runtime.mincore_impl(request.arg1, request.arg2, request.arg3); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
+        Syscall::Madvise     => SyscallResult::ok(runtime.madvise_impl(request.arg1, request.arg2, request.arg3 as u32)),
+        Syscall::Dup         => { let r = runtime.dup_impl(request.arg1 as i32); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
+        Syscall::Vfork       => { let r = runtime.vfork_impl(); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
+        Syscall::Flock       => SyscallResult::ok(runtime.flock_impl(request.arg1 as i32, request.arg2 as u32)),
+        Syscall::Fsync       => SyscallResult::ok(runtime.fsync_impl(request.arg1 as i32)),
+        Syscall::Fdatasync   => SyscallResult::ok(runtime.fdatasync_impl(request.arg1 as i32)),
+        Syscall::Ftruncate   => { let r = runtime.ftruncate_impl(request.arg1 as i32, request.arg2); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
+        Syscall::Fchdir      => { let r = runtime.fchdir_impl(request.arg1 as i32); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
+        Syscall::Rmdir       => unsafe {
+            if let Err(e) = validate_user_range(request.arg1, request.arg2) { return SyscallResult::err(e); }
+            let path = slice::from_raw_parts(request.arg1 as *const u8, request.arg2 as usize);
+            let r = runtime.rmdir_impl(path);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Creat => unsafe {
+            if let Err(e) = validate_user_range(request.arg1, request.arg2) { return SyscallResult::err(e); }
+            let path = slice::from_raw_parts(request.arg1 as *const u8, request.arg2 as usize);
+            let r = runtime.creat_impl(path, request.arg3 as u32);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Readlink => unsafe {
+            if let Err(e) = validate_user_range(request.arg1, request.arg2) { return SyscallResult::err(e); }
+            let path = slice::from_raw_parts(request.arg1 as *const u8, request.arg2 as usize);
+            let r = runtime.readlink_impl(path, request.arg3, request.arg4);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Fchmod  => SyscallResult::ok(runtime.fchmod_impl(request.arg1 as i32, request.arg2 as u16)),
+        Syscall::Fchown  => SyscallResult::ok(runtime.fchown_impl(request.arg1 as i32, request.arg2 as u32, request.arg3 as u32)),
+        Syscall::Lchown  => unsafe {
+            if let Err(e) = validate_user_range(request.arg1, request.arg2) { return SyscallResult::err(e); }
+            let path = slice::from_raw_parts(request.arg1 as *const u8, request.arg2 as usize);
+            let r = runtime.lchown_impl(path, request.arg3 as u32, request.arg4 as u32);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Umask       => SyscallResult::ok(runtime.umask_impl(request.arg1 as u32)),
+        Syscall::Getrlimit   => { let r = runtime.getrlimit_impl(request.arg1 as u32, request.arg2); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
+        Syscall::Getrusage   => { let r = runtime.getrusage_impl(request.arg1 as i32, request.arg2); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
+        Syscall::Sysinfo     => { let r = runtime.sysinfo_impl(request.arg1); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
+        Syscall::Times       => SyscallResult::ok(runtime.times_impl(request.arg1)),
+        Syscall::Syslog      => SyscallResult::ok(runtime.syslog_impl(request.arg1 as u32, request.arg2, request.arg3 as u32)),
+        Syscall::Setpgid     => SyscallResult::ok(runtime.setpgid_impl(request.arg1 as u32, request.arg2 as u32)),
+        Syscall::Getpgrp     => SyscallResult::ok(runtime.getpgrp_impl()),
+        Syscall::Setsid      => SyscallResult::ok(runtime.setsid_impl()),
+        Syscall::Setreuid    => SyscallResult::ok(runtime.setreuid_impl(request.arg1 as u32, request.arg2 as u32)),
+        Syscall::Setregid    => SyscallResult::ok(runtime.setregid_impl(request.arg1 as u32, request.arg2 as u32)),
+        Syscall::Getgroups   => SyscallResult::ok(runtime.getgroups_impl(request.arg1 as u32, request.arg2)),
+        Syscall::Setresuid   => SyscallResult::ok(runtime.setresuid_impl(request.arg1 as u32, request.arg2 as u32, request.arg3 as u32)),
+        Syscall::Setresgid   => SyscallResult::ok(runtime.setresgid_impl(request.arg1 as u32, request.arg2 as u32, request.arg3 as u32)),
+        Syscall::Getresuid   => SyscallResult::ok(runtime.getresuid_impl(request.arg1, request.arg2, request.arg3)),
+        Syscall::Pread64     => { let r = runtime.pread64_impl(request.arg1 as i32, request.arg2, request.arg3, request.arg4 as i64); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
+        Syscall::Pwrite64    => { let r = runtime.pwrite64_impl(request.arg1 as i32, request.arg2, request.arg3, request.arg4 as i64); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
+        Syscall::Sendfile    => { let r = runtime.sendfile_impl(request.arg1 as i32, request.arg2 as i32, request.arg3, request.arg4); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
+        Syscall::Shmctl      => SyscallResult::ok(0),
+        Syscall::Alarm       => SyscallResult::ok(runtime.alarm_impl(request.arg1 as u32)),
+        Syscall::Pause       => { let r = runtime.pause_impl(); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
+        Syscall::Getitimer   => SyscallResult::ok(0),
+        Syscall::Setitimer   => SyscallResult::ok(0),
+        Syscall::Prlimit64   => SyscallResult::ok(runtime.prlimit64_impl(request.arg1 as u32, request.arg2 as u32, request.arg3, request.arg4)),
         Syscall::Invalid       => SyscallResult::err(ENOSYS),
     }
 }
@@ -950,8 +1462,8 @@ unsafe fn sys_stat<R: SyscallRuntime>(
     runtime: &mut R, path_ptr: u64, path_len: u64, stat_buf: u64,
 ) -> SyscallResult {
     if let Err(e) = validate_user_range(path_ptr, path_len) { return SyscallResult::err(e); }
-    // FileStat is 16 bytes (size:u64 + kind:u32 + _pad:u32)
-    if let Err(e) = validate_user_range(stat_buf, 16) { return SyscallResult::err(e); }
+    // LinuxStat is 144 bytes (full Linux x86-64 struct stat)
+    if let Err(e) = validate_user_range(stat_buf, 144) { return SyscallResult::err(e); }
     let path = unsafe { slice::from_raw_parts(path_ptr as *const u8, path_len as usize) };
     let r = runtime.stat_impl(path, stat_buf);
     if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }

@@ -128,6 +128,38 @@ pub fn setenv(key: &[u8], val: &[u8]) -> bool {
     false
 }
 
+/// Write all env vars as "KEY=VALUE\0" strings sequentially into `out_buf`.
+/// Returns (number_of_vars, total_bytes_written).
+pub fn write_env_strings(out_buf: &mut [u8]) -> (usize, usize) {
+    let mut count  = 0usize;
+    let mut offset = 0usize;
+    unsafe {
+        for i in 0..MAX_VARS {
+            let ep = entry_ptr(i);
+            let used    = core::ptr::read(core::ptr::addr_of!((*ep).used));
+            if !used { continue; }
+            let key_len = core::ptr::read(core::ptr::addr_of!((*ep).key_len)) as usize;
+            let val_len = core::ptr::read(core::ptr::addr_of!((*ep).val_len)) as usize;
+            let needed  = key_len + 1 + val_len + 1;
+            if offset + needed > out_buf.len() { continue; }
+            core::ptr::copy_nonoverlapping(
+                core::ptr::addr_of!((*ep).key[0]),
+                out_buf.as_mut_ptr().add(offset), key_len);
+            offset += key_len;
+            out_buf[offset] = b'=';
+            offset += 1;
+            core::ptr::copy_nonoverlapping(
+                core::ptr::addr_of!((*ep).val[0]),
+                out_buf.as_mut_ptr().add(offset), val_len);
+            offset += val_len;
+            out_buf[offset] = 0;
+            offset += 1;
+            count += 1;
+        }
+    }
+    (count, offset)
+}
+
 /// Populate the environment with sensible defaults at kernel boot.
 pub fn init_defaults() {
     setenv(b"PATH",     b"/bin");

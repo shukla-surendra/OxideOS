@@ -69,6 +69,9 @@ pub enum FdBackend {
     DevNull,
     /// /dev/tty  — reads come from stdin ring; writes go to console.
     DevTty,
+    /// Open directory; `raw_fd` unused, `inode_idx` encodes filesystem+path hash.
+    /// `offset` tracks how many getdents64 entries have been returned.
+    Dir,
 }
 
 // ── Per-task file-descriptor entry ────────────────────────────────────────
@@ -83,6 +86,9 @@ pub struct FdEntry {
     pub offset:    usize,
     pub writable:  bool,
     pub append:    bool,
+    /// Dir: null-terminated path (up to 63 bytes + NUL).
+    pub dir_path:  [u8; 64],
+    pub dir_path_len: u8,
 }
 
 // ── Per-task FD table ──────────────────────────────────────────────────────
@@ -140,6 +146,8 @@ impl FdTable {
             offset:    initial_offset,
             writable,
             append,
+            dir_path: [0u8; 64],
+            dir_path_len: 0,
         });
         fd as i64
     }
@@ -150,11 +158,13 @@ impl FdTable {
         self.entries[rslot] = Some(FdEntry {
             backend: FdBackend::Pipe,
             inode_idx: 0, raw_fd: raw_read_fd, offset: 0, writable: false, append: false,
+            dir_path: [0u8; 64], dir_path_len: 0,
         });
         let wslot = self.alloc_fd()?;
         self.entries[wslot] = Some(FdEntry {
             backend: FdBackend::Pipe,
             inode_idx: 0, raw_fd: raw_write_fd, offset: 0, writable: true, append: false,
+            dir_path: [0u8; 64], dir_path_len: 0,
         });
         Some((rslot, wslot))
     }
@@ -167,6 +177,7 @@ impl FdTable {
                 self.entries[fd] = Some(FdEntry {
                     backend: FdBackend::Fat16,
                     inode_idx: 0, raw_fd: fat_raw_fd, offset: 0, writable, append: false,
+                    dir_path: [0u8; 64], dir_path_len: 0,
                 });
                 fd as i64
             }
@@ -182,6 +193,7 @@ impl FdTable {
                     backend: FdBackend::Ext2,
                     inode_idx: 0, raw_fd: ext2_raw_fd, offset: 0,
                     writable: false, append: false,
+                    dir_path: [0u8; 64], dir_path_len: 0,
                 });
                 fd as i64
             }
@@ -196,8 +208,28 @@ impl FdTable {
                 self.entries[fd] = Some(FdEntry {
                     backend,
                     inode_idx: 0, raw_fd: 0, offset: 0,
-                    writable: backend != FdBackend::DevNull, // DevNull and DevTty both accept writes
+                    writable: backend != FdBackend::DevNull,
                     append: false,
+                    dir_path: [0u8; 64], dir_path_len: 0,
+                });
+                fd as i64
+            }
+        }
+    }
+
+    /// Allocate one FD slot for an open directory.
+    pub fn open_dir(&mut self, path: &[u8]) -> i64 {
+        match self.alloc_fd() {
+            None     => -24,
+            Some(fd) => {
+                let mut dp = [0u8; 64];
+                let n = path.len().min(63);
+                dp[..n].copy_from_slice(&path[..n]);
+                self.entries[fd] = Some(FdEntry {
+                    backend: FdBackend::Dir,
+                    inode_idx: 0, raw_fd: 0, offset: 0,
+                    writable: false, append: false,
+                    dir_path: dp, dir_path_len: n as u8,
                 });
                 fd as i64
             }
@@ -240,13 +272,13 @@ impl FdTable {
             }
             FdBackend::DevNull => return 0,
             FdBackend::DevTty  => {
-                // One character at a time from the stdin ring.
                 if buf.is_empty() { return 0; }
                 return match crate::kernel::stdin::pop() {
                     Some(ch) => { buf[0] = ch; 1 }
-                    None     => -6, // EAGAIN
+                    None     => -6,
                 };
             }
+            FdBackend::Dir => return EISDIR,
             FdBackend::RamFS => {}
         }
         if entry.inode_idx >= fs.inodes.len() { return EBADF; }
@@ -286,6 +318,7 @@ impl FdTable {
                 }
                 return buf.len() as i64;
             }
+            FdBackend::Dir => return EISDIR,
             FdBackend::RamFS => {}
         }
         if !entry.writable { return EACCES; }
