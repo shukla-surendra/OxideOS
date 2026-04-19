@@ -2,9 +2,16 @@
 /ovmf
 *.iso
 *.hdd
-*.elf
-*.log
 *.img
-.idea/*
-userspace/bin
-userspace/target
+*.log
+*.vdi
+.idea/
+.vscode/settings.json
+userspace/bin/
+userspace/target/
+kernel/target/
+iso_root/
+
+# Keep pre-built binaries that are checked in
+!userspace/bin/lua.elf
+!userspace/bin/busybox.elf

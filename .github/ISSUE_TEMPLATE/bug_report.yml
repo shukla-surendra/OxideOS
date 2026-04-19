@@ -1,0 +1,74 @@
+name: Bug Report
+description: Something crashes or behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug in OxideOS!
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Kernel / boot
+        - Scheduler / processes
+        - Memory management (mmap/brk)
+        - Filesystem (FAT16 / ext2 / RamFS)
+        - Networking (TCP/UDP/DHCP)
+        - GUI / window manager
+        - Shell (/bin/sh)
+        - Syscall compatibility (musl / BusyBox / Lua)
+        - Installer (/bin/install)
+        - Build system
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug clearly. Include any error messages or crash output.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `make run-bios`
+        2. Type `ls /bin`
+        3. See kernel panic
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit / build
+      description: Output of `git rev-parse --short HEAD`
+    validations:
+      required: false
+
+  - type: dropdown
+    id: run-target
+    attributes:
+      label: How are you running OxideOS?
+      options:
+        - make run-bios (QEMU BIOS)
+        - make run-gui-x86_64 (QEMU UEFI + SDL)
+        - VirtualBox
+        - Real hardware
+        - Other
+    validations:
+      required: true

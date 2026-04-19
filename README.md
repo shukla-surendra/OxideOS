@@ -1,320 +1,240 @@
-# OxideOS — Operating System in Rust
+<div align="center">
 
-OxideOS is a hobby operating system written in Rust (`no_std`, x86_64) using the Limine bootloader. It boots on real hardware and in QEMU, runs a GUI with a window manager, supports networking, and can execute programs compiled with musl libc — including the Lua 5.4 interpreter.
+# OxideOS
+
+**A hobby operating system written in Rust**
+
+x86-64 · Limine bootloader · BIOS + UEFI · Ring 3 userspace · GUI · TCP/IP · musl libc · Lua 5.4 · BusyBox 1.36
+
+[![Build](https://github.com/SurendraShuklaOfficial/OxideOS/actions/workflows/build.yml/badge.svg)](https://github.com/SurendraShuklaOfficial/OxideOS/actions/workflows/build.yml)
+[![License](https://img.shields.io/badge/license-Custom%20Open%20Source-blue)](#license)
+[![Rust](https://img.shields.io/badge/language-Rust%20(nightly)-orange?logo=rust)](https://www.rust-lang.org/)
+[![Platform](https://img.shields.io/badge/platform-x86--64-lightgrey)](#)
+[![Latest Release](https://img.shields.io/github/v/release/SurendraShuklaOfficial/OxideOS?label=latest%20ISO)](https://github.com/SurendraShuklaOfficial/OxideOS/releases/latest)
 
 ![OxideOS Screenshot](./oxideos.png)
 
----
-
-## Capabilities at a Glance
-
-### Boot & CPU
-- Limine v9 bootloader — BIOS and UEFI
-- GDT / TSS / IDT — full descriptor tables
-- PIC (8259A), PIT at 100 Hz timer
-- `int 0x80` legacy gate + `SYSCALL/SYSRET` fast path
-- Ring 3 user mode, privilege separation
-
-### Scheduler & Processes
-- Preemptive round-robin scheduler (up to 8 tasks)
-- `fork` / `exec` / `waitpid` / `exit` / `exit_group`
-- ELF64 loader — `ET_EXEC` at 0x400000
-- Per-process page tables with CR3 switching
-- `brk` / `sbrk` heap per process
-- `argv` / `argc` / `envp` on the user stack (System V AMD64 ABI)
-- Signal handling — `sigaction`, `sigreturn`, trampoline page at 0x900000
-- Process kill (`kill` with signal number)
-
-### Memory Management
-- Physical frame allocator + virtual paging
-- Per-process CR3 (isolated address spaces)
-- `mmap(MAP_ANONYMOUS|MAP_PRIVATE)` — anonymous zero pages
-- Real `munmap` — unmaps PTEs, frees physical frames, per-task region tracking (32 regions)
-- `mprotect` stub (returns success, no enforcement yet)
-
-### Storage & Filesystems
-- ATA PIO driver (port 0x1F0)
-- MBR partition table parser
-- **FAT16** — read / write / seek / truncate / rename / unlink / mkdir
-- **ext2** — read-only
-- **RamFS** — in-memory, writable
-- VFS layer — `/dev/null`, `/dev/tty`
-
-### Networking
-- RTL8139 NIC driver
-- smoltcp TCP/IP stack — TCP, UDP, ICMP, DHCP, ARP
-- DHCP lease on boot
-- `socket` / `bind` / `listen` / `accept` / `connect`
-- `send` / `recv` / `sendto` / `recvfrom`
-
-### GUI
-- Double-buffered framebuffer (linear, RGBA)
-- Window manager with Z-ordering and compositor IPC
-- Per-window backing buffers (no flicker)
-- Start menu
-- PS/2 keyboard driver (pc-keyboard crate)
-- PS/2 mouse driver
-
-### IPC
-- **Pipes** — `pipe` / `pipe2` / `dup2` (shell plumbing)
-- **Message queues** — create / send / recv / destroy / blocking-recv / length
-- **Shared memory** — `shmget` / `shmat` / `shmdt`
-
-### Environment
-- Per-kernel env store (up to 32 variables)
-- `getenv` / `setenv` syscalls
-- Shell `export VAR=val` and `$VAR` expansion
-- Defaults: `PATH=/bin HOME=/ TERM=vt100 USER=oxide`
+</div>
 
 ---
 
-## Syscall Table
+OxideOS is a fully preemptive, multi-process operating system written from scratch in Rust (`no_std`). It boots on real hardware and in QEMU, runs a composited GUI with a window manager, has a TCP/IP network stack, and can execute programs compiled with **musl libc** — including the **Lua 5.4 interpreter** and **BusyBox 1.36**.
 
-OxideOS uses the Linux x86-64 ABI syscall numbers so that programs compiled with musl libc work without any translation layer.
+## Highlights
 
-### Linux-compatible syscalls
-
-| # | Name | # | Name | # | Name |
-|---|------|---|------|---|------|
-| 0 | read | 1 | write | 2 | open |
-| 3 | close | 4 | stat | 5 | fstat |
-| 6 | lstat | 7 | poll | 8 | lseek |
-| 9 | mmap | 10 | mprotect | 11 | munmap |
-| 12 | brk | 13 | rt_sigaction | 14 | rt_sigprocmask |
-| 15 | rt_sigreturn | 16 | ioctl | 19 | readv |
-| 22 | pipe | 25 | mremap | 29 | shmget |
-| 30 | shmat | 33 | dup2 | 35 | nanosleep |
-| 39 | getpid | 41 | socket | 42 | connect |
-| 43 | accept | 44 | sendto | 45 | recvfrom |
-| 49 | bind | 50 | listen | 57 | fork |
-| 59 | execve | 60 | exit | 61 | wait4 |
-| 62 | kill | 63 | uname | 67 | shmdt |
-| 72 | fcntl | 76 | truncate | 78 | getdents64 |
-| 79 | getcwd | 80 | chdir | 82 | rename |
-| 83 | mkdir | 87 | unlink | 90 | chmod |
-| 92 | chown | 96 | gettimeofday | 102 | getuid |
-| 104 | getgid | 105 | setuid | 110 | getppid |
-| 158 | arch_prctl | 186 | gettid | 202 | futex |
-| 218 | set_tid_address | 228 | clock_gettime | 231 | exit_group |
-| 293 | pipe2 | | | | |
-
-### OxideOS-specific syscalls (≥ 400)
-
-| # | Name | # | Name |
-|---|------|---|------|
-| 400 | print | 401 | getchar |
-| 402 | get_system_info | 403 | getenv |
-| 404 | setenv | 405 | exec_args |
-| 406 | send (net) | 407 | recv (net) |
-| 408 | close_socket | 415 | msgq_create |
-| 416 | msgsnd | 417 | msgrcv |
-| 418 | msgq_destroy | 419 | msgrcv_wait |
-| 420 | msgq_len | 425 | gui_create |
-| 426 | gui_destroy | 427 | gui_fill_rect |
-| 428 | gui_draw_text | 429 | gui_present |
-| 430 | gui_poll_event | 431 | gui_get_size |
-| 432 | gui_blit_shm | 433 | install_query |
-| 434 | install_begin | | |
+| | |
+|---|---|
+| **Boots on real hardware** | BIOS and UEFI via Limine v9 |
+| **Preemptive multitasking** | Round-robin scheduler, Ring 3, fork/exec/waitpid |
+| **GUI** | Composited window manager, start menu, PS/2 mouse |
+| **Full TCP/IP stack** | RTL8139 NIC + smoltcp (TCP, UDP, ICMP, DHCP, ARP) |
+| **Linux syscall ABI** | 80+ syscalls at Linux x86-64 numbers — musl programs just work |
+| **musl libc** | Compile any C program with `musl-gcc -static` and run it |
+| **Lua 5.4.7** | Full REPL and script execution, embedded in the kernel |
+| **BusyBox 1.36.1** | 300+ Unix applets — ash, awk, sed, find, gzip, tar, … |
+| **Installable** | `/bin/install` writes OxideOS to a blank disk from inside the OS |
 
 ---
 
-## Userspace Programs
+## Quick Start
 
-All programs are statically embedded in the kernel binary and extracted into RamFS at boot.
+### Download and run (no build needed)
 
-### Shell
-| Program | Description |
-|---------|-------------|
-| `/bin/sh` | Shell with pipes (`\|`), `$VAR` expansion, `export`, I/O redirection, background jobs |
+Download the latest ISO from [Releases](https://github.com/SurendraShuklaOfficial/OxideOS/releases/latest):
 
-### Terminal & Editor
-| Program | Description |
-|---------|-------------|
-| `/bin/terminal` | GUI terminal emulator (compositor window) |
-| `/bin/edit` | nano-like text editor |
-
-### Coreutils
-| Program | Description |
-|---------|-------------|
-| `ls` | Directory listing |
-| `cat` | Print file contents |
-| `ps` | Process list |
-| `cp` | Copy file |
-| `mv` | Move / rename |
-| `rm` | Remove file (`unlink`) |
-| `mkdir` | Create directory |
-| `pwd` | Print working directory |
-| `echo` | Print arguments |
-| `grep` | Substring search |
-| `wc` | Word / line / byte count (`-l -w -c`) |
-| `head` | First N lines (`-n N`) |
-| `tail` | Last N lines (`-n N`) |
-| `sort` | Lexicographic sort |
-| `sleep` | Sleep N seconds |
-| `kill` | Send signal to PID |
-| `touch` | Create / update file |
-| `true` / `false` | Exit 0 / 1 |
-
-### Networking
-| Program | Description |
-|---------|-------------|
-| `/bin/wget` | HTTP download |
-| `/bin/nc` | Netcat — TCP listen/connect, UDP send/listen |
-
-### GUI
-| Program | Description |
-|---------|-------------|
-| `/bin/filemanager` | Graphical file manager (compositor window) |
-
-### System
-| Program | Description |
-|---------|-------------|
-| `/bin/install` | Live disk installer — detects blank ATA disk, writes OxideOS |
-
-### musl libc Programs
-| Program | Description |
-|---------|-------------|
-| `hello_musl` | Hello world via musl libc (tests printf, argv, getenv, getcwd) |
-| `musl_test` | Tests malloc/free, clock_gettime, envp via musl libc |
-
-### Open-Source Interpreters & Tools
-| Program | Description |
-|---------|-------------|
-| `/bin/lua` | **Lua 5.4.7** — full interpreter, REPL and script execution, compiled with musl-gcc -static |
-| `/bin/busybox` | **BusyBox 1.36.1** — 300+ Unix applets (ash shell, awk, sed, find, gzip, tar, …), compiled with musl-gcc -static |
-
----
-
-## Open-Source Software Support
-
-OxideOS uses the Linux x86-64 syscall ABI, making it possible to run programs compiled with musl libc without modification.
-
-### musl libc
-- Built from source at `/home/surendra/musl-src` → installed to `/home/surendra/musl-oxide/`
-- `musl-gcc` wrapper at `/home/surendra/musl-oxide/bin/musl-gcc`
-- Compile any C program: `musl-gcc -static -O2 -o myprogram myprogram.c`
-
-### BusyBox 1.36.1
-BusyBox is embedded and runnable from the shell:
-```
-$ busybox ls /
-$ busybox ash
-$ busybox awk 'BEGIN{print "hello"}'
-$ busybox find / -name "*.elf"
+```bash
+qemu-system-x86_64 \
+    -M pc -serial stdio -cdrom oxide_os-x86_64.iso -boot d \
+    -m 2G -cpu max \
+    -netdev user,id=net0 -device rtl8139,netdev=net0
 ```
 
-### Lua 5.4.7
-Lua is fully functional on OxideOS:
-```
-$ lua
-Lua 5.4.7  Copyright (C) 1994-2024 Lua.org, PUC-Rio
-> print("Hello from OxideOS!")
-Hello from OxideOS!
-> for i=1,5 do print(i*i) end
-1
-4
-9
-16
-25
-```
-Built with: `make PLAT=linux CC="musl-gcc" MYCFLAGS="-static" MYLDFLAGS="-static" lua`
-
----
-
-## Address Space Layout
-
-| Region | Virtual Address | Notes |
-|--------|----------------|-------|
-| User code (ELF) | `0x0040_0000` | ET_EXEC load base |
-| User stack top | `0x0080_0000` | 64 pages (256 KB) |
-| Signal trampoline | `0x0090_0000` | Writable, executable |
-| Heap base | `0x0100_0000` | brk/sbrk grows up |
-| mmap anon base | `0x0800_0000` | MAP_ANONYMOUS grows up |
-| Shared memory | `0x2000_0000` | SHM virtual base |
-| HHDM offset | `0xFFFF_8000_0000_0000` | Direct-mapped physical memory |
-
----
-
-## Quick Start (QEMU)
+### Build from source
 
 ```bash
 # 1. Install dependencies (Ubuntu/Debian)
-sudo apt install build-essential qemu-system-x86 xorriso mtools dosfstools e2fsprogs nasm
+sudo apt install build-essential qemu-system-x86 xorriso mtools \
+                 dosfstools e2fsprogs nasm gcc-x86-64-linux-gnu
 
 # 2. Install Rust nightly
 curl https://sh.rustup.rs -sSf | sh
 rustup override set nightly
 
 # 3. Build and run
-make run-bios          # BIOS boot — ATA disk, serial output (best for dev)
-make run-gui-x86_64    # UEFI boot — SDL window, GUI + mouse
+git clone https://github.com/SurendraShuklaOfficial/OxideOS
+cd OxideOS
+make run-bios          # BIOS boot, serial output — best for development
+make run-gui-x86_64    # UEFI boot, SDL window with mouse and GUI
 ```
 
 ---
 
-## Build & Run Reference
+## What's Inside
 
-### Build Commands
+### Kernel
+
+- **Boot**: Limine v9 (BIOS + UEFI), GDT/TSS, IDT, PIC, PIT at 100 Hz
+- **CPU**: `int 0x80` legacy gate + `SYSCALL/SYSRET` fast path, Ring 3
+- **Scheduler**: Preemptive round-robin, up to 8 tasks, per-process CR3
+- **Processes**: `fork` / `exec` / `waitpid` / `exit`, ELF64 loader, argv/envp (SysV ABI)
+- **Memory**: Physical frame allocator, `mmap(MAP_ANONYMOUS)`, real `munmap`, `brk/sbrk`
+- **Signals**: `sigaction`, `sigreturn`, trampoline page
+
+### Filesystems
+
+| Filesystem | Access | Mounted at |
+|-----------|--------|-----------|
+| RamFS | Read/write | `/bin`, `/tmp`, `/` |
+| FAT16 | Read/write | `/disk` |
+| ext2 | Read-only | `/ext2` |
+| VFS devices | — | `/dev/null`, `/dev/tty` |
+
+### Userspace Programs
+
+```
+Shell:        sh (pipes, $VAR, export, redirection)
+Coreutils:    ls cat ps cp mv rm mkdir pwd echo grep wc
+              head tail sort sleep kill touch true false
+Network:      wget nc (netcat — TCP/UDP)
+Editor:       edit (nano-like)
+GUI:          terminal filemanager
+System:       install (live disk installer)
+musl/C:       hello_musl musl_test
+Interpreters: lua busybox
+```
+
+### Linux-Compatible Syscalls (80+)
+
+OxideOS uses Linux x86-64 syscall numbers so musl-compiled binaries run without modification:
+
+```
+read write open close stat fstat lstat poll lseek mmap mprotect munmap brk
+sigaction sigprocmask sigreturn ioctl readv writev access pipe sched_yield
+mremap madvise dup dup2 nanosleep getpid fork vfork execve exit waitpid
+kill uname fcntl fsync truncate ftruncate getdents64 getcwd chdir rename
+mkdir rmdir unlink readlink chmod fchmod chown fchown umask gettimeofday
+getrlimit getrusage sysinfo getuid getgid getpgrp setsid getppid gettid
+arch_prctl set_tid_address clock_gettime exit_group pipe2 pread64 pwrite64
+socket bind connect listen accept sendto recvfrom … (+OxideOS-specific ≥400)
+```
+
+---
+
+## Demo
+
+### Lua 5.4 REPL
+
+```
+$ lua
+Lua 5.4.7  Copyright (C) 1994-2024 Lua.org, PUC-Rio
+> print("Hello from OxideOS!")
+Hello from OxideOS!
+> for i = 1, 5 do io.write(i*i .. " ") end
+1 4 9 16 25
+```
+
+### BusyBox
+
+```
+$ busybox ls /bin
+busybox.elf  cat.elf  cp.elf  edit.elf  grep.elf ...
+$ busybox ash
+~ $ echo "BusyBox shell on OxideOS"
+BusyBox shell on OxideOS
+```
+
+### Run your own C program with musl libc
 
 ```bash
-make                   # build ISO (oxide_os-x86_64.iso)
-make kernel            # rebuild kernel only
-make userspace         # rebuild userspace only
-make clean             # remove ISO and build artefacts
-make distclean         # remove everything including limine/ and ovmf/
+# On your host:
+musl-gcc -static -O2 -o myprogram myprogram.c
+# Copy to userspace/bin/myprogram.elf
+# Add to kernel/src/kernel/programs.rs
+# make && make run-bios
 ```
+
+---
+
+## Architecture
+
+```
+OxideOS/
+├── kernel/                  # no_std Rust kernel
+│   └── src/kernel/
+│       ├── main.rs          # entry point, subsystem init
+│       ├── scheduler.rs     # preemptive scheduler, Task struct
+│       ├── syscall_core.rs  # Linux x86-64 syscall dispatch
+│       ├── syscall.rs       # KernelRuntime — real syscall bodies
+│       ├── vfs.rs           # VFS layer
+│       ├── fat.rs           # FAT16 r/w driver
+│       ├── ext2.rs          # ext2 read-only driver
+│       ├── paging_allocator.rs
+│       ├── programs.rs      # embedded ELF binaries
+│       └── net/             # RTL8139 + smoltcp
+├── userspace/               # Rust userspace crates
+│   ├── oxide-rt/            # no_std syscall wrappers
+│   ├── sh/                  # /bin/sh
+│   ├── coreutils/           # ls cat grep wc head tail sort …
+│   ├── terminal/            # GUI terminal
+│   └── hello_musl/          # musl libc reference programs
+└── docs/
+    ├── plan.md              # full feature roadmap
+    ├── installation.md
+    └── dev_workflow.md
+```
+
+---
+
+## Developer Workflow
+
+### Dependencies
+
+| Tool | Purpose | Install |
+|------|---------|---------|
+| `qemu-system-x86_64` | Run the OS | `apt install qemu-system-x86` |
+| `xorriso` | Build the boot ISO | `apt install xorriso` |
+| `mtools` (`mformat`, `mcopy`) | Create FAT disk images | `apt install mtools` |
+| `dosfstools` (`mkfs.fat`) | FAT formatter | `apt install dosfstools` |
+| `e2fsprogs` (`mke2fs`) | Create ext2 disk | `apt install e2fsprogs` |
+| `sfdisk` | Partition the install image | `apt install util-linux` |
+| Rust nightly | Compile kernel + userspace | `rustup override set nightly` |
+| `nasm` | Assemble `.asm` programs | `apt install nasm` |
+| `gcc` cross | Compile C userspace programs | `apt install gcc-x86-64-linux-gnu` |
 
 ### QEMU Run Targets
 
 | Target | Machine | Display | Disk | Notes |
 |--------|---------|---------|------|-------|
-| `make run-bios` | `-M pc` (i440FX) | stdio serial | FAT16 on ATA | **Best for dev** |
-| `make run-gui-x86_64` | q35 + UEFI | SDL window | FAT16 on ATA | Full GUI + mouse |
-| `make run-x86_64` | q35 + UEFI | stdio serial | none | Headless UEFI |
-| `make run-kvm-x86_64` | q35 + KVM | GTK | FAT16 | Hardware-accelerated |
-| `make run-install-x86_64` | q35 + UEFI | SDL | install image | Test pre-built install |
-| `make run-install-bios` | `-M pc` | stdio | install image | BIOS-boot install image |
+| `make run-bios` | `-M pc` (i440FX) | stdio serial | FAT16 on ATA | **Best for dev** — ATA works, fast boot |
+| `make run-gui-x86_64` | q35 + UEFI | SDL window | FAT16 on ATA | Full GUI + mouse; grab with first click, release Ctrl+Alt+G |
+| `make run-x86_64` | q35 + UEFI | stdio serial | none | Headless UEFI boot |
+| `make run-kvm-x86_64` | q35 + KVM | GTK | FAT16 | Hardware-accelerated (WSL2: enable nested virt) |
+| `make run-install-x86_64` | q35 + UEFI | SDL | install image | Test the pre-built install image |
+| `make run-install-bios` | `-M pc` | stdio | install image | BIOS-boot the install image |
 
-### Disk Images
+### Typical Dev Loop
 
 ```bash
-make disk              # create oxide_disk.img (4 MB FAT16, once)
-make ext2-disk         # create oxide_ext2.img (32 MB ext2, optional)
-make install-image     # build oxide_install.img (192 MB bootable)
-make install-vdi       # convert to VirtualBox VDI
+# Edit kernel source
+$EDITOR kernel/src/kernel/syscall.rs
+
+# Rebuild and test (fastest path)
+make kernel && make run-bios
+
+# After editing userspace
+make userspace && make kernel && make run-bios
+
+# Full clean rebuild
+make distclean && make run-bios
 ```
 
-### Full Makefile Reference
-
-| Target | Description |
-|--------|-------------|
-| `make` | Build ISO |
-| `make kernel` | Rebuild kernel only |
-| `make userspace` | Rebuild userspace only |
-| `make run-bios` | QEMU BIOS boot, ATA disk, serial |
-| `make run-gui-x86_64` | QEMU UEFI boot, SDL display |
-| `make run-x86_64` | QEMU UEFI boot, serial only |
-| `make run-kvm-x86_64` | QEMU with KVM acceleration |
-| `make disk` | Create 4 MB FAT16 data disk |
-| `make ext2-disk` | Create 32 MB ext2 secondary disk |
-| `make install-image` | Build 192 MB bootable install image |
-| `make install-vdi` | Convert install image to VirtualBox VDI |
-| `make run-install-x86_64` | Boot install image in QEMU (UEFI) |
-| `make run-install-bios` | Boot install image in QEMU (BIOS) |
-| `make clean` | Remove ISO and build artefacts |
-| `make clean-disk` | Remove oxide_disk.img |
-| `make clean-install` | Remove install images |
-| `make distclean` | Remove all build output |
-
----
-
-## Persistent FAT16 Data Disk
+### Persistent FAT16 Data Disk
 
 The kernel mounts a FAT16 disk at `/disk/`. Create it once and it persists across boots:
 
 ```bash
-make disk              # create oxide_disk.img (only needed once)
-make run-bios          # ATA disk auto-detected
+make disk              # creates oxide_disk.img (4 MB FAT16, only needed once)
+make run-bios          # ATA disk auto-detected on this target
 ```
 
 Files placed in `oxide_disk.img` are visible as `/disk/<name>`. To populate from the host:
@@ -325,36 +245,137 @@ sudo cp myfile.txt /mnt/
 sudo umount /mnt
 ```
 
+### Secondary ext2 Disk (optional)
+
+```bash
+make ext2-disk         # creates oxide_ext2.img (32 MB ext2)
+sudo mount -o loop oxide_ext2.img /mnt && sudo cp files /mnt/ && sudo umount /mnt
+make run-bios          # both disks attached automatically if the images exist
+```
+
+### Full Makefile Reference
+
+| Target | Description |
+|--------|-------------|
+| `make` | Build ISO (`oxide_os-x86_64.iso`) |
+| `make kernel` | Rebuild kernel only |
+| `make userspace` | Rebuild userspace only |
+| `make run-bios` | QEMU BIOS boot, ATA disk, serial output |
+| `make run-gui-x86_64` | QEMU UEFI boot, SDL window + mouse |
+| `make run-x86_64` | QEMU UEFI boot, serial only |
+| `make run-kvm-x86_64` | QEMU with KVM acceleration |
+| `make disk` | Create 4 MB FAT16 data disk (once) |
+| `make ext2-disk` | Create 32 MB ext2 secondary disk (once) |
+| `make install-image` | Build 192 MB bootable install image |
+| `make install-vdi` | Convert install image to VirtualBox VDI |
+| `make run-install-x86_64` | Boot install image in QEMU (UEFI, SDL) |
+| `make run-install-bios` | Boot install image in QEMU (BIOS) |
+| `make clean` | Remove ISO and build artefacts |
+| `make clean-disk` | Remove `oxide_disk.img` |
+| `make clean-install` | Remove install images |
+| `make distclean` | Remove all build output including `limine/` and `ovmf/` |
+
+### ATA Disk and QEMU Machine Types
+
+OxideOS uses ATA PIO for disk I/O (port `0x1F0`). This requires the legacy IDE controller:
+
+| QEMU flag | Chipset | IDE at 0x1F0? | Use case |
+|-----------|---------|--------------|----------|
+| `-M pc` | i440FX/PIIX4 | ✓ Yes | Dev testing, BIOS boot |
+| `-M q35` + UEFI | ICH9 | ✗ No | GUI testing (no disk needed for ISO boot) |
+| `-M q35` + IDE drive | ICH9 | ✓ Yes | Installed disk boot |
+
+### WSL2 Notes
+
+- SDL display requires an X server (VcXsrv, WSLg, or X410).
+- KVM acceleration requires nested virtualisation: add `nestedVirtualization=true` to `~/.wslconfig` and restart WSL.
+- All non-GUI targets (`run-bios`, `run-x86_64`) work without an X server.
+
 ---
 
-## Installation
-
-OxideOS can be installed to a second disk — real hardware or VM.
+## Installation on Real Hardware / VirtualBox
 
 ### Method A — Pre-built image (simplest)
 
 ```bash
 make install-image          # builds oxide_install.img (192 MB)
-sudo ./install.sh /dev/sdX  # write to USB — replaces ALL data on /dev/sdX
+sudo ./install.sh /dev/sdX  # DANGER: replaces ALL data on /dev/sdX
 ```
 
-Boot the USB on any x86_64 machine with UEFI or BIOS firmware.
+Boot the USB on any x86_64 machine with UEFI or legacy BIOS firmware.
 
-#### VirtualBox
+#### VirtualBox with pre-built VDI
 
 ```bash
-make install-vdi            # oxide_install.vdi
+make install-vdi            # converts oxide_install.img → oxide_install.vdi
 ```
 
-1. New VM → Type: `Other`, Version: `Other/Unknown (64-bit)`
-2. RAM: 256 MB minimum
-3. Hard Disk → *Use an existing virtual hard disk file* → select `oxide_install.vdi`
-4. Settings → System → Enable EFI (optional — BIOS also works)
-5. Start
+1. **New VM** → Name: `OxideOS`, Type: `Other`, Version: `Other/Unknown (64-bit)`
+2. **Hardware** → RAM: 256 MB minimum
+3. **Hard Disk** → *Use an existing virtual hard disk file* → select `oxide_install.vdi`
+4. **Settings → System → Motherboard** → Enable EFI for UEFI boot *(or leave disabled for BIOS boot)*
+5. **Start**
 
-### Method B — Live installer
+---
 
-Boot OxideOS from the ISO with a blank second disk, then run `/bin/install` inside the OS.
+### Method B — Live installer (boot from ISO, install to disk)
+
+This is the traditional "boot from CD, install to disk" workflow.
+
+#### VirtualBox Setup
+
+**Step 1 — Create the VM**
+
+1. Open VirtualBox → **New**
+2. Name: `OxideOS`, Type: `Other`, Version: `Other/Unknown (64-bit)`
+3. RAM: 256 MB (512 MB recommended)
+4. **Hard Disk** → *Create a new virtual hard disk*
+   - Format: VDI (or VMDK), Size: **256 MB minimum**
+   - This is the **installation target** — starts blank
+
+**Step 2 — Attach the boot ISO**
+
+1. **Settings → Storage**
+2. Click the CD icon → *Choose a disk file* → select `oxide_os-x86_64.iso`
+3. Ensure the controller type is **IDE** (not SATA) for compatibility
+
+**Step 3 — Configure boot order**
+
+1. **Settings → System → Motherboard**
+2. Boot order: **Optical** first, then **Hard Disk**
+3. Enable EFI if you want UEFI boot (optional)
+
+**Step 4 — Start and install**
+
+1. **Start** the VM — OxideOS boots from the ISO
+2. In the terminal window, type:
+   ```
+   install
+   ```
+3. The installer shows the target disk size and asks for confirmation:
+   ```
+   OxideOS Installer  v0.1
+   Target disk: 256 MB  (524288 sectors)
+
+   Type YES to continue, anything else to abort: YES
+
+   Installing OxideOS...
+     [1/4] Formatting EFI boot partition (FAT32)...
+     [2/4] Formatting data partition (FAT16)...
+     [3/4] Writing Limine + kernel to boot partition...
+     [4/4] Writing MBR partition table...
+
+   Installation complete!
+   ```
+4. **Shut down** the VM (start menu → Shutdown, or `kill 1` in shell)
+
+**Step 5 — Remove the ISO and boot from disk**
+
+1. **Settings → Storage** → remove the ISO from the optical drive
+2. **Settings → System → Motherboard** → move **Hard Disk** to first in boot order
+3. **Start** — OxideOS boots from the installed disk
+
+#### QEMU equivalent
 
 ```bash
 # 1. Create blank target disk
@@ -368,9 +389,9 @@ qemu-system-x86_64 \
     -drive file=install_target.img,format=raw,if=ide,index=1 \
     -m 2G -cpu max
 
-# 3. Type 'install' in the shell, confirm with YES
+# 3. Run 'install' in the OxideOS shell, type YES
 
-# 4. Boot the installed disk
+# 4. Boot the installed disk (UEFI)
 qemu-system-x86_64 \
     -M q35 -serial stdio \
     -drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-x86_64.fd,readonly=on \
@@ -385,12 +406,10 @@ qemu-system-x86_64 \
 |------|--------|
 | 1 | Format partition 1 (64 MB, FAT32) — EFI boot |
 | 2 | Format partition 2 (64 MB, FAT16) — OxideOS data |
-| 3 | Write EFI bootloader, Limine BIOS stage, boot config, kernel |
-| 4 | Write MBR (written last — safe failure state) |
+| 3 | Write `EFI/BOOT/BOOTX64.EFI`, Limine BIOS stage, `limine.conf`, kernel binary |
+| 4 | Write MBR — **written last** (safe failure state) |
 
----
-
-## Installed Disk Layout
+#### Installed Disk Layout
 
 ```
 oxide_install.img  (192 MB)
@@ -400,7 +419,7 @@ oxide_install.img  (192 MB)
 │   └── Partition 2: Data (FAT16, 64 MB)
 │
 ├── Partition 1 — FAT32 (EFI System)
-│   ├── EFI/BOOT/BOOTX64.EFI
+│   ├── EFI/BOOT/BOOTX64.EFI     ← UEFI entry point
 │   ├── boot/limine/limine.conf
 │   ├── boot/limine/limine-bios.sys
 │   └── boot/kernel              ← full kernel + all userspace embedded
@@ -410,26 +429,38 @@ oxide_install.img  (192 MB)
 
 ---
 
-## ATA & QEMU Machine Types
+## Roadmap
 
-OxideOS uses ATA PIO (port 0x1F0) requiring the legacy IDE controller:
+See [docs/plan.md](docs/plan.md) for the full feature roadmap. Key upcoming milestones:
 
-| QEMU flag | Chipset | IDE | Use case |
-|-----------|---------|-----|---------|
-| `-M pc` | i440FX/PIIX4 | ✓ | Dev testing, BIOS boot |
-| `-M q35` + UEFI | ICH9 | ✗ | GUI testing (RAM only) |
-| `-M q35` + IDE drive | ICH9 | ✓ | Installed disk boot |
+- [ ] DHCP auto-activation + DNS resolver (wget by hostname)
+- [ ] ext2 write support
+- [ ] Copy-on-write fork
+- [ ] Job control (`bg`, `fg`, `Ctrl+Z`)
+- [ ] procfs (`/proc/PID/maps`, `/proc/meminfo`)
+- [ ] SMP (multi-core)
 
 ---
 
-## WSL2 Notes
+## Contributing
 
-- SDL display requires an X server (VcXsrv, WSLg, or X410).
-- KVM requires nested virtualisation: add `nestedVirtualization=true` to `~/.wslconfig` and restart WSL.
-- All non-GUI targets (`run-bios`, `run-x86_64`) work without an X server.
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add a syscall, write a userspace program, or fix a bug.
+
+Good first issues: [issues labeled `good first issue`](https://github.com/SurendraShuklaOfficial/OxideOS/issues?q=label%3A%22good+first+issue%22)
+
+---
+
+## Similar Projects
+
+- [Redox OS](https://www.redox-os.org/) — production-grade OS in Rust
+- [Writing an OS in Rust](https://os.phil-opp.com/) — the definitive tutorial series
+- [xv6](https://github.com/mit-pdos/xv6-riscv) — MIT teaching OS (RISC-V, C)
+- [SerenityOS](https://serenityos.org/) — full desktop OS in C++
 
 ---
 
 ## License
 
-See [LICENSE](./LICENSE).
+Copyright © 2025 Surendra Shukla. See [LICENSE](LICENSE) for terms.
+
+Attribution required. Commercial redistribution of OxideOS itself is not permitted — building products on top of it is fine.
