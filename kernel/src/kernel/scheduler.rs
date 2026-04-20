@@ -130,6 +130,10 @@ pub struct Task {
     pub pid:        u8,
     /// PID of the parent that fork'd this task; 0 = no parent.
     pub parent_pid: u8,
+    /// Process group ID. 0 means "same as pid" (set on first use).
+    pub pgid:       u8,
+    /// IA32_FS_BASE MSR value for this task's TLS pointer (set via arch_prctl).
+    pub fs_base:    u64,
     /// Current userspace heap break (virtual address).  0 = unset (use USER_HEAP_BASE).
     pub heap_end:   u64,
     /// Top of the anonymous-mmap area.  0 = unset (use USER_MMAP_BASE).
@@ -171,6 +175,8 @@ impl Task {
             cr3:        0,
             pid:        0,
             parent_pid: 0,
+            pgid:       0,
+            fs_base:    0,
             heap_end:   0,
             mmap_end:   0,
             output:     [0u8; TASK_OUTPUT_CAP],
@@ -402,6 +408,7 @@ pub unsafe fn spawn(code: &[u8], name: &str) -> Result<u8, &'static str> {
     (*task).cr3             = cr3;
     (*task).pid             = pid;
     (*task).parent_pid      = 0;
+    (*task).fs_base         = 0;
     (*task).heap_end        = 0;
     (*task).mmap_end        = 0;
     (*task).output_len      = 0;
@@ -531,6 +538,17 @@ pub unsafe fn tick() -> Option<(u8, i64)> {
     let cr3    = (*sched).tasks[idx].cr3;
 
     let initial_rsp = (*sched).tasks[idx].initial_rsp;
+
+    // Restore this task's FS_BASE MSR (thread-local storage pointer set by arch_prctl).
+    let fs_base = (*sched).tasks[idx].fs_base;
+    core::arch::asm!(
+        "wrmsr",
+        in("ecx") 0xC000_0100u32,  // IA32_FS_BASE
+        in("eax") fs_base as u32,
+        in("edx") (fs_base >> 32) as u32,
+        options(nostack, nomem)
+    );
+
     let exit_code = if first {
         (*sched).tasks[idx].first_run = false;
         crate::kernel::user_mode::launch_at(entry, initial_rsp, cr3)
@@ -546,7 +564,8 @@ pub unsafe fn tick() -> Option<(u8, i64)> {
         }
         EXIT_SLEEPING => None,
         code => {
-            let pid = (*sched).tasks[idx].pid;
+            let pid        = (*sched).tasks[idx].pid;
+            let parent_pid = (*sched).tasks[idx].parent_pid;
             (*sched).tasks[idx].state = TaskState::Dead(code);
 
             // Free user-space physical frames immediately — waitpid only needs the
@@ -571,6 +590,12 @@ pub unsafe fn tick() -> Option<(u8, i64)> {
                 SERIAL_PORT.write_decimal(code as u32);
                 SERIAL_PORT.write_str(")\n");
             }
+
+            // Deliver SIGCHLD to parent so bash/shells notice child exit.
+            if parent_pid != 0 {
+                send_signal(parent_pid, SIGCHLD);
+            }
+
             Some((pid, code))
         }
     }
@@ -764,6 +789,7 @@ pub unsafe fn fork_task(
     (*child).cr3        = child_cr3;
     (*child).pid        = child_pid;
     (*child).parent_pid = parent_pid;
+    (*child).pgid       = (*sched).tasks[parent_idx].pgid; // inherit parent's pgid
     (*child).heap_end   = parent_heap;
     (*child).mmap_end   = parent_mmap;
     (*child).output_len = 0;

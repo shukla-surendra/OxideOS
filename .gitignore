@@ -15,3 +15,4 @@ iso_root/
 # Keep pre-built binaries that are checked in
 !userspace/bin/lua.elf
 !userspace/bin/busybox.elf
+!userspace/bin/bash.elf

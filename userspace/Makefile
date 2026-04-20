@@ -45,6 +45,21 @@ busybox-rebuild:
 	    CC=$(MUSL_GCC) LDFLAGS="-static" make -j$(shell nproc)
 	cp /home/surendra/busybox-1.36.1/busybox $(BINDIR)/busybox.elf
 
+# ── Bash 5.2 (pre-built, copy from build dir) ────────────────────────────────
+bash: $(BINDIR)
+	cp /tmp/bash-5.2/bash $(BINDIR)/bash.elf
+
+# ── Rebuild Bash from source ─────────────────────────────────────────────────
+bash-rebuild:
+	test -f /tmp/bash-5.2/Makefile || ( \
+	    cd /tmp && wget -q https://ftp.gnu.org/gnu/bash/bash-5.2.tar.gz && \
+	    tar xzf bash-5.2.tar.gz && \
+	    cd /tmp/bash-5.2 && CC=$(MUSL_GCC) CFLAGS="-static -O2 -fno-stack-protector" \
+	        LDFLAGS="-static" ./configure --without-bash-malloc --disable-nls \
+	        --without-readline --without-curses --disable-history --host=x86_64-linux-musl )
+	cd /tmp/bash-5.2 && make LDFLAGS="-static -Wl,--allow-multiple-definition" -j$(shell nproc)
+	cp /tmp/bash-5.2/bash $(BINDIR)/bash.elf
+
 # ── Rust programs ─────────────────────────────────────────────────────────────
 rust-programs: $(BINDIR)
 	$(CARGO) +nightly build --release -p hello-rust -p sh -p terminal -p coreutils -p wget -p edit -p nc -p filemanager -p install 2>&1

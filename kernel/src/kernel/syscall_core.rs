@@ -65,10 +65,14 @@ pub enum Syscall {
     Setregid      = 114, // setregid — stub
     Getgroups     = 115, // getgroups — returns []
     Setresuid     = 117, // setresuid — stub
+    Getresuid     = 118, // getresuid — stub (was wrongly 121)
     Setresgid     = 119, // setresgid — stub
-    Getresuid     = 121, // getresuid — stub
+    Getresgid     = 120, // getresgid — stub
+    Getpgid       = 121, // getpgid(pid) → pgid
     Prlimit64     = 302, // prlimit64 — resource limit with pid
+    Select        = 23,  // select(nfds, readfds, writefds, exceptfds, timeval)
     Poll          = 7,   // poll(fds, nfds, timeout_ms)
+    Pselect6      = 270, // pselect6 — wrapper around select
     Mmap          = 9,   // already matched Linux
     Munmap        = 11,
     Brk           = 12,
@@ -291,6 +295,10 @@ impl Syscall {
             Self::Setresuid     => "setresuid",
             Self::Setresgid     => "setresgid",
             Self::Getresuid     => "getresuid",
+            Self::Getresgid     => "getresgid",
+            Self::Getpgid       => "getpgid",
+            Self::Select        => "select",
+            Self::Pselect6      => "pselect6",
             Self::Prlimit64     => "prlimit64",
             Self::Invalid       => "invalid",
         }
@@ -373,8 +381,12 @@ impl From<u64> for Syscall {
             114 => Self::Setregid,
             115 => Self::Getgroups,
             117 => Self::Setresuid,
+            118 => Self::Getresuid,
             119 => Self::Setresgid,
-            121 => Self::Getresuid,
+            120 => Self::Getresgid,
+            121 => Self::Getpgid,
+            23  => Self::Select,
+            270 => Self::Pselect6,
             302 => Self::Prlimit64,
             17  => Self::Pread64,
             18  => Self::Pwrite64,
@@ -696,6 +708,16 @@ pub trait SyscallRuntime {
 
     /// getresuid — writes (1000, 1000, 1000) to the three u32 pointers.
     fn getresuid_impl(&mut self, _ruid_ptr: u64, _euid_ptr: u64, _suid_ptr: u64) -> i64 { 0 }
+    /// getresgid — stub → 0
+    fn getresgid_impl(&mut self, _rgid: u64, _egid: u64, _sgid: u64) -> i64 { 0 }
+    /// getpgid(pid) → process group id. 0 means calling process.
+    fn getpgid_impl(&mut self, _pid: u32) -> i64 { 1 }
+    /// select(nfds, readfds, writefds, exceptfds, timeval_ptr)
+    fn select_impl(&mut self, nfds: u64, read_ptr: u64, write_ptr: u64, except_ptr: u64, timeout_ptr: u64) -> i64;
+    /// pselect6 — wrapper for select ignoring sigmask argument.
+    fn pselect6_impl(&mut self, nfds: u64, read_ptr: u64, write_ptr: u64, except_ptr: u64, timeout_ptr: u64) -> i64 {
+        self.select_impl(nfds, read_ptr, write_ptr, except_ptr, timeout_ptr)
+    }
 
     /// pread64 — positioned read without changing offset.
     fn pread64_impl(&mut self, _fd: i32, _buf_ptr: u64, _count: u64, _offset: i64) -> i64 { ENOSYS }
@@ -1242,6 +1264,16 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
         Syscall::Setresuid   => SyscallResult::ok(runtime.setresuid_impl(request.arg1 as u32, request.arg2 as u32, request.arg3 as u32)),
         Syscall::Setresgid   => SyscallResult::ok(runtime.setresgid_impl(request.arg1 as u32, request.arg2 as u32, request.arg3 as u32)),
         Syscall::Getresuid   => SyscallResult::ok(runtime.getresuid_impl(request.arg1, request.arg2, request.arg3)),
+        Syscall::Getresgid   => SyscallResult::ok(runtime.getresgid_impl(request.arg1, request.arg2, request.arg3)),
+        Syscall::Getpgid     => SyscallResult::ok(runtime.getpgid_impl(request.arg1 as u32)),
+        Syscall::Select      => {
+            let r = runtime.select_impl(request.arg1, request.arg2, request.arg3, request.arg4, request.arg5);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Pselect6    => {
+            let r = runtime.pselect6_impl(request.arg1, request.arg2, request.arg3, request.arg4, request.arg5);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
         Syscall::Pread64     => { let r = runtime.pread64_impl(request.arg1 as i32, request.arg2, request.arg3, request.arg4 as i64); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
         Syscall::Pwrite64    => { let r = runtime.pwrite64_impl(request.arg1 as i32, request.arg2, request.arg3, request.arg4 as i64); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
         Syscall::Sendfile    => { let r = runtime.sendfile_impl(request.arg1 as i32, request.arg2 as i32, request.arg3, request.arg4); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }

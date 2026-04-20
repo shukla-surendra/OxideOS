@@ -172,6 +172,10 @@ pub static LUA: &[u8] =
 pub static BUSYBOX: &[u8] =
     include_bytes!("../../../userspace/bin/busybox.elf");
 
+/// bash — GNU Bash 5.2 compiled with musl-gcc -static.
+pub static BASH: &[u8] =
+    include_bytes!("../../../userspace/bin/bash.elf");
+
 /// Look up a built-in program by name.
 pub fn find(name: &str) -> Option<&'static [u8]> {
     match name {
@@ -216,6 +220,7 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
         "musl_test"  => Some(MUSL_TEST),
         "lua"        => Some(LUA),
         "busybox"    => Some(BUSYBOX),
+        "bash"       => Some(BASH),
         _            => None,
     }
 }
@@ -235,4 +240,5 @@ pub const NAMES: &[&str] = &[
     "musl_test",
     "lua",
     "busybox",
+    "bash",
 ];

@@ -62,7 +62,7 @@ designed so the OS remains bootable and usable after every milestone.
 | Gap | Blocks |
 |-----|--------|
 | ~~**argv passing**~~ | ✅ Done |
-| **Open-source C programs** — musl libc + Linux ABI compat | Running real programs |
+| **Open-source C programs** — musl libc + Linux ABI compat | ✅ lua, busybox, bash |
 | **Environment variables** (PATH, HOME, USER) | Shell usability |
 | **Shell pipes** (cmd1 \| cmd2) | Shell usability |
 | **Job control** (bg, fg, &) | Shell usability |
@@ -924,6 +924,7 @@ Replace kernel-launched terminal with a proper init:
 ✅ Phase 13.1  DHCP client activation — blocking spin-poll in init(); fallback static 10.0.2.15/24
 ✅ Phase 13.2  DNS resolver — UDP query to NET_CONFIG.dns; kernel syscall 435 DnsResolve; oxide-rt::dns_resolve(); wget updated to accept URLs/hostnames
 ✅ Phase 10.4  Job control — & background, jobs builtin, fg N
+✅ GNU Bash 5.2 — select()/pselect6(), SIGCHLD delivery, pgid tracking, getpgid/setpgid; embedded as bash.elf
 
 ── MEDIUM PRIORITY ─────────────────────────────────────────────────
 

@@ -287,6 +287,112 @@ impl SyscallRuntime for KernelRuntime {
         }
     }
 
+    fn getpgid_impl(&mut self, pid: u32) -> i64 {
+        unsafe {
+            let sched = &raw const crate::kernel::scheduler::SCHED;
+            let idx   = crate::kernel::scheduler::CURRENT_TASK_IDX;
+            // pid == 0 means calling process
+            let target = if pid == 0 {
+                idx
+            } else {
+                let mut found = idx;
+                for i in 0..crate::kernel::scheduler::MAX_TASKS {
+                    if (*sched).tasks[i].pid == pid as u8 { found = i; break; }
+                }
+                found
+            };
+            let task = &(*sched).tasks[target];
+            // pgid == 0 means same as pid
+            let pgid = if task.pgid == 0 { task.pid } else { task.pgid };
+            pgid as i64
+        }
+    }
+
+    fn setpgid_impl(&mut self, pid: u32, pgid: u32) -> i64 {
+        unsafe {
+            let sched = &raw mut crate::kernel::scheduler::SCHED;
+            let cur_idx = crate::kernel::scheduler::CURRENT_TASK_IDX;
+            let cur_pid = (*sched).tasks[cur_idx].pid;
+            let target_pid = if pid == 0 { cur_pid as u32 } else { pid };
+            let new_pgid   = if pgid == 0 { target_pid as u8 } else { pgid as u8 };
+            for i in 0..crate::kernel::scheduler::MAX_TASKS {
+                if (*sched).tasks[i].pid == target_pid as u8 {
+                    (*sched).tasks[i].pgid = new_pgid;
+                    return 0;
+                }
+            }
+            -3 // ESRCH
+        }
+    }
+
+    fn getpgrp_impl(&mut self) -> i64 {
+        self.getpgid_impl(0)
+    }
+
+    fn arch_prctl_impl(&mut self, code: u64, addr: u64) -> i64 {
+        const ARCH_SET_GS: u64 = 0x1001;
+        const ARCH_SET_FS: u64 = 0x1002;
+        const ARCH_GET_FS: u64 = 0x1003;
+        const ARCH_GET_GS: u64 = 0x1004;
+        const IA32_FS_BASE: u32 = 0xC000_0100;
+        const IA32_GS_BASE: u32 = 0xC000_0101;
+
+        match code {
+            ARCH_SET_FS => {
+                let idx = unsafe { crate::kernel::scheduler::CURRENT_TASK_IDX };
+                unsafe { crate::kernel::scheduler::SCHED.tasks[idx].fs_base = addr; }
+                unsafe {
+                    core::arch::asm!(
+                        "wrmsr",
+                        in("ecx") IA32_FS_BASE,
+                        in("eax") addr as u32,
+                        in("edx") (addr >> 32) as u32,
+                        options(nostack, nomem)
+                    );
+                }
+                0
+            }
+            ARCH_GET_FS => {
+                if addr == 0 { return -14; } // EFAULT
+                let idx = unsafe { crate::kernel::scheduler::CURRENT_TASK_IDX };
+                let fs = unsafe { crate::kernel::scheduler::SCHED.tasks[idx].fs_base };
+                unsafe { core::ptr::write_unaligned(addr as *mut u64, fs); }
+                0
+            }
+            ARCH_SET_GS => {
+                unsafe {
+                    core::arch::asm!(
+                        "wrmsr",
+                        in("ecx") IA32_GS_BASE,
+                        in("eax") addr as u32,
+                        in("edx") (addr >> 32) as u32,
+                        options(nostack, nomem)
+                    );
+                }
+                0
+            }
+            ARCH_GET_GS => {
+                if addr == 0 { return -14; } // EFAULT
+                let gs: u64;
+                unsafe {
+                    let lo: u32;
+                    let hi: u32;
+                    core::arch::asm!(
+                        "rdmsr",
+                        in("ecx") IA32_GS_BASE,
+                        out("eax") lo,
+                        out("edx") hi,
+                        options(nostack, nomem)
+                    );
+                    gs = (lo as u64) | ((hi as u64) << 32);
+                    core::ptr::write_unaligned(addr as *mut u64, gs);
+                }
+                0
+            }
+            _ => -22, // EINVAL
+        }
+    }
+
     fn uname_impl(&mut self, buf_ptr: u64) -> i64 {
         // Linux utsname: 6 fields × 65 bytes each = 390 bytes.
         // Fields: sysname, nodename, release, version, machine, domainname.
@@ -882,6 +988,76 @@ impl SyscallRuntime for KernelRuntime {
         0  // reached only in busy-wait fallback
     }
 
+    // ── select() ──────────────────────────────────────────────────────────────
+    // fd_set is 128 bytes (1024 bits). We look at the first 64 file descriptors.
+    // Input fd_sets are snapshotted, cleared, then repopulated with ready fds.
+    fn select_impl(&mut self, nfds: u64, read_ptr: u64, write_ptr: u64,
+                   _except_ptr: u64, timeout_ptr: u64) -> i64 {
+        use crate::kernel::fs::ramfs::{FdBackend, MAX_FD};
+        use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+        use crate::kernel::syscall_core::TIMER_HZ;
+
+        if nfds > 1024 { return -22; } // EINVAL
+
+        // Parse struct timeval { tv_sec: i64, tv_usec: i64 }
+        let timeout_ms: i64 = if timeout_ptr == 0 {
+            -1 // NULL → block
+        } else if timeout_ptr < 0x1000 {
+            return -22;
+        } else {
+            unsafe {
+                let tv_sec  = *(timeout_ptr as *const i64);
+                let tv_usec = *((timeout_ptr + 8) as *const i64);
+                tv_sec * 1000 + tv_usec / 1000
+            }
+        };
+
+        let n = nfds.min(64) as usize;
+
+        // Snapshot input fd_set bits (two u64 words cover fds 0-127).
+        let snap_read  = read_from_fdset(read_ptr,  n);
+        let snap_write = read_from_fdset(write_ptr, n);
+
+        // Clear output sets — select replaces them with only the ready fds.
+        clear_fdset(read_ptr);
+        clear_fdset(write_ptr);
+
+        let mut ready = 0i64;
+
+        for fd in 0..n {
+            let word = fd / 64;
+            let bit  = fd % 64;
+            if word >= 2 { break; }
+
+            // Check readability.
+            if (snap_read[word] >> bit) & 1 != 0 {
+                let r = fd_read_ready(fd);
+                if r {
+                    set_fdset_bit(read_ptr, fd);
+                    ready += 1;
+                }
+            }
+            // Check writability (files / tty / sockets always writable).
+            if (snap_write[word] >> bit) & 1 != 0 {
+                set_fdset_bit(write_ptr, fd);
+                ready += 1;
+            }
+        }
+
+        if ready > 0 || timeout_ms == 0 {
+            return ready;
+        }
+
+        // Nothing ready — yield (sleep one tick) and return 0; caller retries.
+        let ticks = if timeout_ms < 0 {
+            2u64
+        } else {
+            ((timeout_ms as u64 * TIMER_HZ) / 1000).max(1)
+        };
+        self.sleep_until_tick(self.current_ticks() + ticks);
+        0
+    }
+
     fn dup2_impl(&mut self, old_fd: i32, new_fd: i32) -> i64 {
         unsafe {
             let sched = &raw mut crate::kernel::scheduler::SCHED;
@@ -1286,6 +1462,56 @@ impl SyscallRuntime for KernelRuntime {
                 | ((ip[3] as i64) << 24)
             }
             None => -105, // ENONET
+        }
+    }
+}
+
+// ── select() helpers ───────────────────────────────────────────────────────
+
+/// Read first two u64 words from an fd_set pointer (covers fds 0-127).
+fn read_from_fdset(ptr: u64, n: usize) -> [u64; 2] {
+    if ptr == 0 || ptr < 0x1000 || n == 0 { return [0u64; 2]; }
+    unsafe { [*(ptr as *const u64), *((ptr + 8) as *const u64)] }
+}
+
+/// Zero the entire fd_set (128 bytes).
+fn clear_fdset(ptr: u64) {
+    if ptr == 0 || ptr < 0x1000 { return; }
+    unsafe { core::ptr::write_bytes(ptr as *mut u8, 0, 128); }
+}
+
+/// Set a single bit in an fd_set.
+fn set_fdset_bit(ptr: u64, fd: usize) {
+    if ptr == 0 || ptr < 0x1000 { return; }
+    unsafe {
+        let word = fd / 64;
+        let bit  = fd % 64;
+        let p = (ptr as *mut u64).add(word);
+        *p |= 1u64 << bit;
+    }
+}
+
+/// Returns true if the given fd has data available for reading right now.
+fn fd_read_ready(fd: usize) -> bool {
+    use crate::kernel::fs::ramfs::{FdBackend, MAX_FD};
+    use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+
+    if fd >= 200 {
+        return unsafe { crate::kernel::net::socket::socket_read_ready(fd as i64) };
+    }
+    if fd >= MAX_FD { return false; }
+    unsafe {
+        let sched = &raw const SCHED;
+        let task  = &(*sched).tasks[CURRENT_TASK_IDX];
+        match task.fd_table.entries[fd] {
+            None    => true, // closed fd is "readable" (returns EOF)
+            Some(e) => match e.backend {
+                FdBackend::DevTty =>
+                    crate::kernel::stdin::available() > 0,
+                FdBackend::Pipe if !e.writable =>
+                    crate::kernel::pipe::read_ready(e.raw_fd),
+                _ => true, // regular files, /dev/null, dirs always ready
+            }
         }
     }
 }
