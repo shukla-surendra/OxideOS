@@ -879,3 +879,37 @@ unsafe fn map_phys_leaf(
     }
     Ok(())
 }
+
+/// Walk the *current* CR3's page tables to check if `virt` has a present leaf mapping.
+/// Used by syscall path to safely read user strings without faulting on unmapped pages.
+pub unsafe fn is_page_mapped_current(virt: u64) -> bool {
+    const HHO: u64 = 0xFFFF_8000_0000_0000;
+    let cr3: u64;
+    unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3); }
+    let l4_phys = cr3 & 0x000F_FFFF_FFFF_F000;
+
+    let l4i = ((virt >> 39) & 0x1FF) as usize;
+    let l3i = ((virt >> 30) & 0x1FF) as usize;
+    let l2i = ((virt >> 21) & 0x1FF) as usize;
+    let l1i = ((virt >> 12) & 0x1FF) as usize;
+
+    unsafe {
+        let l4 = (l4_phys + HHO) as *const u64;
+        let l4e = *l4.add(l4i);
+        if l4e & 1 == 0 { return false; }
+
+        let l3 = ((l4e & 0x000F_FFFF_FFFF_F000) + HHO) as *const u64;
+        let l3e = *l3.add(l3i);
+        if l3e & 1 == 0 { return false; }
+        if l3e & (1 << 7) != 0 { return true; } // 1 GB huge page
+
+        let l2 = ((l3e & 0x000F_FFFF_FFFF_F000) + HHO) as *const u64;
+        let l2e = *l2.add(l2i);
+        if l2e & 1 == 0 { return false; }
+        if l2e & (1 << 7) != 0 { return true; } // 2 MB huge page
+
+        let l1 = ((l2e & 0x000F_FFFF_FFFF_F000) + HHO) as *const u64;
+        let l1e = *l1.add(l1i);
+        l1e & 1 != 0
+    }
+}

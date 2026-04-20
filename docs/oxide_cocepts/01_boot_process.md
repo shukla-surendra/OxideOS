@@ -1,4 +1,4 @@
-# 1. The Boot Process
+# Chapter 1: The Boot Process - From Power-On to Kernel Control
 
 The journey of an operating system begins long before the first line of kernel code is executed. This document details the boot process of OxideOS, from the moment the computer is powered on to the instant the kernel's `kmain` function is called.
 
@@ -14,22 +14,26 @@ OxideOS does not run directly on the hardware from the start. It relies on a boo
 
 Limine is a modern, versatile bootloader that simplifies the initial setup for the kernel. Its responsibilities are crucial:
 
-1.  **Loading the Kernel**: Limine locates the kernel's ELF (Executable and Linkable Format) file on the boot disk and loads it into memory.
+1.  **Loading the Kernel**: Limine acts like a delivery service for our kernel. It finds the kernel's executable file (which is in a format called **ELF - Executable and Linkable Format**) on the boot disk (like a CD-ROM or hard drive) and loads its contents into the computer's RAM.
 
-2.  **Entering 64-bit Long Mode**: It transitions the CPU from its initial 16-bit or 32-bit state into 64-bit "long mode," which is required for a modern operating system.
+2.  **Entering 64-bit Long Mode**: When a computer first turns on, its CPU starts in a very basic 16-bit mode. Modern operating systems, especially 64-bit ones like OxideOS, need the CPU to operate in a much more powerful 64-bit mode, often called "long mode." Limine handles this complex transition, setting up the CPU so our kernel can use its full capabilities.
 
-3.  **Creating Initial Page Tables**: It sets up a basic virtual memory layout. A key part of this is mapping the kernel's code and data into the "higher half" of the virtual address space (e.g., starting at `0xFFFF800000000000`). This separates the kernel's address space from the user-level address space (which will occupy the lower half), preventing collisions.
+3.  **Creating Initial Page Tables**: This is where memory management begins. Limine sets up a basic **virtual memory** system. Think of virtual memory as a map that translates addresses used by programs into actual physical locations in RAM. Limine creates initial "page tables" that map the kernel's code and data into a special region of the virtual address space called the "**higher half**" (e.g., starting at `0xFFFF800000000000`). This is a crucial security and organization step: it ensures the kernel's memory is separate from where user programs will eventually run (the "lower half"), preventing them from accidentally or maliciously interfering with each other.
 
-4.  **Gathering System Information**: Limine probes the hardware and collects vital information that the kernel will need. It passes this information to the kernel using a standardized request/response protocol.
+4.  **Gathering System Information**: Before handing over control, Limine acts as a scout, probing the hardware and collecting vital information that the kernel will need. This includes things like how much RAM is available, where the screen's memory is located, and other hardware details. It then passes this information to the kernel using a standardized **request/response protocol**.
 
 ### Limine Requests
 
-The kernel declares its information needs by embedding static "requests" in the kernel executable. Limine finds these requests and provides the corresponding "responses". In `kernel/src/main.rs`, you can see these requests:
+Our kernel tells Limine what information it needs by embedding special "requests" directly into its executable code. Limine reads these requests and provides the corresponding "responses." In `kernel/src/main.rs`, you can see how OxideOS declares these needs:
 
 ```rust
 #[used]
 #[unsafe(link_section = ".requests")]
 static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
+
+#[used]
+#[unsafe(link_section = ".requests")]
+static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
 
 #[used]
 #[unsafe(link_section = ".requests")]

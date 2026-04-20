@@ -412,6 +412,10 @@ impl WindowManager {
         }
     }
 
+    pub fn z_order_slice(&self) -> &[usize] {
+        &self.z_order[..self.window_count]
+    }
+
     pub fn draw_all(&self, graphics: &Graphics) {
         // Draw windows in z-order (bottom to top)
         for i in 0..self.window_count {

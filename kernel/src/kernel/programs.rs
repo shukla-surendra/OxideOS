@@ -176,6 +176,10 @@ pub static BUSYBOX: &[u8] =
 pub static BASH: &[u8] =
     include_bytes!("../../../userspace/bin/bash.elf");
 
+/// sysmon — GUI system monitor showing memory, uptime, and process count.
+pub static SYSMON: &[u8] =
+    include_bytes!("../../../userspace/bin/sysmon.elf");
+
 /// Look up a built-in program by name.
 pub fn find(name: &str) -> Option<&'static [u8]> {
     match name {
@@ -221,6 +225,7 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
         "lua"        => Some(LUA),
         "busybox"    => Some(BUSYBOX),
         "bash"       => Some(BASH),
+        "sysmon"     => Some(SYSMON),
         _            => None,
     }
 }
@@ -241,4 +246,5 @@ pub const NAMES: &[&str] = &[
     "lua",
     "busybox",
     "bash",
+    "sysmon",
 ];

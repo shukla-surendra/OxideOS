@@ -22,8 +22,8 @@ org 0x400000
     ; ── Open file for writing (O_WRONLY | O_CREAT = 0x02) ────────────────────
     mov  rax, 2
     lea  rdi, [rel filename]
-    mov  rsi, filename.end - filename
-    mov  rdx, 2
+    mov  rsi, 2            ; flags = O_WRONLY|O_CREAT (Linux ABI: rsi=flags)
+    xor  rdx, rdx          ; mode = 0
     int  0x80
 
     test rax, rax
@@ -46,8 +46,8 @@ org 0x400000
     ; ── Open file for reading (O_RDONLY = 0x01) ──────────────────────────────
     mov  rax, 2
     lea  rdi, [rel filename]
-    mov  rsi, filename.end - filename
-    mov  rdx, 1
+    mov  rsi, 0            ; flags = O_RDONLY (Linux ABI: rsi=flags)
+    xor  rdx, rdx          ; mode = 0
     int  0x80
 
     test rax, rax
@@ -124,7 +124,7 @@ msg_banner:
 .end:
 
 filename:
-    db  "/test.txt"
+    db  "/test.txt", 0
 .end:
 
 file_data:
