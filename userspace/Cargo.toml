@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "oxide-rt",
+    "oxide-widgets",
     "hello_rust",
     "sh",
     "terminal",
@@ -10,5 +11,6 @@ members = [
     "nc",
     "filemanager",
     "install",
+    "sysmon",
 ]
 resolver = "2"

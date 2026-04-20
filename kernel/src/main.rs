@@ -418,6 +418,12 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
     // Initialize the per-process GUI subsystem.
     unsafe { kernel::gui_proc::init(wm, graphics); }
 
+    // DEBUG: auto-spawn bash at startup for crash diagnosis
+    {
+        use crate::kernel::programs;
+        let _ = unsafe { crate::kernel::scheduler::spawn(programs::BASH, "bash") };
+    }
+
     // Track previous focus to push focus-change events.
     let mut last_focused_id: Option<usize> = None;
 

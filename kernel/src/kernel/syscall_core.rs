@@ -117,12 +117,16 @@ pub enum Syscall {
     Getuid        = 102,
     Getgid        = 104,
     Setuid        = 105, // stub → 0
+    Setgid        = 106, // stub → 0
+    Geteuid       = 107, // → 0 (same as uid)
+    Getegid       = 108, // → 0 (same as gid)
     Gettid        = 186, // → getpid (single-threaded)
     Futex         = 202, // stub → 0
     ArchPrctl     = 158,
     SetTidAddress = 218,
     ClockGettime  = 228,
     ExitGroup     = 231, // musl uses this instead of exit(60)
+    Openat        = 257, // openat(dirfd, path, flags[, mode]) — treat AT_FDCWD as open()
     Pipe2         = 293, // pipe with flags — ignore flags, call pipe
     // ── SysV shared memory (Linux x86-64 numbers) ───────────────────────
     Shmget        = 29,
@@ -209,8 +213,12 @@ impl Syscall {
             Self::Getuid        => "getuid",
             Self::Getgid        => "getgid",
             Self::Setuid        => "setuid",
+            Self::Setgid        => "setgid",
+            Self::Geteuid       => "geteuid",
+            Self::Getegid       => "getegid",
             Self::Gettid        => "gettid",
             Self::Futex         => "futex",
+            Self::Openat        => "openat",
             Self::Pipe2         => "pipe2",
             Self::Mprotect      => "mprotect",
             Self::Getppid       => "getppid",
@@ -409,6 +417,9 @@ impl From<u64> for Syscall {
             102 => Self::Getuid,
             104 => Self::Getgid,
             105 => Self::Setuid,
+            106 => Self::Setgid,
+            107 => Self::Geteuid,
+            108 => Self::Getegid,
             110 => Self::Getppid,
             158 => Self::ArchPrctl,
             186 => Self::Gettid,
@@ -416,6 +427,7 @@ impl From<u64> for Syscall {
             218 => Self::SetTidAddress,
             228 => Self::ClockGettime,
             231 => Self::ExitGroup,
+            257 => Self::Openat,
             293 => Self::Pipe2,
             // ── OxideOS-specific ─────────────────────────────────────────
             400 => Self::Print,
@@ -501,6 +513,7 @@ pub const ENOENT: i64 = -7;
 // ── Runtime trait ──────────────────────────────────────────────────────────
 pub trait SyscallRuntime {
     fn trace(&mut self, _syscall: Syscall) {}
+    fn trace_unknown(&mut self, _num: u64) {}  // override to log unrecognized syscall numbers
     fn current_pid(&self) -> u64 { 1 }
     fn current_ticks(&self) -> u64;
     fn write_console(&mut self, bytes: &[u8]);
@@ -905,7 +918,11 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
     runtime: &mut R, request: SyscallRequest,
 ) -> SyscallResult {
     let syscall = request.syscall();
-    runtime.trace(syscall);
+    if syscall == Syscall::Invalid {
+        runtime.trace_unknown(request.number);
+    } else {
+        runtime.trace(syscall);
+    }
 
     match syscall {
         Syscall::Exit          => runtime.exit(request.arg1 as i32),
@@ -1174,10 +1191,16 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
             if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
         }
         Syscall::Lstat => unsafe {
-            if let Err(e) = validate_user_range(request.arg1, request.arg2) { return SyscallResult::err(e); }
-            if let Err(e) = validate_user_range(request.arg3, 144) { return SyscallResult::err(e); }
-            let path = slice::from_raw_parts(request.arg1 as *const u8, request.arg2 as usize);
-            let r = runtime.lstat_impl(path, request.arg3);
+            let (path_len, stat_buf) = if request.arg2 >= 4096 {
+                (strnlen_user(request.arg1, 4096), request.arg2)
+            } else {
+                (request.arg2, request.arg3)
+            };
+            if path_len == 0 { return SyscallResult::err(EINVAL); }
+            if let Err(e) = validate_user_range(request.arg1, path_len) { return SyscallResult::err(e); }
+            if let Err(e) = validate_user_range(stat_buf, 144) { return SyscallResult::err(e); }
+            let path = slice::from_raw_parts(request.arg1 as *const u8, path_len as usize);
+            let r = runtime.lstat_impl(path, stat_buf);
             if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
         }
         Syscall::Readv => {
@@ -1189,11 +1212,24 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
             if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
         }
         Syscall::Getuid    => SyscallResult::ok(runtime.getuid_impl()),
+        Syscall::Geteuid   => SyscallResult::ok(runtime.getuid_impl()),  // euid = uid (no setuid)
         Syscall::Getgid    => SyscallResult::ok(runtime.getgid_impl()),
+        Syscall::Getegid   => SyscallResult::ok(runtime.getgid_impl()),  // egid = gid
         Syscall::Setuid    => SyscallResult::ok(runtime.setuid_impl(request.arg1 as u32)),
+        Syscall::Setgid    => SyscallResult::ok(0),
         Syscall::Gettid    => SyscallResult::ok(runtime.gettid_impl()),
         Syscall::Futex     => {
             let r = runtime.futex_impl(request.arg1, request.arg2 as u32, request.arg3 as u32);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
+        Syscall::Openat => unsafe {
+            // openat(dirfd, path_ptr, flags[, mode])
+            // AT_FDCWD = -100; we ignore dirfd for now and treat as open().
+            let path_len = strnlen_user(request.arg2, 4096);
+            if path_len == 0 { return SyscallResult::err(EINVAL); }
+            if let Err(code) = validate_user_range(request.arg2, path_len) { return SyscallResult::err(code); }
+            let path = slice::from_raw_parts(request.arg2 as *const u8, path_len as usize);
+            let r = runtime.fs_open(path, request.arg3 as u32);
             if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
         }
         Syscall::Pipe2 => unsafe {
@@ -1207,9 +1243,12 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
             if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
         }
         Syscall::Access => unsafe {
-            if let Err(e) = validate_user_range(request.arg1, request.arg2) { return SyscallResult::err(e); }
-            let path = slice::from_raw_parts(request.arg1 as *const u8, request.arg2 as usize);
-            let r = runtime.access_impl(path, request.arg3 as u32);
+            // Linux ABI: access(path_ptr, mode) — arg2 is mode flags, not path_len.
+            let path_len = strnlen_user(request.arg1, 4096);
+            if path_len == 0 { return SyscallResult::err(EINVAL); }
+            if let Err(e) = validate_user_range(request.arg1, path_len) { return SyscallResult::err(e); }
+            let path = slice::from_raw_parts(request.arg1 as *const u8, path_len as usize);
+            let r = runtime.access_impl(path, request.arg2 as u32);
             if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
         }
         Syscall::SchedYield  => SyscallResult::ok(runtime.sched_yield_impl()),
@@ -1236,9 +1275,12 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
             if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
         }
         Syscall::Readlink => unsafe {
-            if let Err(e) = validate_user_range(request.arg1, request.arg2) { return SyscallResult::err(e); }
-            let path = slice::from_raw_parts(request.arg1 as *const u8, request.arg2 as usize);
-            let r = runtime.readlink_impl(path, request.arg3, request.arg4);
+            // Linux ABI: readlink(path_ptr, buf_ptr, bufsiz)
+            let path_len = strnlen_user(request.arg1, 4096);
+            if path_len == 0 { return SyscallResult::err(EINVAL); }
+            if let Err(e) = validate_user_range(request.arg1, path_len) { return SyscallResult::err(e); }
+            let path = slice::from_raw_parts(request.arg1 as *const u8, path_len as usize);
+            let r = runtime.readlink_impl(path, request.arg2, request.arg3);
             if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
         }
         Syscall::Fchmod  => SyscallResult::ok(runtime.fchmod_impl(request.arg1 as i32, request.arg2 as u16)),
@@ -1299,8 +1341,11 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
 // ── Individual syscall implementations ────────────────────────────────────
 
 unsafe fn sys_open<R: SyscallRuntime>(
-    runtime: &mut R, path_ptr: u64, path_len: u64, flags: u64,
+    runtime: &mut R, path_ptr: u64, flags: u64, _mode: u64,
 ) -> SyscallResult {
+    // Always Linux ABI: open(path_ptr, flags[, mode]) — path is NUL-terminated.
+    let path_len = unsafe { strnlen_user(path_ptr, 4096) };
+    if path_len == 0 { return SyscallResult::err(EINVAL); }
     if let Err(code) = validate_user_range(path_ptr, path_len) {
         return SyscallResult::err(code);
     }
@@ -1396,15 +1441,23 @@ unsafe fn sys_get_system_info<R: SyscallRuntime>(
 }
 
 unsafe fn sys_exec<R: SyscallRuntime>(
-    runtime: &mut R, path_ptr: u64, path_len: u64,
+    runtime: &mut R, path_ptr: u64, arg2: u64,
 ) -> SyscallResult {
+    // Linux execve ABI: execve(path_ptr, argv_ptr, envp_ptr) — path is NUL-terminated.
+    // Our custom exec ABI: exec(path_ptr, path_len) — arg2 is path_len.
+    // Use NUL-scan when arg2 looks like a pointer (>= 4096), or always for safety.
+    let path_len = if arg2 >= 4096 {
+        unsafe { strnlen_user(path_ptr, 4096) }
+    } else if arg2 == 0 {
+        unsafe { strnlen_user(path_ptr, 4096) }
+    } else {
+        arg2
+    };
+    if path_len == 0 { return SyscallResult::err(EINVAL); }
     if let Err(code) = validate_user_range(path_ptr, path_len) {
         return SyscallResult::err(code);
     }
-    if path_len == 0 { return SyscallResult::err(EINVAL); }
     let path = unsafe { slice::from_raw_parts(path_ptr as *const u8, path_len as usize) };
-    // On success exec_program diverges (never returns).
-    // On failure it returns a negative error code.
     let err = runtime.exec_program(path);
     SyscallResult::err(err)
 }
@@ -1487,8 +1540,11 @@ unsafe fn sys_mkdir<R: SyscallRuntime>(
 }
 
 unsafe fn sys_chdir<R: SyscallRuntime>(
-    runtime: &mut R, path_ptr: u64, path_len: u64,
+    runtime: &mut R, path_ptr: u64, _arg2: u64,
 ) -> SyscallResult {
+    // Linux ABI: chdir(path_ptr) — single NUL-terminated argument.
+    let path_len = unsafe { strnlen_user(path_ptr, 4096) };
+    if path_len == 0 { return SyscallResult::err(EINVAL); }
     if let Err(e) = validate_user_range(path_ptr, path_len) { return SyscallResult::err(e); }
     let path = unsafe { slice::from_raw_parts(path_ptr as *const u8, path_len as usize) };
     let r = runtime.chdir_impl(path);
@@ -1506,14 +1562,46 @@ unsafe fn sys_getcwd<R: SyscallRuntime>(
 
 /// stat(path_ptr, path_len, stat_buf_ptr)
 unsafe fn sys_stat<R: SyscallRuntime>(
-    runtime: &mut R, path_ptr: u64, path_len: u64, stat_buf: u64,
+    runtime: &mut R, path_ptr: u64, arg2: u64, arg3: u64,
 ) -> SyscallResult {
+    // Detect ABI: Linux stat(path, statbuf) vs. OxideOS stat(path, path_len, statbuf).
+    // If arg2 >= 4096, it looks like a pointer → Linux ABI (arg2=statbuf).
+    // If arg2 < 4096, it looks like a length → custom ABI (arg2=path_len, arg3=statbuf).
+    let (path_len, stat_buf) = if arg2 >= 4096 {
+        // Linux ABI: NUL-terminated path, arg2 = statbuf pointer
+        let len = unsafe { strnlen_user(path_ptr, 4096) };
+        (len, arg2)
+    } else {
+        (arg2, arg3)
+    };
+    if path_len == 0 { return SyscallResult::err(EINVAL); }
     if let Err(e) = validate_user_range(path_ptr, path_len) { return SyscallResult::err(e); }
-    // LinuxStat is 144 bytes (full Linux x86-64 struct stat)
     if let Err(e) = validate_user_range(stat_buf, 144) { return SyscallResult::err(e); }
     let path = unsafe { slice::from_raw_parts(path_ptr as *const u8, path_len as usize) };
     let r = runtime.stat_impl(path, stat_buf);
     if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+}
+
+/// Measure length of a NUL-terminated user string (including NUL), up to `max` bytes.
+/// Returns 0 if an unmapped page is encountered before the NUL terminator.
+unsafe fn strnlen_user(ptr: u64, max: usize) -> u64 {
+    use crate::kernel::paging_allocator::is_page_mapped_current;
+    let mut i = 0usize;
+    let mut checked_page = u64::MAX; // sentinel: no page checked yet
+    while i < max {
+        let addr = ptr + i as u64;
+        let page = addr & !0xFFF_u64;
+        if page != checked_page {
+            if !unsafe { is_page_mapped_current(addr) } {
+                return 0; // unmapped — signal failure to caller
+            }
+            checked_page = page;
+        }
+        let b = unsafe { core::ptr::read_unaligned(addr as *const u8) };
+        i += 1;
+        if b == 0 { break; }
+    }
+    i as u64
 }
 
 /// Getenv: arg1=key_ptr, arg2=key_len, arg3=val_buf_ptr, arg4=val_buf_len

@@ -20,6 +20,14 @@ impl SyscallRuntime for KernelRuntime {
         }
     }
 
+    fn trace_unknown(&mut self, num: u64) {
+        unsafe {
+            SERIAL_PORT.write_str("SYSCALL: unknown#");
+            SERIAL_PORT.write_decimal(num as u32);
+            SERIAL_PORT.write_str("\n");
+        }
+    }
+
     fn current_ticks(&self) -> u64 {
         unsafe { crate::kernel::timer::get_ticks() }
     }

@@ -49,10 +49,25 @@ name = "oxide-rt"
 version = "0.1.0"
 
 [[package]]
+name = "oxide-widgets"
+version = "0.1.0"
+dependencies = [
+ "oxide-rt",
+]
+
+[[package]]
 name = "sh"
 version = "0.1.0"
 dependencies = [
  "oxide-rt",
+]
+
+[[package]]
+name = "sysmon"
+version = "0.1.0"
+dependencies = [
+ "oxide-rt",
+ "oxide-widgets",
 ]
 
 [[package]]

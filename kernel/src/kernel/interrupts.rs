@@ -384,12 +384,52 @@ fn handle_cpu_exception_64(int_no: u64, err_code: u64, frame: *mut InterruptFram
             SERIAL_PORT.write_decimal(int_no as u32);
             SERIAL_PORT.write_str(" pid=");
             SERIAL_PORT.write_decimal(pid as u32);
-            if fault_addr != 0 {
-                SERIAL_PORT.write_str(" cr2=0x");
-                SERIAL_PORT.write_hex((fault_addr >> 32) as u32);
-                SERIAL_PORT.write_hex(fault_addr as u32);
+            SERIAL_PORT.write_str(" rip=0x");
+            SERIAL_PORT.write_hex(((*frame).rip >> 32) as u32);
+            SERIAL_PORT.write_hex((*frame).rip as u32);
+            SERIAL_PORT.write_str(" cr2=0x");
+            SERIAL_PORT.write_hex((fault_addr >> 32) as u32);
+            SERIAL_PORT.write_hex(fault_addr as u32);
+            SERIAL_PORT.write_str("\n");
+
+            // Dump registers and stack for diagnosis
+            let user_rsp = (*frame).rsp;
+            SERIAL_PORT.write_str("  rsp=0x");
+            SERIAL_PORT.write_hex((user_rsp >> 32) as u32);
+            SERIAL_PORT.write_hex(user_rsp as u32);
+            SERIAL_PORT.write_str(" rax=0x");
+            SERIAL_PORT.write_hex(((*frame).rax >> 32) as u32);
+            SERIAL_PORT.write_hex((*frame).rax as u32);
+            SERIAL_PORT.write_str(" rbx=0x");
+            SERIAL_PORT.write_hex(((*frame).rbx >> 32) as u32);
+            SERIAL_PORT.write_hex((*frame).rbx as u32);
+            SERIAL_PORT.write_str("\n");
+            SERIAL_PORT.write_str("  rdi=0x");
+            SERIAL_PORT.write_hex(((*frame).rdi >> 32) as u32);
+            SERIAL_PORT.write_hex((*frame).rdi as u32);
+            SERIAL_PORT.write_str(" rsi=0x");
+            SERIAL_PORT.write_hex(((*frame).rsi >> 32) as u32);
+            SERIAL_PORT.write_hex((*frame).rsi as u32);
+            SERIAL_PORT.write_str(" rdx=0x");
+            SERIAL_PORT.write_hex(((*frame).rdx >> 32) as u32);
+            SERIAL_PORT.write_hex((*frame).rdx as u32);
+            SERIAL_PORT.write_str("\n");
+
+            // Dump [rsp+0..+48] to see what argv/envp look like
+            if user_rsp >= 0x1000 && user_rsp < 0x800000 {
+                SERIAL_PORT.write_str("  stack dump [rsp+0..+48]:\n");
+                let base = user_rsp as *const u64;
+                for i in 0..6usize {
+                    let val = core::ptr::read_unaligned(base.add(i));
+                    SERIAL_PORT.write_str("    [rsp+");
+                    SERIAL_PORT.write_decimal((i * 8) as u32);
+                    SERIAL_PORT.write_str("]=0x");
+                    SERIAL_PORT.write_hex((val >> 32) as u32);
+                    SERIAL_PORT.write_hex(val as u32);
+                    SERIAL_PORT.write_str("\n");
+                }
             }
-            SERIAL_PORT.write_str(" — killed\n");
+            SERIAL_PORT.write_str("  — killed\n");
 
             // exit_to_kernel(-signal) triggers the normal Dead path in tick()
             let sig: i64 = match int_no {

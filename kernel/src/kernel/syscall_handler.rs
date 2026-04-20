@@ -139,6 +139,17 @@ unsafe extern "C" fn syscall_entry() {
 
         "call {handler}",       // result in rax
 
+        // Restore registers that the Linux syscall ABI requires to be preserved.
+        // The Rust handler (SysV ABI) may clobber rdi, rsi, rdx, rcx, r8, r9, r10.
+        // Per Linux x86-64 syscall ABI: rdi, rsi, rdx, r8, r9, r10 are preserved;
+        // only rax (return value), rcx (user RIP), r11 (user RFLAGS) are changed.
+        "mov r10, [rsp + 48]",  // restore r10 (arg4)
+        "mov r9,  [rsp + 40]",  // restore r9  (arg6)
+        "mov r8,  [rsp + 32]",  // restore r8  (arg5) ← critical: __sigsetjmp_tail uses r8
+        "mov rdx, [rsp + 24]",  // restore rdx (arg3)
+        "mov rsi, [rsp + 16]",  // restore rsi (arg2)
+        "mov rdi, [rsp +  8]",  // restore rdi (arg1)
+
         // Restore sysretq-required registers from saved slots.
         "mov rcx, [rsp + 56]",  // user RIP   → rcx
         "mov r11, [rsp + 64]",  // user RFLAGS → r11
@@ -158,6 +169,119 @@ unsafe extern "C" fn syscall_handler_wrapper(
     syscall_num: u64,
     arg1: u64, arg2: u64, arg3: u64, arg4: u64, arg5: u64,
 ) -> i64 {
+    // Log arguments for key early-startup syscalls to help debug bash crash.
+    match syscall_num {
+        9 => {  // mmap
+            SERIAL_PORT.write_str("  mmap(addr=0x");
+            SERIAL_PORT.write_hex((arg1 >> 32) as u32);
+            SERIAL_PORT.write_hex(arg1 as u32);
+            SERIAL_PORT.write_str(", len=0x");
+            SERIAL_PORT.write_hex(arg2 as u32);
+            SERIAL_PORT.write_str(", prot=");
+            SERIAL_PORT.write_decimal(arg3 as u32);
+            SERIAL_PORT.write_str(", flags=");
+            SERIAL_PORT.write_decimal(arg4 as u32);
+            SERIAL_PORT.write_str(")\n");
+        }
+        10 => { // mprotect
+            SERIAL_PORT.write_str("  mprotect(addr=0x");
+            SERIAL_PORT.write_hex((arg1 >> 32) as u32);
+            SERIAL_PORT.write_hex(arg1 as u32);
+            SERIAL_PORT.write_str(", len=0x");
+            SERIAL_PORT.write_hex(arg2 as u32);
+            SERIAL_PORT.write_str(", prot=");
+            SERIAL_PORT.write_decimal(arg3 as u32);
+            SERIAL_PORT.write_str(")\n");
+        }
+        158 => { // arch_prctl
+            SERIAL_PORT.write_str("  arch_prctl(code=");
+            SERIAL_PORT.write_decimal(arg1 as u32);
+            SERIAL_PORT.write_str(", addr=0x");
+            SERIAL_PORT.write_hex((arg2 >> 32) as u32);
+            SERIAL_PORT.write_hex(arg2 as u32);
+            SERIAL_PORT.write_str(")\n");
+        }
+        14 => { // rt_sigprocmask
+            SERIAL_PORT.write_str("  rt_sigprocmask(how=");
+            SERIAL_PORT.write_decimal(arg1 as u32);
+            SERIAL_PORT.write_str(", newset=0x");
+            SERIAL_PORT.write_hex((arg2 >> 32) as u32);
+            SERIAL_PORT.write_hex(arg2 as u32);
+            SERIAL_PORT.write_str(", oldset=0x");
+            SERIAL_PORT.write_hex((arg3 >> 32) as u32);
+            SERIAL_PORT.write_hex(arg3 as u32);
+            SERIAL_PORT.write_str(")\n");
+        }
+        257 => { // openat
+            SERIAL_PORT.write_str("  openat(dirfd=");
+            SERIAL_PORT.write_decimal(arg1 as u32);
+            SERIAL_PORT.write_str(", path=0x");
+            SERIAL_PORT.write_hex((arg2 >> 32) as u32);
+            SERIAL_PORT.write_hex(arg2 as u32);
+            SERIAL_PORT.write_str(", flags=0x");
+            SERIAL_PORT.write_hex(arg3 as u32);
+            if arg2 >= 0x1000 && arg2 < 0x0000_8000_0000_0000 {
+                SERIAL_PORT.write_str(", \"");
+                let p = arg2 as *const u8;
+                for i in 0..64usize {
+                    let b = unsafe { core::ptr::read_unaligned(p.add(i)) };
+                    if b == 0 { break; }
+                    SERIAL_PORT.write_byte(b);
+                }
+                SERIAL_PORT.write_str("\"");
+            }
+            SERIAL_PORT.write_str(")\n");
+        }
+        2 => { // open
+            SERIAL_PORT.write_str("  open(path=0x");
+            SERIAL_PORT.write_hex((arg1 >> 32) as u32);
+            SERIAL_PORT.write_hex(arg1 as u32);
+            SERIAL_PORT.write_str(", flags=0x");
+            SERIAL_PORT.write_hex(arg2 as u32);
+            // Print path string if it looks like a valid user pointer
+            if arg1 >= 0x1000 && arg1 < 0x0000_8000_0000_0000 {
+                SERIAL_PORT.write_str(", \"");
+                let p = arg1 as *const u8;
+                for i in 0..64usize {
+                    let b = unsafe { core::ptr::read_unaligned(p.add(i)) };
+                    if b == 0 { break; }
+                    SERIAL_PORT.write_byte(b);
+                }
+                SERIAL_PORT.write_str("\"");
+            }
+            SERIAL_PORT.write_str(")\n");
+        }
+        59 => { // execve
+            SERIAL_PORT.write_str("  execve(path=0x");
+            SERIAL_PORT.write_hex((arg1 >> 32) as u32);
+            SERIAL_PORT.write_hex(arg1 as u32);
+            if arg1 >= 0x1000 && arg1 < 0x0000_8000_0000_0000 {
+                SERIAL_PORT.write_str(", \"");
+                let p = arg1 as *const u8;
+                for i in 0..64usize {
+                    let b = unsafe { core::ptr::read_unaligned(p.add(i)) };
+                    if b == 0 { break; }
+                    SERIAL_PORT.write_byte(b);
+                }
+                SERIAL_PORT.write_str("\"");
+            }
+            SERIAL_PORT.write_str(")\n");
+        }
+        _ => {}
+    }
+
     let result = handle_syscall(syscall_num, arg1, arg2, arg3, arg4, arg5);
+
+    // Log return value for the same key syscalls.
+    match syscall_num {
+        9 | 10 | 158 | 14 | 2 | 59 | 257 => {
+            SERIAL_PORT.write_str("    -> 0x");
+            SERIAL_PORT.write_hex((result.value >> 32) as u32);
+            SERIAL_PORT.write_hex(result.value as u32);
+            SERIAL_PORT.write_str("\n");
+        }
+        _ => {}
+    }
+
     result.value
 }
