@@ -136,6 +136,13 @@ pub unsafe fn install_input_hooks() {
     keyboard::register_arrow_key_callback(terminal_arrow_callback);
 }
 
+/// Pop one raw key event from the shared keyboard ring.
+/// Returns the encoded event: plain chars as u16, arrow keys as 0x100+.
+/// Other kernel GUI widgets (Notepad, etc.) call this when they are focused.
+pub fn pop_key_event() -> Option<u16> {
+    dequeue_event()
+}
+
 // ============================================================================
 // TERMINAL APPLICATION
 // ============================================================================
@@ -401,17 +408,18 @@ impl TerminalApp {
         let cw = window.width.saturating_sub(2);
         let ch = window.height.saturating_sub(32);
 
-        // ── Colour palette (VS Code Dark+ / Windows Terminal) ─────────────
-        const BG:         u32 = 0xFF0C0C0C;
-        const STATUS_BG:  u32 = 0xFF1A1A1A;
-        const STATUS_SEP: u32 = 0xFF2A2A2A;
-        const C_BRAND:    u32 = 0xFF4EC9B0; // teal
-        const C_UPTIME:   u32 = 0xFF555555;
-        const C_CWD_COL:  u32 = 0xFF569CD6; // blue path
-        const C_DIM:      u32 = 0xFF4A4A4A;
-        const C_SCROLL:   u32 = 0xFF3A3A3A; // scrollbar thumb
-        const C_SCROLL_T: u32 = 0xFF191919; // scrollbar track
-        const C_INPUT:    u32 = 0xFFE8E8E8; // typed text
+        // ── Colour palette (Ubuntu Terminal inspired) ─────────────────────
+        const BG:         u32 = 0xFF0D0D0D; // near-black
+        const STATUS_BG:  u32 = 0xFF2C001E; // Ubuntu aubergine strip
+        const STATUS_SEP: u32 = 0xFF4A0030;
+        const C_BRAND:    u32 = 0xFFE95420; // Ubuntu orange
+        const C_UPTIME:   u32 = 0xFF7A4050;
+        const C_USER:     u32 = 0xFF4CE046; // bright green (user@host)
+        const C_CWD_COL:  u32 = 0xFF5FC5E0; // cyan path
+        const C_DIM:      u32 = 0xFF555555;
+        const C_SCROLL:   u32 = 0xFF4A4A4A; // scrollbar thumb
+        const C_SCROLL_T: u32 = 0xFF1A1A1A; // scrollbar track
+        const C_INPUT:    u32 = 0xFFEEEEEE; // typed text
         const C_CURSOR:   u32 = 0xFFFFFFFF;
         const C_PASS:     u32 = 0xFF3A3A3A; // passthrough label
 
@@ -420,7 +428,7 @@ impl TerminalApp {
         graphics.fill_rect(cx, cy, cw, SBAR_H, STATUS_BG);
         graphics.fill_rect(cx, cy + SBAR_H, cw, 1, STATUS_SEP);
 
-        fonts::draw_string(graphics, cx + 8, cy + 3, "OxideOS Terminal", C_BRAND);
+        fonts::draw_string(graphics, cx + 8, cy + 3, "oxide-terminal", C_BRAND);
 
         // Uptime HH:MM:SS on the right
         let ticks = unsafe { timer::get_ticks() };
@@ -453,7 +461,7 @@ impl TerminalApp {
         graphics.fill_rect(cx, text_top, cw, 10, BG);
 
         // Focus accent (left edge)
-        let accent_col = if is_focused { C_BRAND } else { 0xFF1E1E1E };
+        let accent_col = if is_focused { C_USER } else { 0xFF1E1E1E };
         graphics.fill_rect(cx, text_top, ACC_W, text_h - 8, accent_col);
 
         // Scrollbar track
@@ -532,7 +540,7 @@ impl TerminalApp {
             // Thin I-beam cursor at end of echo
             if is_focused {
                 let cur_x = echo_x + vis_echo.len() as u64 * CHAR_WIDTH;
-                graphics.fill_rect(cur_x, prompt_row_y - 1, 2, LINE_HEIGHT, C_BRAND);
+                graphics.fill_rect(cur_x, prompt_row_y - 1, 2, LINE_HEIGHT, C_USER);
             }
         } else {
             // ── Bash-style multi-colour prompt: oxide : path $ ─────────────
@@ -544,23 +552,23 @@ impl TerminalApp {
 
             let mut px = text_x;
 
-            // "oxide" in teal
-            fonts::draw_string(graphics, px, prompt_row_y, "oxide", C_BRAND);
-            px += 5 * CHAR_WIDTH;
+            // "oxide@os" in green (Ubuntu-style user@host)
+            fonts::draw_string(graphics, px, prompt_row_y, "oxide@os", C_USER);
+            px += 8 * CHAR_WIDTH;
 
             // ":" in dim
             fonts::draw_string(graphics, px, prompt_row_y, ":", C_DIM);
             px += CHAR_WIDTH;
 
-            // path in blue
+            // path in cyan
             fonts::draw_string(graphics, px, prompt_row_y, short_cwd, C_CWD_COL);
             px += short_cwd.len() as u64 * CHAR_WIDTH;
 
-            // "$ " in default
-            fonts::draw_string(graphics, px, prompt_row_y, "$ ", 0xFFCCCCCC);
+            // "$ " in white
+            fonts::draw_string(graphics, px, prompt_row_y, "$ ", 0xFFFFFFFF);
             px += 2 * CHAR_WIDTH;
 
-            let prompt_cols = 5 + 1 + short_cwd.len() + 2;
+            let prompt_cols = 8 + 1 + short_cwd.len() + 2;
             let avail_input = max_cols.saturating_sub(prompt_cols);
 
             // Scroll window so cursor stays visible

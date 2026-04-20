@@ -27,7 +27,7 @@ OxideOS is a fully preemptive, multi-process operating system written from scrat
 | **Boots on real hardware** | BIOS and UEFI via Limine v9 |
 | **Preemptive multitasking** | Round-robin scheduler, Ring 3, fork/exec/waitpid |
 | **GUI** | Composited window manager, start menu, PS/2 mouse |
-| **Full TCP/IP stack** | RTL8139 NIC + smoltcp (TCP, UDP, ICMP, DHCP, ARP) |
+| **Full TCP/IP stack** | RTL8139 NIC + smoltcp (TCP, UDP, ICMP, DHCP, ARP, DNS) |
 | **Linux syscall ABI** | 80+ syscalls at Linux x86-64 numbers — musl programs just work |
 | **musl libc** | Compile any C program with `musl-gcc -static` and run it |
 | **Lua 5.4.7** | Full REPL and script execution, embedded in the kernel |
@@ -432,8 +432,7 @@ oxide_install.img  (192 MB)
 ## Roadmap
 
 See [docs/plan.md](docs/plan.md) for the full feature roadmap. Key upcoming milestones:
-
-- [ ] DHCP auto-activation + DNS resolver (wget by hostname)
+- [ ] DHCP auto-activation (DNS resolver already implemented)
 - [ ] ext2 write support
 - [ ] Copy-on-write fork
 - [ ] Job control (`bg`, `fg`, `Ctrl+Z`)

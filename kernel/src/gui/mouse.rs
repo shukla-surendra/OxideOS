@@ -59,13 +59,15 @@ impl MouseCursor {
     }
 
     pub fn update(&mut self, dx: i16, dy: i16, screen_width: u64, screen_height: u64) {
-        // Simple acceleration: boost large deltas so fast swipes cross the screen.
+        // Smooth acceleration tuned for QEMU PS/2 emulation.
+        // Raw deltas in QEMU are already ~1:1 with pixel distance, so heavy
+        // multiplication makes the cursor fly.  Use a gentle linear curve:
+        // 1× below 4, 1.5× below 10, 2× above — no hard jumps.
         let scale = |d: i16| -> i64 {
             let a = d.abs() as i64;
             let sign = if d < 0 { -1i64 } else { 1 };
-            // 1× for slow movement, 2× once delta > 5, 3× once > 15
-            let factor = if a > 15 { 3 } else if a > 5 { 2 } else { 1 };
-            sign * a * factor
+            let scaled = if a > 10 { a * 2 } else if a > 4 { (a * 3) / 2 } else { a };
+            sign * scaled
         };
 
         self.x += scale(dx);

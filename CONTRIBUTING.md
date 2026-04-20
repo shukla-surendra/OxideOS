@@ -38,7 +38,7 @@ kernel/src/kernel/
 ├── main.rs              # entry point, subsystem init
 ├── scheduler.rs         # preemptive round-robin scheduler, Task struct
 ├── syscall_core.rs      # syscall enum, dispatch, trait stubs
-├── syscall.rs           # KernelRuntime impl — real syscall bodies
+├── syscall.rs           # KernelRuntime impl — concrete syscall implementations
 ├── vfs.rs               # virtual filesystem layer
 ├── fat.rs               # FAT16 r/w driver
 ├── ext2.rs              # ext2 read-only driver

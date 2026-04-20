@@ -1,4 +1,4 @@
-# 6. The Storage Stack
+# Chapter 6: The Storage Stack - Talking to Disks and Files
 
 This document describes the storage stack in OxideOS, covering how the kernel communicates with a physical disk drive and interprets the data as a filesystem. The stack has two main layers: the low-level ATA driver that talks to the hardware, and the higher-level FAT16 driver that understands files and directories.
 
@@ -23,27 +23,29 @@ The driver communicates with the IDE controller by reading from and writing to a
 *   `0x1F7`: Status/Command port (to check disk status or issue commands).
 *   `0x1F2-0x1F6`: Ports for specifying sector count and address (LBA).
 
-### The `init()` Process: Detecting a Disk
+### The `ata::init()` Process: Detecting and Identifying a Disk
 
-The `ata::init()` function is a carefully choreographed sequence to detect and identify the primary master drive:
+The `ata::init()` function is a carefully choreographed sequence of steps to detect and identify the primary master ATA drive. This process involves precise timing and interaction with the disk controller's I/O ports:
 
-1.  **Software Reset**: The driver sends a reset command to the controller.
-2.  **Wait for BSY**: It polls the status port, waiting for the `BSY` (Busy) bit to clear, indicating the drive is ready for a command.
-3.  **Select Drive**: It selects the master drive on the primary bus.
-4.  **`IDENTIFY` Command**: It sends the `IDENTIFY` command (`0xEC`). This asks the drive to report its parameters.
-5.  **Wait and Poll**: It waits for the drive to process the command and then polls the `DRQ` (Data Request) bit, which signals that the 512-byte block of IDENTIFY data is ready to be read.
-6.  **Read Data**: The driver reads the 256 words (512 bytes) of IDENTIFY data from the data port.
-7.  **Extract Info**: It extracts key information from this data, most importantly the total number of sectors on the disk (from words 60-61), which it stores globally.
+1.  **Software Reset**: The driver first sends a software reset command to the ATA controller. This puts the controller into a known state.
+2.  **Wait for BSY**: It then enters a loop, continuously polling the status port (0x1F7) and waiting for the `BSY` (Busy) bit to clear. This indicates that the drive has finished its internal reset and is ready to receive commands.
+3.  **Select Drive**: The driver selects the master drive on the primary bus.
+4.  **`IDENTIFY` Command**: It sends the `IDENTIFY` command (command code `0xEC`) to the drive. This command instructs the drive to report a wealth of information about itself, such as its model number, serial number, and capabilities.
+5.  **Wait and Poll for Data**: After sending the `IDENTIFY` command, the driver waits for the drive to process it. It then polls the `DRQ` (Data Request) bit on the status port, which signals that the 512-byte block of IDENTIFY data is ready to be read from the data port.
+6.  **Read Data**: The driver reads the 256 words (512 bytes) of IDENTIFY data from the data port (0x1F0).
+7.  **Extract Information**: Finally, it parses this raw data to extract key information, most importantly the total number of sectors on the disk (found in words 60-61 of the IDENTIFY data), which is then stored globally for use by higher-level drivers.
 
-> **QEMU Note**: This driver relies on the IDE controller being available at these fixed legacy I/O ports. This is only true when QEMU is run with the `-M pc` machine type. The default `-M q35` uses a different configuration where the ports are not at this fixed location, which is why `make run-bios` is required for disk access.
+> **QEMU Note**: This ATA PIO driver relies on the IDE controller being available at these fixed legacy I/O ports. This is typically only true when QEMU is run with the `-M pc` machine type (which emulates an older i440FX chipset). The default `-M q35` machine type uses a more modern ICH9 chipset where the IDE controller might not be at these fixed locations. This is why `make run-bios` (which uses `-M pc`) is often required for disk access during development, while `make run-gui-x86_64` (which uses `-M q35`) might not have disk access unless explicitly configured.
 
 ## Layer 2: The FAT16 Filesystem Driver
 
-The ATA driver provides raw sector access, but the kernel needs a way to understand files and directories. This is the job of the filesystem driver. OxideOS includes a read-only driver for the simple and widely-supported **FAT16** format in `fat.rs`.
+The ATA driver, as described above, provides only raw block-level access to the disk (reading and writing sectors). However, the kernel and user programs need a more structured way to interact with storage, using concepts like files, directories, and file names. This is where the **filesystem driver** comes in. OxideOS includes a driver for the simple and widely-supported **FAT16** format, implemented in `fat.rs`.
+
+FAT16 is a good choice for a hobby OS because its structure is relatively straightforward to understand and implement, and it's compatible with many systems.
 
 ### FAT Concepts
 
-A FAT filesystem divides the disk into a few key areas:
+A FAT (File Allocation Table) filesystem organizes the disk into several key areas:
 
 1.  **Boot Sector**: The very first sector, containing the **BIOS Parameter Block (BPB)**. The BPB describes the layout of the filesystem, such as bytes per sector, sectors per cluster, and the size of the FATs.
 2.  **File Allocation Tables (FATs)**: This is the heart of the filesystem. The data area of the disk is divided into blocks called **clusters**. The FAT is a large table where each entry corresponds to a cluster on the disk. The entries form linked lists. To find all the clusters belonging to a file, you start at its first cluster and follow the chain of entries in the FAT until you hit an end-of-chain marker.

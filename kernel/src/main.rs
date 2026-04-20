@@ -22,7 +22,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::arch::asm;
 use gui::graphics::Graphics;
-use gui::{colors, terminal, widgets};
+use gui::{colors, terminal, notepad, widgets};
 use kernel::serial::SERIAL_PORT;
 use kernel::{gdt, idt, interrupts, timer, pic};
 use gui::window_manager::WindowManager;
@@ -404,10 +404,12 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
     let mut last_right_button = false;
     let mut needs_redraw = true;
     let mut terminal_dirty = false;
+    let mut clock_dirty = false;
     let mut net_probe = NetProbe::new();
     // Pool of terminal windows (first is the main boot terminal).
     let mut terminals: Vec<terminal::TerminalApp> = Vec::new();
     terminals.push(terminal::TerminalApp::new(terminal_window_id));
+    let mut notepads: Vec<notepad::NotepadApp> = Vec::new();
     let mut launcher_app = LauncherApp::new(launcher_window_id);
     let mut start_menu   = StartMenu::new();
     let mut last_clock_sec: u64 = u64::MAX; // force draw on first frame
@@ -433,20 +435,32 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
         crate::kernel::keyboard::poll();
         interrupts::poll_mouse_data();
 
-        // Trigger a full redraw once per second so the taskbar clock updates.
+        // Update clock once per second — only redraw taskbar, not full screen.
         let current_sec = unsafe { timer::get_ticks() } / 100;
         if current_sec != last_clock_sec {
             last_clock_sec = current_sec;
-            needs_redraw = true;
+            clock_dirty = true;
         }
 
         let cursor_pos  = gui::mouse::get_mouse_position();
         let left_button  = gui::mouse::is_mouse_button_pressed(gui::mouse::MouseButton::Left);
         let right_button = gui::mouse::is_mouse_button_pressed(gui::mouse::MouseButton::Right);
 
-        // Process input for all terminal windows.
+        // Determine which kind of window is focused so only one widget consumes keys.
+        let focused_id = unsafe { (*wm).get_focused() };
+        let focused_is_notepad = notepads.iter().any(|n| Some(n.window_id()) == focused_id);
+
+        // Process input for all notepad windows (only focused one will consume).
+        for np in notepads.iter_mut() {
+            let focused = Some(np.window_id()) == focused_id;
+            if np.process_input(focused) {
+                terminal_dirty = true;
+            }
+        }
+
+        // Process input for all terminal windows (skipped if a notepad is focused).
         for term in terminals.iter_mut() {
-            let focused = unsafe { (*wm).get_focused() == Some(term.window_id()) };
+            let focused = !focused_is_notepad && Some(term.window_id()) == focused_id;
             if term.process_pending_input(focused) {
                 terminal_dirty = true;
             }
@@ -606,11 +620,27 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             graphics.draw_background(bg);
             unsafe { (*wm).draw_taskbar(graphics); }
             start_menu.draw_button(graphics);
-            unsafe { (*wm).draw_all(graphics); }
-            for term in terminals.iter() {
-                term.draw(graphics, unsafe { &*wm });
+            // Draw windows in z-order; immediately draw terminal content after
+            // each window's chrome so z-order is respected.
+            let z: alloc::vec::Vec<usize> = unsafe { (*wm).z_order_slice().to_vec() };
+            for &wid in z.iter() {
+                unsafe { (*wm).draw_window(graphics, wid); }
+                for term in terminals.iter() {
+                    if term.window_id() == wid {
+                        term.draw(graphics, unsafe { &*wm });
+                        break;
+                    }
+                }
+                for np in notepads.iter() {
+                    if np.window_id() == wid {
+                        np.draw(graphics, unsafe { &*wm });
+                        break;
+                    }
+                }
+                if wid == sysinfo_window_id {
+                    draw_sysinfo_panel(graphics, unsafe { &*wm }, sysinfo_window_id, &net_probe);
+                }
             }
-            draw_sysinfo_panel(graphics, unsafe { &*wm }, sysinfo_window_id, &net_probe);
             launcher_app.draw(graphics, unsafe { &*wm });
             unsafe { (*wm).draw_context_menu(graphics); }
             start_menu.draw_menu(graphics);
@@ -620,19 +650,29 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             unsafe { kernel::gui_proc::composite_all(graphics); }
             needs_redraw   = false;
             terminal_dirty = false;
+            clock_dirty    = false;
         } else if terminal_dirty {
-            // Redraw kernel-terminal windows that changed.
-            // Skip compositor-mode windows — the compositor overlays them below.
+            // Redraw kernel-terminal and notepad windows that changed.
             for term in terminals.iter() {
                 if !term.is_compositor_mode() {
                     unsafe { (*wm).draw_window(graphics, term.window_id()); }
                     term.draw(graphics, unsafe { &*wm });
                 }
             }
+            for np in notepads.iter() {
+                unsafe { (*wm).draw_window(graphics, np.window_id()); }
+                np.draw(graphics, unsafe { &*wm });
+            }
             // Re-composite GUI-proc content so terminal redraws don't paint
             // over overlapping GUI-proc windows.
             unsafe { kernel::gui_proc::composite_all(graphics); }
             terminal_dirty = false;
+            clock_dirty    = false;
+        } else if clock_dirty {
+            // Only the taskbar clock changed — redraw just the taskbar.
+            unsafe { (*wm).draw_taskbar(graphics); }
+            start_menu.draw_button(graphics);
+            clock_dirty = false;
         }
 
         // Process compositor IPC messages AFTER the draw section so that
@@ -692,13 +732,30 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
 const TERMINAL_PROGRAMS: &[&str] = &["sh", "terminal", "input"];
 
 /// Spawn `name` — opens a new terminal window for shell-like programs,
-/// otherwise spawns in the background (output drains to the first terminal).
+/// a notepad window for "notepad", otherwise spawns in the background.
 fn spawn_program(
     name: &str,
     terminals: &mut Vec<terminal::TerminalApp>,
+    notepads: &mut Vec<notepad::NotepadApp>,
     graphics: &Graphics,
     wm: &mut WindowManager,
 ) {
+    // Kernel-native notepad — no binary needed.
+    if name == "notepad" {
+        let (w, h) = graphics.get_dimensions();
+        let offset  = (notepads.len() as u64).min(4) * 24;
+        let win_x   = 160 + offset;
+        let win_y   = 70 + offset;
+        let win_w   = 580u64.min(w.saturating_sub(win_x + 20));
+        let win_h   = 420u64.min(h.saturating_sub(win_y + 60));
+        let new_win = widgets::Window::new(win_x, win_y, win_w, win_h, "Notepad");
+        if let Some(wid) = wm.add_window(new_win) {
+            wm.set_focused(Some(wid));
+            notepads.push(notepad::NotepadApp::new(wid));
+        }
+        return;
+    }
+
     let code = match crate::kernel::programs::find(name) {
         Some(c) => c,
         None    => return,

@@ -1,4 +1,4 @@
-# 5. Graphics & GUI
+# Chapter 5: Graphics & GUI - Bringing the OS to Life Visually
 
 Modern operating systems require a graphical user interface (GUI). OxideOS implements a basic windowing system built on a layered architecture. This document explains the components of the graphics stack, from writing raw pixels to managing interactive windows.
 
@@ -6,21 +6,22 @@ Modern operating systems require a graphical user interface (GUI). OxideOS imple
 
 ### Layer 1: The Linear Framebuffer
 
-The foundation of the entire graphics system is the **linear framebuffer**. Instead of dealing with complex, legacy VGA text modes, OxideOS requests a simple, contiguous block of memory from the Limine bootloader (`FramebufferRequest`).
+The very foundation of OxideOS's graphical system is the **linear framebuffer**. Instead of wrestling with complex, outdated VGA text modes, OxideOS takes a modern approach: it requests a simple, contiguous block of memory from the Limine bootloader using a `FramebufferRequest` (as seen in Chapter 1).
 
-*   **Concept**: This memory region maps directly to the screen. Each group of 4 bytes in this memory represents the color of a single pixel. To draw something, the kernel simply writes color values to the correct memory addresses.
-*   **Pixel Format**: OxideOS typically uses a 32-bit ARGB (Alpha, Red, Green, Blue) or XRGB format, where each color component gets 8 bits.
+*   **Concept**: This special memory region is directly mapped to your computer screen. Imagine it as a giant grid where each tiny square (a pixel) on your screen corresponds to a specific set of bytes in this memory block. To draw anything, the kernel simply writes color values to the correct memory addresses within this framebuffer. It's like painting directly onto the screen's memory.
+*   **Pixel Format**: OxideOS typically uses a 32-bit color format, often ARGB (Alpha, Red, Green, Blue) or XRGB. In this format, each of the four color components (or three, plus an unused "X" byte) gets 8 bits, allowing for over 16 million different colors per pixel.
+*   **Direct Access**: The kernel receives a raw pointer to this memory. This direct access is incredibly fast for drawing, but also requires careful handling to avoid memory corruption.
 
 ### Layer 2: The `Graphics` Struct
 
-Writing directly to the raw framebuffer pointer is unsafe and inconvenient. The `Graphics` struct provides a safe Rust abstraction over it.
+Writing directly to a raw, `unsafe` framebuffer pointer is prone to errors and inconvenient. To make graphics programming safer and easier, OxideOS introduces the `Graphics` struct, which provides a safe Rust abstraction over the raw framebuffer.
 
-*   **Role**: It wraps the raw pointer and screen dimensions (width, height) and provides a set of primitive drawing operations. This encapsulates the `unsafe` code in one place.
-*   **Primitives**:
-    *   `draw_pixel(x, y, color)`: The most basic operation.
-    *   `fill_rect(x, y, width, height, color)`: A more efficient way to draw solid rectangles.
-    *   `draw_string(x, y, text, color)`: Renders text using a built-in bitmap font.
-*   **Double Buffering**: To avoid flickering and visual artifacts (a phenomenon called "tearing"), the `Graphics` struct implements double buffering. It doesn't draw directly to the visible framebuffer. Instead, it draws to an off-screen memory buffer (the "back buffer"). When all drawing for a frame is complete, the `present()` method copies the entire back buffer to the visible framebuffer in one fast operation.
+*   **Role**: The `Graphics` struct encapsulates the raw framebuffer pointer, along with screen dimensions (width and height). Its primary role is to provide a set of higher-level, safe drawing operations, effectively hiding the `unsafe` low-level memory access within its methods.
+*   **Primitives**: It offers fundamental drawing primitives:
+    *   `draw_pixel(x, y, color)`: The most basic operation, setting the color of a single pixel.
+    *   `fill_rect(x, y, width, height, color)`: A more efficient way to draw solid, colored rectangles.
+    *   `draw_string(x, y, text, color)`: Renders text onto the screen using a built-in bitmap font.
+*   **Double Buffering**: To prevent visual artifacts like flickering and "tearing" (where you see parts of an old frame mixed with a new one), the `Graphics` struct implements **double buffering**. This means it doesn't draw directly to the visible framebuffer. Instead, all drawing operations are performed on an off-screen memory buffer, often called the "back buffer." Only when all drawing for a complete frame is finished does the `present()` method copy the entire contents of this back buffer to the visible framebuffer in one swift, atomic operation. This ensures a smooth, flicker-free display.
 
 ### Layer 3: The `WindowManager`
 
