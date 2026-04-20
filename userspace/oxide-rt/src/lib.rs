@@ -266,6 +266,7 @@ pub mod sys {
     pub const MSGQ_DESTROY: u64 = 418;
     pub const MSGRCV_WAIT:  u64 = 419;
     pub const MSGQ_LEN:     u64 = 420;
+    pub const DNS_RESOLVE:  u64 = 435;
 }
 
 // ── TTY / termios structs ─────────────────────────────────────────────────────
@@ -828,6 +829,16 @@ pub fn recvfrom(sfd: i64, buf: &mut [u8], src: Option<&mut SockAddrIn>) -> i64 {
             0u64, // flags
             addr_ptr)
     }
+}
+
+/// Resolve a hostname to an IPv4 address via the kernel DNS client.
+/// Returns `Some([a,b,c,d])` on success.
+/// Also accepts dotted-decimal strings like "10.0.2.15".
+pub fn dns_resolve(hostname: &[u8]) -> Option<[u8; 4]> {
+    let r = unsafe { raw::syscall2(sys::DNS_RESOLVE, hostname.as_ptr() as u64, hostname.len() as u64) };
+    if r < 0 { return None; }
+    let v = r as u32;
+    Some([v as u8, (v >> 8) as u8, (v >> 16) as u8, (v >> 24) as u8])
 }
 
 // ── Formatted printing ───────────────────────────────────────────────────────

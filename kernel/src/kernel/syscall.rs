@@ -1276,6 +1276,18 @@ impl SyscallRuntime for KernelRuntime {
     fn install_begin_impl(&mut self) -> i64 {
         unsafe { crate::kernel::installer::do_install() }
     }
+
+    fn dns_resolve_impl(&mut self, hostname: &[u8]) -> i64 {
+        match crate::kernel::net::dns_resolve(hostname) {
+            Some(ip) => {
+                (ip[0] as i64)
+                | ((ip[1] as i64) << 8)
+                | ((ip[2] as i64) << 16)
+                | ((ip[3] as i64) << 24)
+            }
+            None => -105, // ENONET
+        }
+    }
 }
 
 // ── exec helpers (not part of the trait; called via exec_program) ─────────

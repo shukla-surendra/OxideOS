@@ -208,8 +208,10 @@ pub fn init() {
         SERIAL_PORT.write_hex(idt_limit as u32);
         SERIAL_PORT.write_str("\n");
 
-        // Load IDT
-        core::arch::asm!("lidt [{}]", sym IDT_DESCRIPTOR, options(nostack, preserves_flags));
+        // Load IDT — use in(reg) to get a full 64-bit address; `sym` produces a
+        // R_X86_64_32S relocation which breaks in higher-half kernels.
+        let idt_desc_ptr = core::ptr::addr_of!(IDT_DESCRIPTOR);
+        core::arch::asm!("lidt [{}]", in(reg) idt_desc_ptr, options(nostack, preserves_flags));
 
         // Verify IDT was loaded
         let mut readback: [u8; 10] = [0u8; 10]; // 64-bit needs 10 bytes (2 + 8)

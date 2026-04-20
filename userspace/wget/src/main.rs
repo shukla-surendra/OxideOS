@@ -1,21 +1,19 @@
 //! wget — minimal HTTP/1.0 GET client for OxideOS.
 //!
-//! Usage (interactive prompt, argv not yet wired):
-//!   Host IP  : enter dotted-decimal, e.g. 93.184.216.34
-//!   Port     : e.g. 80
-//!   Path     : e.g. /
+//! Usage (with argv):  wget http://example.com/path
+//!                     wget 93.184.216.34 80 /
+//! Interactive fallback when no args are supplied.
 //!
-//! Connects via TCP using the kernel's socket syscalls, sends a minimal
-//! HTTP/1.0 GET request, and prints the response to stdout.
+//! DNS resolution is performed by the kernel's built-in resolver.
 #![no_std]
 #![no_main]
 
 extern crate alloc;
 
 use alloc::string::String;
-use alloc::vec::Vec;
 use oxide_rt::{
-    exit, getchar, sleep_ms, write,
+    exit, getchar, sleep_ms, write, argc, arg,
+    dns_resolve,
     socket, connect, send, recv, close_socket,
     AF_INET, SOCK_STREAM, SockAddrIn,
 };
@@ -34,39 +32,84 @@ fn readline() -> String {
     s
 }
 
-fn parse_ip(s: &str) -> Option<[u8; 4]> {
-    let mut parts = s.splitn(4, '.');
-    let a = parts.next()?.parse::<u8>().ok()?;
-    let b = parts.next()?.parse::<u8>().ok()?;
-    let c = parts.next()?.parse::<u8>().ok()?;
-    let d = parts.next()?.parse::<u8>().ok()?;
-    Some([a, b, c, d])
+/// Parse "http://host[:port]/path" or "host port path" style args.
+/// Returns (host_bytes, port, path_str).
+fn parse_url(url: &str) -> Option<(String, u16, String)> {
+    let url = url.strip_prefix("http://").unwrap_or(url);
+    // Split off path
+    let (host_port, path) = match url.find('/') {
+        Some(i) => (&url[..i], &url[i..]),
+        None    => (url, "/"),
+    };
+    // Split host:port
+    let (host, port) = match host_port.rfind(':') {
+        Some(i) => (&host_port[..i], host_port[i+1..].parse::<u16>().unwrap_or(80)),
+        None    => (host_port, 80u16),
+    };
+    Some((String::from(host), port, String::from(path)))
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn oxide_main() {
-    write(1, b"wget: host IP (e.g. 93.184.216.34): ");
-    let host_str = readline();
-    let ip = match parse_ip(&host_str) {
-        Some(ip) => ip,
-        None => { write(1, b"bad IP\n"); exit(1); }
+    // ── Try to get host/port/path from argv ──────────────────────────────────
+    let (host_str, port, path) = if argc() >= 2 {
+        let url_arg = arg(1).unwrap_or("");
+        match parse_url(url_arg) {
+            Some(t) => t,
+            None => {
+                write(1, b"wget: bad URL\n"); exit(1);
+            }
+        }
+    } else {
+        // Interactive fallback
+        write(1, b"wget: host (e.g. example.com or 93.184.216.34): ");
+        let h = readline();
+        write(1, b"wget: port (e.g. 80): ");
+        let p_str = readline();
+        let p = p_str.trim().parse::<u16>().unwrap_or(80);
+        write(1, b"wget: path (e.g. /): ");
+        let path_r = readline();
+        let path = if path_r.trim().is_empty() { String::from("/") } else { path_r };
+        (h, p, path)
     };
 
-    write(1, b"wget: port (e.g. 80): ");
-    let port_str = readline();
-    let port = port_str.trim().parse::<u16>().unwrap_or(80);
+    // ── Resolve hostname ─────────────────────────────────────────────────────
+    write(1, b"wget: resolving ");
+    write(1, host_str.as_bytes());
+    write(1, b"...\n");
 
-    write(1, b"wget: path (e.g. /): ");
-    let path = readline();
-    let path = if path.is_empty() { String::from("/") } else { path };
+    let ip = match dns_resolve(host_str.as_bytes()) {
+        Some(ip) => ip,
+        None => {
+            write(1, b"wget: DNS resolution failed\n"); exit(1);
+        }
+    };
 
-    // Open TCP socket.
-    let sfd = socket(AF_INET, SOCK_STREAM, 0);
-    if sfd < 0 {
-        write(1, b"wget: socket() failed\n"); exit(1);
+    // ── Print resolved address ───────────────────────────────────────────────
+    {
+        let mut msg = String::from("wget: connecting to ");
+        for (i, &b) in ip.iter().enumerate() {
+            if i > 0 { msg.push('.'); }
+            // simple u8 → string
+            let mut v = b;
+            if v == 0 { msg.push('0'); }
+            else {
+                let mut tmp = [0u8; 3];
+                let mut n = 0;
+                while v > 0 { tmp[n] = b'0' + v % 10; v /= 10; n += 1; }
+                for k in (0..n).rev() { msg.push(tmp[k] as char); }
+            }
+        }
+        msg.push(':');
+        msg.push_str(alloc::format!("{}", port).as_str());
+        msg.push('\n');
+        write(1, msg.as_bytes());
     }
 
-    // Connect.
+    // ── Open TCP socket ──────────────────────────────────────────────────────
+    let sfd = socket(AF_INET, SOCK_STREAM, 0);
+    if sfd < 0 { write(1, b"wget: socket() failed\n"); exit(1); }
+
     let addr = SockAddrIn::new(ip, port);
     let r = connect(sfd, &addr);
     if r < 0 {
@@ -74,23 +117,16 @@ pub extern "C" fn oxide_main() {
         close_socket(sfd); exit(1);
     }
 
-    // Wait for the TCP handshake to complete (poll the stack).
-    // The kernel polls the stack every ~10 ms in the main loop.
-    // We sleep a bit then retry send until it succeeds.
-    write(1, b"wget: connecting...\n");
     sleep_ms(500);
 
-    // Build HTTP/1.0 GET request.
+    // ── Send HTTP/1.0 GET ────────────────────────────────────────────────────
     let req = alloc::format!(
         "GET {} HTTP/1.0\r\nHost: {}\r\nConnection: close\r\n\r\n",
         path, host_str
     );
-    let req_bytes = req.as_bytes();
-
-    // Retry send until the connection is established (may take a few polls).
     let mut sent = false;
     for _ in 0..20 {
-        let n = send(sfd, req_bytes);
+        let n = send(sfd, req.as_bytes());
         if n > 0 { sent = true; break; }
         sleep_ms(100);
     }
@@ -101,23 +137,16 @@ pub extern "C" fn oxide_main() {
 
     write(1, b"\n--- response ---\n");
 
-    // Read response until EOF.
+    // ── Read response ─────────────────────────────────────────────────────────
     let mut buf = [0u8; 512];
     let mut empty_polls = 0u32;
     loop {
         let n = recv(sfd, &mut buf);
         match n {
-            0 => break,           // EOF — connection closed cleanly
-            -11 => {              // EAGAIN — no data yet
-                empty_polls += 1;
-                if empty_polls > 300 { break; } // 3-second timeout
-                sleep_ms(10);
-            }
-            n if n > 0 => {
-                empty_polls = 0;
-                write(1, &buf[..n as usize]);
-            }
-            _ => break,           // Error
+            0    => break,
+            -11  => { empty_polls += 1; if empty_polls > 300 { break; } sleep_ms(10); }
+            n if n > 0 => { empty_polls = 0; write(1, &buf[..n as usize]); }
+            _    => break,
         }
     }
 

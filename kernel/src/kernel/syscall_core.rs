@@ -154,6 +154,8 @@ pub enum Syscall {
     InstallQuery  = 433,
     /// Run full installation to secondary disk; blocks until done.
     InstallBegin  = 434,
+    /// DNS A-record resolve: arg1=hostname_ptr, arg2=hostname_len → packed IPv4 u32
+    DnsResolve    = 435,
     Invalid       = u64::MAX,
 }
 
@@ -246,6 +248,7 @@ impl Syscall {
             Self::GuiBlitShm    => "gui_blit_shm",
             Self::InstallQuery  => "install_query",
             Self::InstallBegin  => "install_begin",
+            Self::DnsResolve    => "dns_resolve",
             Self::Pread64       => "pread64",
             Self::Pwrite64      => "pwrite64",
             Self::Writev        => "writev",
@@ -428,6 +431,7 @@ impl From<u64> for Syscall {
             432 => Self::GuiBlitShm,
             433 => Self::InstallQuery,
             434 => Self::InstallBegin,
+            435 => Self::DnsResolve,
             _   => Self::Invalid,
         }
     }
@@ -855,6 +859,8 @@ pub trait SyscallRuntime {
     fn install_query_impl(&mut self) -> i64 { -1 }
     /// Run the full installer to the secondary disk. Blocks until done.
     fn install_begin_impl(&mut self) -> i64 { ENOSYS }
+    /// DNS A-record lookup. Returns packed IPv4 (ip[0] | ip[1]<<8 | ...) or negative.
+    fn dns_resolve_impl(&mut self, _hostname: &[u8]) -> i64 { ENOSYS }
 }
 
 // ── Validation ─────────────────────────────────────────────────────────────
@@ -1245,6 +1251,15 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
         Syscall::Getitimer   => SyscallResult::ok(0),
         Syscall::Setitimer   => SyscallResult::ok(0),
         Syscall::Prlimit64   => SyscallResult::ok(runtime.prlimit64_impl(request.arg1 as u32, request.arg2 as u32, request.arg3, request.arg4)),
+        Syscall::DnsResolve => unsafe {
+            let host_ptr = request.arg1;
+            let host_len = request.arg2 as usize;
+            if host_len == 0 || host_len > 253 { return SyscallResult::err(EINVAL); }
+            if let Err(e) = validate_user_range(host_ptr, host_len as u64) { return SyscallResult::err(e); }
+            let hostname = slice::from_raw_parts(host_ptr as *const u8, host_len);
+            let r = runtime.dns_resolve_impl(hostname);
+            if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) }
+        }
         Syscall::Invalid       => SyscallResult::err(ENOSYS),
     }
 }

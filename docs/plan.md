@@ -38,8 +38,12 @@ designed so the OS remains bootable and usable after every milestone.
 | IPC message queues (compositor protocol) | ✅ |
 | Shared memory — shmget/shmat/shmdt, physical frame sharing | ✅ |
 | RTL8139 NIC + smoltcp (TCP, UDP, ICMP, DHCP, ARP) | ✅ |
+| DHCP client — automatic IP configuration on boot | ✅ |
+| DNS resolver — A-record via UDP; kernel syscall 435; oxide-rt wrapper | ✅ |
+| wget — accepts http://hostname/path, DNS resolution, URL parsing | ✅ |
 | Socket syscalls — socket/bind/connect/listen/accept/send/recv | ✅ |
 | Socket syscalls — sendto/recvfrom (UDP) | ✅ |
+| Job control — & background, jobs, fg N | ✅ |
 | File permissions — mode/uid/gid on RamFS inodes, chmod/chown | ✅ |
 | unlink/rename/truncate syscalls | ✅ |
 | SMEP (CR4 bit 20) | ✅ |
@@ -372,7 +376,7 @@ Requires working: `fork`, `exec`, `wait`, `open`, `read`, `write`, `stat`, `mmap
 ✅ 10.6.6  Lua 5.4.7 embedded — syscalls: sigprocmask(14), lstat(6), readv(19),
            mremap(25→ENOMEM), getuid/getgid(102/104)→1000, gettid(186)→pid,
            futex(202)→0, pipe2(293), lseek(8), exit_group(231)
-10.6.7  Run BusyBox                                 ← full userland replacement
+✅ 10.6.7  Run BusyBox — struct stat (144 B), getdents64, FdBackend::Dir, fstat, stat
 ```
 
 ---
@@ -917,8 +921,9 @@ Replace kernel-launched terminal with a proper init:
 🔥 Phase 10.6.2  musl libc cross-compilation           ← first real C programs
 🔥 Phase 10.6.6  Run Lua 5.4                           ← proof of concept
 🔥 Phase 10.6.7  Run BusyBox                           ← full Unix userland
-🔥 Phase 13.1  DHCP client activation               ← Network auto-config
-🔥 Phase 13.2  DNS resolver                         ← wget by hostname
+✅ Phase 13.1  DHCP client activation — blocking spin-poll in init(); fallback static 10.0.2.15/24
+✅ Phase 13.2  DNS resolver — UDP query to NET_CONFIG.dns; kernel syscall 435 DnsResolve; oxide-rt::dns_resolve(); wget updated to accept URLs/hostnames
+✅ Phase 10.4  Job control — & background, jobs builtin, fg N
 
 ── MEDIUM PRIORITY ─────────────────────────────────────────────────
 

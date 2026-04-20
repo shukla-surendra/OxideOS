@@ -6,6 +6,7 @@
 //!   - Output redirects: cmd > file, cmd >> file
 //!   - Pipelines: cmd1 | cmd2 | ... | cmdN (up to 8 stages)
 //!   - Environment variables: $VAR expansion, export VAR=val
+//!   - Job control: cmd &, jobs, fg N
 #![no_std]
 #![no_main]
 
@@ -76,6 +77,59 @@ fn trim_bytes(s: &[u8]) -> &[u8] {
     let s = if let Some(i) = s.iter().position(|&b| b != b' ' && b != b'\t') { &s[i..] } else { s };
     let end = s.iter().rposition(|&b| b != b' ' && b != b'\t').map(|i| i + 1).unwrap_or(0);
     &s[..end]
+}
+
+// ── Job table ─────────────────────────────────────────────────────────────────
+
+const MAX_JOBS: usize = 8;
+
+struct JobTable {
+    pids:  [u32; MAX_JOBS],
+    names: [[u8; 32]; MAX_JOBS],
+    nlens: [u8; MAX_JOBS],
+    count: usize,
+}
+
+impl JobTable {
+    const fn new() -> Self {
+        Self {
+            pids:  [0; MAX_JOBS],
+            names: [[0u8; 32]; MAX_JOBS],
+            nlens: [0; MAX_JOBS],
+            count: 0,
+        }
+    }
+
+    fn add(&mut self, pid: u32, name: &[u8]) -> usize {
+        if self.count >= MAX_JOBS { return 0; }
+        let idx = self.count;
+        self.pids[idx] = pid;
+        let n = name.len().min(31);
+        self.names[idx][..n].copy_from_slice(&name[..n]);
+        self.nlens[idx] = n as u8;
+        self.count += 1;
+        idx + 1 // 1-based job number
+    }
+
+    fn remove_pid(&mut self, pid: u32) {
+        for i in 0..self.count {
+            if self.pids[i] == pid {
+                // Shift remaining jobs down.
+                for j in i..self.count - 1 {
+                    self.pids[j]  = self.pids[j + 1];
+                    self.names[j] = self.names[j + 1];
+                    self.nlens[j] = self.nlens[j + 1];
+                }
+                self.count -= 1;
+                return;
+            }
+        }
+    }
+
+    fn get_by_num(&self, n: usize) -> Option<u32> {
+        if n == 0 || n > self.count { return None; }
+        Some(self.pids[n - 1])
+    }
 }
 
 // ── Redirect parser ───────────────────────────────────────────────────────────
@@ -269,6 +323,8 @@ fn print_help() {
     print_str("  pwd                  print working directory\n");
     print_str("  export VAR=val       set environment variable\n");
     print_str("  clear                scroll screen\n");
+    print_str("  jobs                 list background jobs\n");
+    print_str("  fg [N]               bring job N to foreground\n");
     print_str("  help                 this message\n");
     print_str("  exit                 quit the shell\n");
     print_str("\nExternal programs:\n");
@@ -277,18 +333,51 @@ fn print_help() {
     print_str("\nPipelines:   cmd1 | cmd2 | cmd3\n");
     print_str("Redirects:   cmd > file   cmd >> file\n");
     print_str("Variables:   export PATH=/bin    echo $HOME\n");
+    print_str("Background:  sleep 5 &\n");
+}
+
+// ── u32 → decimal string ──────────────────────────────────────────────────────
+
+fn fmt_u32(n: u32, buf: &mut [u8; 12]) -> &[u8] {
+    if n == 0 { buf[0] = b'0'; return &buf[..1]; }
+    let mut tmp = [0u8; 12];
+    let mut i = 0usize;
+    let mut v = n;
+    while v > 0 { tmp[i] = b'0' + (v % 10) as u8; i += 1; v /= 10; }
+    for j in 0..i { buf[j] = tmp[i - 1 - j]; }
+    &buf[..i]
+}
+
+// ── Parse leading integer from ASCII bytes ────────────────────────────────────
+
+fn parse_u32(s: &[u8]) -> Option<u32> {
+    let s = {
+        let mut start = 0;
+        while start < s.len() && s[start] == b' ' { start += 1; }
+        &s[start..]
+    };
+    if s.is_empty() { return None; }
+    let mut v = 0u32;
+    let mut any = false;
+    for &b in s {
+        if b < b'0' || b > b'9' { break; }
+        v = v * 10 + (b - b'0') as u32;
+        any = true;
+    }
+    if any { Some(v) } else { None }
 }
 
 // ── Main entry ────────────────────────────────────────────────────────────────
 
 #[unsafe(no_mangle)]
 pub extern "C" fn oxide_main() {
-    print_str("\nOxideOS Shell v0.2\n");
+    print_str("\nOxideOS Shell v0.3\n");
     print_str("Type 'help' for available commands.\n\n");
 
     let mut line_buf   = [0u8; 256];
     let mut expand_buf = [0u8; 512];
     let mut cwd: &str  = "/";
+    let mut jobs       = JobTable::new();
 
     loop {
         // Prompt.
@@ -299,6 +388,16 @@ pub extern "C" fn oxide_main() {
         if len == 0 { continue; }
 
         let raw_bytes = &line_buf[..len];
+
+        // ── Detect trailing '&' (before redirect parsing) ─────────────────────
+        let (raw_bytes, background) = {
+            let trimmed = trim_bytes(raw_bytes);
+            if trimmed.last() == Some(&b'&') {
+                (&trimmed[..trimmed.len() - 1], true)
+            } else {
+                (trimmed, false)
+            }
+        };
 
         // ── Redirect parsing ──────────────────────────────────────────────────
         let (cmd_bytes_raw, redir) = parse_redirect(raw_bytes);
@@ -373,6 +472,50 @@ pub extern "C" fn oxide_main() {
 
             "help" => print_help(),
 
+            // jobs — list background jobs
+            "jobs" => {
+                if jobs.count == 0 {
+                    print_str("(no background jobs)\n");
+                } else {
+                    for i in 0..jobs.count {
+                        let mut nbuf = [0u8; 12];
+                        let jn = fmt_u32((i + 1) as u32, &mut nbuf);
+                        let mut pbuf = [0u8; 12];
+                        let pn = fmt_u32(jobs.pids[i], &mut pbuf);
+                        print_str("[");
+                        print_bytes(jn);
+                        print_str("] ");
+                        print_bytes(pn);
+                        print_str("  ");
+                        print_bytes(&jobs.names[i][..jobs.nlens[i] as usize]);
+                        print_str("\n");
+                    }
+                }
+            }
+
+            // fg [N] — wait for background job N (default: last job)
+            "fg" => {
+                let jnum = if args.is_empty() {
+                    jobs.count
+                } else {
+                    parse_u32(args.as_bytes()).unwrap_or(0) as usize
+                };
+                match jobs.get_by_num(jnum) {
+                    Some(pid) => {
+                        let mut nbuf = [0u8; 12];
+                        let pn = fmt_u32(pid, &mut nbuf);
+                        print_str("fg: pid ");
+                        print_bytes(pn);
+                        print_str("\n");
+                        waitpid(pid);
+                        jobs.remove_pid(pid);
+                    }
+                    None => {
+                        print_str("fg: no such job\n");
+                    }
+                }
+            }
+
             // export VAR=val  or  export VAR (no value → empty string)
             "export" => {
                 if let Some(eq) = args.find('=') {
@@ -384,11 +527,11 @@ pub extern "C" fn oxide_main() {
                 }
             }
 
-            _ if cmd.len() == 0 => {
+            _ if cmd.is_empty() => {
                 if redir_fd >= 0 { close(redir_fd); }
             }
 
-            // External program: fork → exec → waitpid.
+            // External program: fork → exec → waitpid (or background).
             prog => {
                 let pid = fork();
                 if pid == 0 {
@@ -398,7 +541,18 @@ pub extern "C" fn oxide_main() {
                     exit(127);
                 } else if pid > 0 {
                     if redir_fd >= 0 { close(redir_fd); }
-                    waitpid(pid as u32);
+                    if background {
+                        let jn = jobs.add(pid as u32, prog.as_bytes());
+                        let mut nbuf1 = [0u8; 12];
+                        let mut nbuf2 = [0u8; 12];
+                        print_str("[");
+                        print_bytes(fmt_u32(jn as u32, &mut nbuf1));
+                        print_str("] ");
+                        print_bytes(fmt_u32(pid as u32, &mut nbuf2));
+                        print_str("\n");
+                    } else {
+                        waitpid(pid as u32);
+                    }
                 } else {
                     if redir_fd >= 0 { close(redir_fd); }
                     print_str("sh: fork failed\n");

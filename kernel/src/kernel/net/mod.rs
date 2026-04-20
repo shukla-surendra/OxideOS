@@ -10,6 +10,7 @@ pub mod pci;
 pub mod rtl8139;
 pub mod stack;
 pub mod socket;
+pub mod dns;
 
 /// Initialise the full networking subsystem.
 /// Call this once during kernel boot after the heap is available.
@@ -35,6 +36,17 @@ pub unsafe fn poll() {
 /// Returns `true` if a network interface is available.
 pub fn is_present() -> bool {
     rtl8139::PRESENT.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Resolve a hostname to an IPv4 address using the configured DNS server.
+/// Returns `None` on failure or if the network is not up.
+pub fn dns_resolve(hostname: &[u8]) -> Option<[u8; 4]> {
+    dns::resolve(hostname)
+}
+
+/// Returns the current IP address (DHCP or static fallback).
+pub fn get_ip() -> [u8; 4] {
+    stack::get_ip()
 }
 
 /// Returns the NIC MAC address if the RTL8139 is present.
