@@ -204,6 +204,10 @@ unsafe extern "C" fn kmain() -> ! {
         crate::kernel::fs::ramfs::RAMFS.init();
         SERIAL_PORT.write_str("✓ RamFS initialized\n");
 
+        // procfs — /proc virtual filesystem (must come after RamFS init)
+        crate::kernel::procfs::populate();
+        SERIAL_PORT.write_str("✓ procfs initialized\n");
+
         // Environment variable store — populate defaults before any process runs
         crate::kernel::env::init_defaults();
         SERIAL_PORT.write_str("✓ Environment initialized\n");
@@ -563,6 +567,13 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                         let consumed = unsafe { (*wm).handle_context_menu_click(mx as u64, my as u64) };
                         if !consumed {
                             unsafe { (*wm).handle_click(mx as u64, my as u64); }
+                            // If the × button closed a gui-proc window, push the
+                            // close event so the userspace process can exit cleanly.
+                            if let Some(closed_id) = unsafe { (*wm).take_closed_window() } {
+                                if kernel::gui_proc::is_proc_window(closed_id as u32) {
+                                    unsafe { kernel::gui_proc::on_window_closed(closed_id as u32); }
+                                }
+                            }
                         }
                         needs_redraw = true;
                     }

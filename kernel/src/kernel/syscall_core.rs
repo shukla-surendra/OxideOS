@@ -111,6 +111,8 @@ pub enum Syscall {
     Readv         = 19,  // scatter read
     Mremap        = 25,  // memory remap — stub
     Sigprocmask   = 14,  // rt_sigprocmask
+    SigPending    = 127, // rt_sigpending
+    SigSuspend    = 130, // rt_sigsuspend
     GetTime       = 96,  // gettimeofday
     Mprotect      = 10,
     Getppid       = 110,
@@ -210,6 +212,8 @@ impl Syscall {
             Self::Readv         => "readv",
             Self::Mremap        => "mremap",
             Self::Sigprocmask   => "sigprocmask",
+            Self::SigPending    => "sigpending",
+            Self::SigSuspend    => "sigsuspend",
             Self::Getuid        => "getuid",
             Self::Getgid        => "getgid",
             Self::Setuid        => "setuid",
@@ -399,6 +403,8 @@ impl From<u64> for Syscall {
             17  => Self::Pread64,
             18  => Self::Pwrite64,
             14  => Self::Sigprocmask,
+            127 => Self::SigPending,
+            130 => Self::SigSuspend,
             19  => Self::Readv,
             20  => Self::Writev,
             21  => Self::Access,
@@ -749,6 +755,12 @@ pub trait SyscallRuntime {
 
     /// pause — block until signal. Stub returns -EINTR.
     fn pause_impl(&mut self) -> i64 { -4 }
+
+    /// rt_sigpending — write set of pending-but-masked signals to user ptr.
+    fn sigpending_impl(&mut self, _set_ptr: u64, _sigset_size: u64) -> i64 { 0 }
+
+    /// rt_sigsuspend — atomically set mask and sleep until signal.
+    fn sigsuspend_impl(&mut self, _mask_ptr: u64, _sigset_size: u64) -> i64 { -4 } // EINTR
 
     /// Send `signum` to the process with the given PID.  Returns 0 on success.
     fn kill_pid_sig(&mut self, _pid: u64, _signum: u8) -> i64 { ENOSYS }
@@ -1322,6 +1334,8 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
         Syscall::Shmctl      => SyscallResult::ok(0),
         Syscall::Alarm       => SyscallResult::ok(runtime.alarm_impl(request.arg1 as u32)),
         Syscall::Pause       => { let r = runtime.pause_impl(); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
+        Syscall::SigPending  => { let r = runtime.sigpending_impl(request.arg1, request.arg2); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
+        Syscall::SigSuspend  => { let r = runtime.sigsuspend_impl(request.arg1, request.arg2); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
         Syscall::Getitimer   => SyscallResult::ok(0),
         Syscall::Setitimer   => SyscallResult::ok(0),
         Syscall::Prlimit64   => SyscallResult::ok(runtime.prlimit64_impl(request.arg1 as u32, request.arg2 as u32, request.arg3, request.arg4)),

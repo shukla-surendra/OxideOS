@@ -77,11 +77,18 @@ pub const SIG_IGN: u64 = 1;
 pub const SIGHUP:  u8 = 1;
 pub const SIGINT:  u8 = 2;
 pub const SIGQUIT: u8 = 3;
+pub const SIGALRM: u8 = 14;
 pub const SIGKILL: u8 = 9;
 pub const SIGTERM: u8 = 15;
 pub const SIGCHLD: u8 = 17;
 pub const SIGCONT: u8 = 18;
 pub const SIGSTOP: u8 = 19;
+pub const SIGTSTP: u8 = 20;
+
+// sigprocmask "how" values (Linux ABI)
+pub const SIG_BLOCK:   u32 = 0;
+pub const SIG_UNBLOCK: u32 = 1;
+pub const SIG_SETMASK: u32 = 2;
 
 /// Virtual address of the signal-return trampoline page mapped into every process.
 /// Sits between the stack (tops at 0x0080_0000) and the heap base (0x0100_0000).
@@ -148,6 +155,14 @@ pub struct Task {
     pub cwd_len:    usize,
     /// Bitmask of pending signals (bit N = signal N+1 is pending).
     pub pending_signals: u32,
+    /// Bitmask of blocked signals (sigprocmask). SIGKILL/SIGSTOP can't be blocked.
+    pub signal_mask: u32,
+    /// Saved mask to restore after sigsuspend's signal handler returns.
+    pub saved_signal_mask: u32,
+    /// Set while a sigsuspend is in progress; cleared by sigreturn.
+    pub in_sigsuspend: bool,
+    /// Tick at which SIGALRM fires; 0 = no alarm armed.
+    pub alarm_deadline: u64,
     /// Per-signal handler addresses (index = signal number).
     /// 0 (SIG_DFL) = default action; 1 (SIG_IGN) = ignore.
     pub signal_handlers: [u64; NSIG],
@@ -185,6 +200,10 @@ impl Task {
             cwd,
             cwd_len:    1, // "/"
             pending_signals: 0,
+            signal_mask: 0,
+            saved_signal_mask: 0,
+            in_sigsuspend: false,
+            alarm_deadline: 0,
             signal_handlers: [0u64; NSIG],
             shm_attaches: [const { crate::kernel::shm::ShmAttach::empty() }; crate::kernel::shm::MAX_ATTACH],
             initial_rsp: USER_STACK_TOP - 16,
@@ -411,10 +430,14 @@ pub unsafe fn spawn(code: &[u8], name: &str) -> Result<u8, &'static str> {
     (*task).fs_base         = 0;
     (*task).heap_end        = 0;
     (*task).mmap_end        = 0;
-    (*task).output_len      = 0;
-    (*task).fd_table        = FdTable::new();
-    (*task).pending_signals = 0;
-    (*task).signal_handlers = [0u64; NSIG];
+    (*task).output_len          = 0;
+    (*task).fd_table            = FdTable::new();
+    (*task).pending_signals     = 0;
+    (*task).signal_mask         = 0;
+    (*task).saved_signal_mask   = 0;
+    (*task).in_sigsuspend       = false;
+    (*task).alarm_deadline      = 0;
+    (*task).signal_handlers     = [0u64; NSIG];
     (*task).shm_attaches    = [const { crate::kernel::shm::ShmAttach::empty() }; crate::kernel::shm::MAX_ATTACH];
     (*task).mmap_regions    = [const { MmapRegion::empty() }; MAX_MMAP_REGIONS];
     (*task).mmap_nregions   = 0;
@@ -464,6 +487,16 @@ pub unsafe fn tick() -> Option<(u8, i64)> {
     for i in 0..MAX_TASKS {
         if let TaskState::Sleeping(wake) = (*sched).tasks[i].state {
             if now >= wake { (*sched).tasks[i].state = TaskState::Ready; }
+        }
+    }
+
+    // Fire SIGALRM for any task whose alarm has expired.
+    for i in 0..MAX_TASKS {
+        let deadline = (*sched).tasks[i].alarm_deadline;
+        if deadline != 0 && now >= deadline {
+            (*sched).tasks[i].alarm_deadline = 0;
+            let pid = (*sched).tasks[i].pid;
+            if pid != 0 { unsafe { send_signal(pid, SIGALRM) }; }
         }
     }
 
@@ -663,11 +696,22 @@ unsafe fn deliver_pending_signals(idx: usize) -> bool {
     let sched = &raw mut SCHED;
     let task  = &raw mut (*sched).tasks[idx];
 
-    while (*task).pending_signals != 0 {
+    // SIGKILL (9) and SIGSTOP (19) cannot be blocked; all other signals
+    // respect signal_mask.
+    let always_deliverable = (1u32 << (SIGKILL as u32 - 1)) | (1u32 << (SIGSTOP as u32 - 1));
+    let deliverable = ((*task).pending_signals & !(*task).signal_mask)
+                    | ((*task).pending_signals &  always_deliverable);
+    if deliverable == 0 { return false; }
+
+    // Work only on deliverable bits; leave masked signals in pending_signals.
+    let mut to_deliver = deliverable;
+    (*task).pending_signals &= !deliverable; // will be restored if handler re-queues
+
+    while to_deliver != 0 {
         // Find lowest set bit (signal number = bit position + 1).
-        let bit    = (*task).pending_signals.trailing_zeros();
+        let bit    = to_deliver.trailing_zeros();
         let signum = (bit + 1) as u8;
-        (*task).pending_signals &= !(1u32 << bit);
+        to_deliver &= !(1u32 << bit);
 
         let handler = if (signum as usize) < NSIG {
             (*task).signal_handlers[signum as usize]
@@ -796,9 +840,13 @@ pub unsafe fn fork_task(
     (*child).fd_table   = parent_fd;
     (*child).cwd             = parent_cwd;
     (*child).cwd_len         = parent_cwdl;
-    // Children inherit signal handlers but start with clean pending mask and shm.
-    (*child).pending_signals = 0;
-    (*child).signal_handlers = parent_sighand;
+    // Children inherit signal handlers but start with clean pending mask, mask, alarm, and shm.
+    (*child).pending_signals   = 0;
+    (*child).signal_mask       = 0;
+    (*child).saved_signal_mask = 0;
+    (*child).in_sigsuspend     = false;
+    (*child).alarm_deadline    = 0;
+    (*child).signal_handlers   = parent_sighand;
     (*child).shm_attaches    = [const { crate::kernel::shm::ShmAttach::empty() }; crate::kernel::shm::MAX_ATTACH];
     (*child).mmap_regions    = parent_mregions;
     (*child).mmap_nregions   = parent_nregions;

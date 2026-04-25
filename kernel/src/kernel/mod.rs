@@ -33,3 +33,4 @@ pub mod shm;
 pub mod gui_proc;
 pub mod env;
 pub mod installer;
+pub mod procfs;

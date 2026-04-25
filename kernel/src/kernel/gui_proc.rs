@@ -397,9 +397,24 @@ pub unsafe fn present(pid: u32, window_id: u32) -> i64 {
     if !GFX_VALID { unsafe { NEEDS_PRESENT = true; } return 0; }
     let gfx = unsafe { &*GFX_PTR };
 
-    // Find the entry and snapshot.
+    // Find the entry, resize the backing buffer if the content area changed
+    // (e.g. after maximize / restore), then snapshot.
     if let Some(slot) = slot_by_pid_and_win(pid, window_id) {
         let e = unsafe { &mut entries()[slot] };
+
+        // Re-query content area from WM so maximize/restore is reflected.
+        if let Some((cx, cy, cw, ch)) = content_area(e.window_id as usize) {
+            if cw as u32 != e.back_w || ch as u32 != e.back_h {
+                e.back_w  = cw as u32;
+                e.back_h  = ch as u32;
+                let cap = (cw * ch) as usize;
+                e.backing.clear();
+                e.backing.resize(cap, 0u32);
+            }
+            e.back_cx = cx;
+            e.back_cy = cy;
+        }
+
         let w = e.back_w as u64;
         let h = e.back_h as u64;
         if w > 0 && h > 0 && e.backing.len() == (w * h) as usize {

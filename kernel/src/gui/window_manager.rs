@@ -52,6 +52,8 @@ pub struct WindowManager {
     context_menu_x: u64,
     context_menu_y: u64,
     background_style: BackgroundStyle,
+    // ID of the last window closed via the × button (cleared by take_closed_window).
+    last_closed_window: Option<usize>,
 }
 
 impl WindowManager {
@@ -72,7 +74,14 @@ impl WindowManager {
             context_menu_x: 0,
             context_menu_y: 0,
             background_style: BackgroundStyle::Default,
+            last_closed_window: None,
         }
+    }
+
+    /// Returns the WM window id of the most recently × -closed window, then
+    /// clears it.  Called from the main loop to propagate close to gui_proc.
+    pub fn take_closed_window(&mut self) -> Option<usize> {
+        self.last_closed_window.take()
     }
 
     pub fn set_screen_dimensions(&mut self, width: u64, height: u64) {
@@ -322,6 +331,7 @@ impl WindowManager {
 
         if let Some(window_id) = clicked_window {
             if clicked_close_button {
+                self.last_closed_window = Some(window_id);
                 self.remove_window(window_id);
             } else if clicked_maximize_button {
                 self.maximize_window(window_id);

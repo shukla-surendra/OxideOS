@@ -491,6 +491,24 @@ pub unsafe fn init_paging_heap(memory_map: &MemoryMapRequest) {
     unsafe { ALLOCATOR.init(memory_map) };
 }
 
+/// Returns the higher-half direct-map offset (HHDM) used to convert physical
+/// addresses to kernel virtual addresses: `virt = hhdm + phys`.
+pub fn get_hhdm_offset() -> u64 {
+    let inner = unsafe { &*ALLOCATOR.inner.get() };
+    match inner.page_table_manager.as_ref() {
+        Some(ptm) => ptm.higher_half_offset,
+        None      => 0,
+    }
+}
+
+/// Returns `(allocated_frames, total_frames)` for `/proc/meminfo`.
+pub fn frame_stats() -> (usize, usize) {
+    let inner = unsafe { &*ALLOCATOR.inner.get() };
+    let alloc = inner.frame_allocator.allocated_frames.load(Ordering::Relaxed);
+    let total = inner.frame_allocator.total_frames;
+    (alloc, total)
+}
+
 // ── User-space region helpers (used by user_mode.rs) ─────────────────────
 
 pub unsafe fn map_user_region(

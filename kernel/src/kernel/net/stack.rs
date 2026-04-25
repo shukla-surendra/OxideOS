@@ -19,6 +19,7 @@ use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr, Ipv4Address, Ipv4Cidr};
 
 use super::rtl8139;
+use super::e1000;
 
 // ── Resolved network configuration ────────────────────────────────────────
 
@@ -60,10 +61,14 @@ impl Device for NicDevice {
     fn receive(&mut self, _ts: Instant) -> Option<(RtlRxToken, RtlTxToken)> {
         let mut buf = [0u8; 1514];
         let n = unsafe {
-            let ptr = core::ptr::addr_of_mut!(rtl8139::DRIVER);
-            match &mut *ptr {
-                Some(nic) => nic.recv(&mut buf),
-                None      => 0,
+            // Try RTL8139 first, then e1000.
+            let n = {
+                let ptr = core::ptr::addr_of_mut!(rtl8139::DRIVER);
+                match &mut *ptr { Some(nic) => nic.recv(&mut buf), None => 0 }
+            };
+            if n > 0 { n } else {
+                let ptr = core::ptr::addr_of_mut!(e1000::DRIVER);
+                match &mut *ptr { Some(nic) => nic.recv(&mut buf), None => 0 }
             }
         };
         if n == 0 { return None; }
@@ -71,7 +76,9 @@ impl Device for NicDevice {
     }
 
     fn transmit(&mut self, _ts: Instant) -> Option<RtlTxToken> {
-        if rtl8139::PRESENT.load(Ordering::Relaxed) { Some(RtlTxToken) } else { None }
+        let rtl_ok = rtl8139::PRESENT.load(Ordering::Relaxed);
+        let e1k_ok = e1000::PRESENT.load(Ordering::Relaxed);
+        if rtl_ok || e1k_ok { Some(RtlTxToken) } else { None }
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
@@ -97,9 +104,15 @@ impl TxToken for RtlTxToken {
         let mut buf = [0u8; 1514];
         let result = f(&mut buf[..len]);
         unsafe {
+            // Send via whichever driver is present.
             let ptr = core::ptr::addr_of_mut!(rtl8139::DRIVER);
             if let Some(nic) = &mut *ptr {
                 nic.send(&buf[..len]);
+            } else {
+                let ptr = core::ptr::addr_of_mut!(e1000::DRIVER);
+                if let Some(nic) = &mut *ptr {
+                    nic.send(&buf[..len]);
+                }
             }
         }
         result
@@ -109,13 +122,16 @@ impl TxToken for RtlTxToken {
 // ── Initialisation ─────────────────────────────────────────────────────────
 
 pub unsafe fn init() {
-    if !rtl8139::PRESENT.load(Ordering::Relaxed) { return; }
-
+    // Get MAC from whichever driver initialised successfully.
     let mac = unsafe {
-        let ptr = core::ptr::addr_of!(rtl8139::DRIVER);
-        match &*ptr {
-            Some(d) => d.mac,
-            None    => return,
+        if rtl8139::PRESENT.load(Ordering::Relaxed) {
+            let ptr = core::ptr::addr_of!(rtl8139::DRIVER);
+            match &*ptr { Some(d) => d.mac, None => return }
+        } else if e1000::PRESENT.load(Ordering::Relaxed) {
+            let ptr = core::ptr::addr_of!(e1000::DRIVER);
+            match &*ptr { Some(d) => d.mac, None => return }
+        } else {
+            return;
         }
     };
 

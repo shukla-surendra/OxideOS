@@ -931,12 +931,12 @@ Replace kernel-launched terminal with a proper init:
 📌 Phase 11.1  COW fork                             ← Memory efficiency
 📌 Phase 11.5  Linked-list kernel heap              ← Correctness
 📌 Phase 12.1  ext2 write support                   ← Persistence
-📌 Phase 12.3  procfs (/proc)                       ← Observability
+✅ Phase 12.3  procfs (/proc)                       ← Observability
 📌 Phase 10.4  Job control (bg, fg, &)              ← Shell completeness
 📌 Phase 13.3  select/poll syscall                  ← I/O multiplexing
 📌 Phase 16.1  Window server protocol               ← GUI apps
 📌 Phase 12.2  Block cache                          ← Performance
-📌 Phase 14.1  Remaining signals (sigprocmask etc.) ← POSIX compat
+✅ Phase 14.1  Remaining signals (sigprocmask etc.) ← POSIX compat
 
 ── ADVANCED ────────────────────────────────────────────────────────
 
@@ -1086,7 +1086,7 @@ The milestones that cross the line from hobby OS to real OS:
 | Shell pipes work | 10.3 | ⬡ |
 | DNS + wget by hostname | 13.2 | ⬡ |
 | ext2 writable | 12.1 | ⬡ |
-| procfs exists | 12.3 | ⬡ |
+| procfs exists | 12.3 | ✅ |
 | select/poll | 13.3 | ⬡ |
 | Multiple GUI windows | 16.1 | ⬡ |
 | SMP (N cores used) | 17 | ⬡ |

@@ -33,6 +33,8 @@ pub enum Resolved<'a> {
     Ext2 { path: &'a [u8] },
     /// Route to a device-file backend.
     Dev { backend: FdBackend },
+    /// Route to /proc (dynamic RamFS with refresh before open).
+    Proc { path: &'a str },
 }
 
 /// Resolve `path` to its VFS backend.
@@ -58,6 +60,11 @@ pub fn resolve<'a>(path: &'a str) -> Resolved<'a> {
     // /ext2 or /ext2/…  → ext2 on secondary disk
     if path == "/ext2" || path.starts_with("/ext2/") {
         return Resolved::Ext2 { path: path.as_bytes() };
+    }
+
+    // /proc or /proc/…  → RamFS (with dynamic refresh before open)
+    if path == "/proc" || path.starts_with("/proc/") {
+        return Resolved::Proc { path };
     }
 
     // Everything else → RamFS
@@ -120,6 +127,20 @@ pub unsafe fn vfs_open(path: &str, flags: u32) -> i64 {
                 None => -2,
             }
         }
+
+        Resolved::Proc { path } => {
+            // Refresh dynamic content before the open so the caller sees current data.
+            crate::kernel::procfs::refresh(path);
+            match crate::kernel::fs::ramfs::RAMFS.get() {
+                Some(fs) => {
+                    if fs.list_dir(path).is_some() {
+                        return (*fdt).open_dir(path.as_bytes());
+                    }
+                    (*fdt).open(fs, path, flags)
+                }
+                None => -2,
+            }
+        }
     }
 }
 
@@ -152,6 +173,13 @@ pub fn vfs_readdir(path: &str, buf: &mut [u8]) -> i64 {
                 None     => -2,
             }
         }
+
+        Resolved::Proc { path } => {
+            match unsafe { crate::kernel::fs::ramfs::RAMFS.get() } {
+                Some(fs) => fs.read_dir_raw(path, buf),
+                None     => -2,
+            }
+        }
     }
 }
 
@@ -171,7 +199,8 @@ pub unsafe fn vfs_mkdir(path: &str) -> i64 {
                 None     => -2,
             }
         }
-        Resolved::Dev { .. } => -1, // EPERM: can't mkdir in /dev
+        Resolved::Dev { .. } => -1,  // EPERM: can't mkdir in /dev
+        Resolved::Proc { .. } => -1, // EPERM: /proc is read-only
     }
 }
 
@@ -202,6 +231,12 @@ pub unsafe fn vfs_chdir(path: &str) -> i64 {
                    .is_some()
         }
         Resolved::Dev { .. } => false,
+        Resolved::Proc { path: rpath } => {
+            rpath == "/proc"
+            || unsafe { crate::kernel::fs::ramfs::RAMFS.get() }
+                   .and_then(|fs| fs.list_dir(rpath))
+                   .is_some()
+        }
     };
 
     if !exists { return -7; } // ENOENT
@@ -390,6 +425,23 @@ pub unsafe fn vfs_stat_linux(path: &str, out: *mut LinuxStat) -> i64 {
                     }
                 }
             }
+            Resolved::Proc { path: rpath } => {
+                crate::kernel::procfs::refresh(rpath);
+                match crate::kernel::fs::ramfs::RAMFS.get() {
+                    None => -2,
+                    Some(fs) => {
+                        if let Some(data) = fs.read_file(rpath) {
+                            *out = LinuxStat::fill_file(data.len() as u64, 500 + rpath.len() as u64);
+                            0
+                        } else if fs.list_dir(rpath).is_some() {
+                            *out = LinuxStat::fill_dir(600 + rpath.len() as u64);
+                            0
+                        } else {
+                            -2
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -464,6 +516,27 @@ pub unsafe fn vfs_stat(path: &str, out: *mut FileStat) -> i64 {
             }
 
             Resolved::RamFS { path: rpath } => {
+                match crate::kernel::fs::ramfs::RAMFS.get() {
+                    None => -2,
+                    Some(fs) => {
+                        if let Some(data) = fs.read_file(rpath) {
+                            (*out).size = data.len() as u64;
+                            (*out).kind = StatKind::File as u32;
+                            (*out)._pad = 0;
+                            0
+                        } else if fs.list_dir(rpath).is_some() {
+                            (*out).size = 0;
+                            (*out).kind = StatKind::Directory as u32;
+                            (*out)._pad = 0;
+                            0
+                        } else {
+                            -7 // ENOENT
+                        }
+                    }
+                }
+            }
+            Resolved::Proc { path: rpath } => {
+                crate::kernel::procfs::refresh(rpath);
                 match crate::kernel::fs::ramfs::RAMFS.get() {
                     None => -2,
                     Some(fs) => {
