@@ -23,6 +23,7 @@ pub use drivers::pic;
 pub use drivers::timer;
 pub use drivers::keyboard;
 pub use drivers::ata;
+pub use drivers::disk_store;
 pub use drivers::shutdown;
 pub use drivers::net;
 
@@ -41,6 +42,7 @@ pub use fs::ext2;
 pub use fs::mbr;
 pub use fs::vfs;
 pub use fs::procfs;
+pub use fs::diskfs;
 
 // proc/
 pub use proc::scheduler;

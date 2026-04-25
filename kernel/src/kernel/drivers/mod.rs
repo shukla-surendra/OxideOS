@@ -14,5 +14,6 @@ pub mod pic;
 pub mod timer;
 pub mod keyboard;
 pub mod ata;
+pub mod disk_store;
 pub mod shutdown;
 pub mod net;

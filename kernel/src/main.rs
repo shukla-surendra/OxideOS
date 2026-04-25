@@ -212,9 +212,22 @@ unsafe extern "C" fn kmain() -> ! {
         crate::kernel::env::init_defaults();
         SERIAL_PORT.write_str("✓ Environment initialized\n");
 
-        // ATA disks — primary then secondary
-        crate::kernel::ata::init();
-        crate::kernel::ata::init_secondary();
+        // ATA disks — probe all four positions (primary/secondary × master/slave)
+        crate::kernel::ata::init_all();
+
+        // Disk record store — mount on primary disk (disk 0) if present.
+        // Falls back to formatting a fresh store if the disk is unformatted.
+        if crate::kernel::ata::is_present() {
+            unsafe { crate::kernel::disk_store::mount(0); }
+        }
+        // Mount secondary disk store too if a secondary disk is present.
+        if crate::kernel::ata::is_present_sec() {
+            unsafe { crate::kernel::disk_store::mount(2); }
+        }
+
+        // diskfs — create visible mount-point dirs and /diskinfo in RamFS
+        crate::kernel::diskfs::populate();
+        SERIAL_PORT.write_str("✓ diskfs populated\n");
 
         // MBR partition table — must run before FAT so fat::init() can find its partition
         crate::kernel::mbr::init();

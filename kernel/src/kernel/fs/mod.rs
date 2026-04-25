@@ -11,6 +11,7 @@ pub mod ext2;
 pub mod mbr;
 pub mod vfs;
 pub mod procfs;
+pub mod diskfs;
 
 pub use ramfs::RAMFS;
 
