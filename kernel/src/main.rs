@@ -957,7 +957,7 @@ unsafe fn draw_sysinfo_panel(
     fonts::draw_string(graphics, cx, cy, "NETWORK", 0xFF007ACC);
     let net_up = kernel::net::is_present();
     let (dot_col, net_label, net_col) = if net_up {
-        (0xFF30C040u32, "RTL8139", 0xFF40D050u32)
+        (0xFF30C040u32, kernel::net::nic_name(), 0xFF40D050u32)
     } else {
         (0xFF803030u32, "No NIC ", 0xFF805050u32)
     };

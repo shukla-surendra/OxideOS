@@ -64,7 +64,7 @@ pub unsafe fn init(
     CONTENT_H = content_h;
     BG_COLOR  = bg_color;
     // Ensure the queue exists.
-    let _ = unsafe { super::ipc::msgq_create(COMPOSITOR_QUEUE_ID) };
+    let _ = unsafe { crate::kernel::ipc::msgq_create(COMPOSITOR_QUEUE_ID) };
 }
 
 /// Update the content-area geometry (called when the terminal window is moved
@@ -90,8 +90,8 @@ pub unsafe fn process_messages() -> bool {
     let mut processed = false;
 
     loop {
-        let mut msg = super::ipc::Message::empty();
-        if unsafe { super::ipc::msgrcv(COMPOSITOR_QUEUE_ID, &mut msg) } != 0 {
+        let mut msg = crate::kernel::ipc::Message::empty();
+        if unsafe { crate::kernel::ipc::msgrcv(COMPOSITOR_QUEUE_ID, &mut msg) } != 0 {
             break; // queue empty
         }
         processed = true;
@@ -101,7 +101,7 @@ pub unsafe fn process_messages() -> bool {
     processed
 }
 
-fn process_one(gfx: &Graphics, msg: &super::ipc::Message) {
+fn process_one(gfx: &Graphics, msg: &crate::kernel::ipc::Message) {
     let (cx, cy, cw, ch, bg) = unsafe {
         (CONTENT_X, CONTENT_Y, CONTENT_W, CONTENT_H, BG_COLOR)
     };
@@ -131,7 +131,7 @@ fn process_one(gfx: &Graphics, msg: &super::ipc::Message) {
             let color = read_u32(&msg.data, 8);
             let len   = read_u32(&msg.data, 12) as usize;
             let len   = len.min(msg.size as usize - 16)
-                           .min(super::ipc::MAX_MSG_SIZE - 16);
+                           .min(crate::kernel::ipc::MAX_MSG_SIZE - 16);
             let text_bytes = &msg.data[16..16 + len];
             if let Ok(s) = core::str::from_utf8(text_bytes) {
                 let ax = cx + x.min(cw);
