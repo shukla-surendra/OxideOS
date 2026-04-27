@@ -681,11 +681,6 @@ impl TerminalApp {
     }
 
     fn print_banner(&mut self) {
-        self.push_line("  ___          _    _       ___  ____");
-        self.push_line(" / _ \\ __  __ (_)  | |     / _ \\/ ___|");
-        self.push_line("| | | |\\ \\/ / | |  | |  _ | | | \\___ \\");
-        self.push_line("| |_| | >  <  | |  | |_| || |_| |___) |");
-        self.push_line(" \\___/ /_/\\_\\ |_|  |_____| \\___/|____/");
         self.push_line("");
         self.push_line("[info] Type 'help' for commands  |  Tab to complete  |  PgUp/PgDn to scroll");
         self.push_line("[info] Run programs with: run <name>   List programs: run");

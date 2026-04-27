@@ -585,71 +585,68 @@ impl WindowManager {
     }
 
     pub fn draw_taskbar(&self, graphics: &Graphics) {
-        // GNOME-style flat dark top panel
+        // ── Background ────────────────────────────────────────────────────────
         graphics.fill_rect(0, 0, self.screen_width, TASKBAR_HEIGHT, 0xFF2E2E2E);
-
-        // Bottom border line (subtle separator from desktop)
         graphics.fill_rect(0, TASKBAR_HEIGHT - 1, self.screen_width, 1, 0xFF1A1A1A);
 
-        // Separator after Activities button area
+        // ── Center clock — drawn first so we know its boundaries ──────────────
+        // "HH:MM:SS AM" = 11 chars × 9px = 99px; pill adds 20px → 119px total
+        const CLOCK_TEXT_W: u64 = 99;
+        const CLOCK_PILL_W: u64 = CLOCK_TEXT_W + 20; // 10px padding each side
+        let clock_pill_x = (self.screen_width.saturating_sub(CLOCK_PILL_W)) / 2;
+        let clock_text_x = clock_pill_x + 10;
+        let clock_y      = (TASKBAR_HEIGHT - 8) / 2;
+
+        let mut time_buf = [0u8; 11];
+        crate::kernel::rtc::format_time_ampm(&mut time_buf);
+        let time_str = core::str::from_utf8(&time_buf).unwrap_or("--:--:-- --");
+        graphics.fill_rounded_rect(clock_pill_x, clock_y - 5, CLOCK_PILL_W, 18, 6, 0xFF3A3A3A);
+        fonts::draw_string(graphics, clock_text_x, clock_y, time_str, 0xFFEEEEEE);
+
+        // ── Right-side system tray ─────────────────────────────────────────────
+        // TRAY_W: brightness icon + network dot + margin — no IP text.
+        const TRAY_W: u64 = 90;  // reserved pixels from right edge
+        let tray_x = self.screen_width.saturating_sub(TRAY_W);
+        self.draw_system_tray(graphics, tray_x);
+
+        // ── Left-side: separator + window items ───────────────────────────────
+        // Items are allowed up to `clock_pill_x - 8` so they never touch the clock.
         graphics.fill_rect(146, 10, 1, 28, 0x28FFFFFF);
+        let items_start = 158u64;
+        let items_max_right = clock_pill_x.saturating_sub(8);
 
-        // Centered clock
-        self.draw_center_clock(graphics);
-
-        // Taskbar window items — start after the wider Activities button
-        let start_x = 158u64;
         for i in 0..self.window_count {
             let window_id = self.z_order[i];
-            let item_x = start_x + (i as u64) * (TASKBAR_ITEM_WIDTH + TASKBAR_ITEM_SPACING);
+            let item_x = items_start + (i as u64) * (TASKBAR_ITEM_WIDTH + TASKBAR_ITEM_SPACING);
+            // Stop drawing items that would overlap the clock.
+            if item_x + TASKBAR_ITEM_WIDTH > items_max_right { break; }
             if let Some(ref window) = self.windows[window_id] {
                 self.draw_taskbar_item(graphics, window, window_id, item_x);
             }
         }
-
-        // System tray (network indicator only — clock is now centered)
-        self.draw_system_tray(graphics);
     }
 
-    /// Draw the clock in the centre of the taskbar (GNOME top-bar style).
-    fn draw_center_clock(&self, graphics: &Graphics) {
-        let mut time_buf = [0u8; 8];
-        let ticks = unsafe { crate::kernel::timer::get_ticks() };
-        format_uptime(ticks, &mut time_buf);
-        let time_str = core::str::from_utf8(&time_buf).unwrap_or("00:00:00");
-        // "HH:MM:SS" = 8 chars × 9px = 72px wide
-        let clock_px: u64 = 72;
-        let clock_x = (self.screen_width.saturating_sub(clock_px)) / 2;
-        let clock_y = (TASKBAR_HEIGHT - 8) / 2;
-        // Subtle pill background
-        graphics.fill_rounded_rect(clock_x - 10, clock_y - 5, clock_px + 20, 18, 6, 0xFF383838);
-        fonts::draw_string(graphics, clock_x, clock_y, time_str, 0xFFEEEEEE);
-    }
+    /// Draw the right-side system tray: brightness icon + network dot.
+    /// `tray_x` is the left edge of the reserved tray area.
+    fn draw_system_tray(&self, graphics: &Graphics, tray_x: u64) {
+        let icon_cy = TASKBAR_HEIGHT / 2; // vertical centre of taskbar
 
-    fn draw_system_tray(&self, graphics: &Graphics) {
-        // ── Network indicator pill (right edge; clock is now centred) ─────────
-        const NET_W:   u64 = 130;
-        const NET_H:   u64 = 34;
-        const NET_PAD: u64 = 8;
-        let net_y     = (TASKBAR_HEIGHT - NET_H) / 2;
-        let net_box_x = self.screen_width.saturating_sub(NET_W + 10);
+        // ── Brightness icon (sun) — left of tray ──────────────────────────────
+        // 80% brightness is the fixed display value (visual only for now).
+        let sun_cx = tray_x + 14;
+        let sun_cy = icon_cy;
+        draw_sun_icon(graphics, sun_cx, sun_cy, 0xFFDDAA30);
+        fonts::draw_string(graphics, sun_cx + 12, sun_cy - 4, "80%", 0xFF888888);
 
+        // ── Network status dot — right of tray ────────────────────────────────
         let net_present = crate::kernel::net::is_present();
-        let (dot_col, label, label_col) = if net_present {
-            (0xFF26A269u32, "10.0.2.15", 0xFF80D8A0u32)
-        } else {
-            (0xFFED333Bu32, "No NIC   ", 0xFFAA6060u32)
-        };
-
-        graphics.fill_rounded_rect(net_box_x, net_y, NET_W, NET_H, 6, 0xFF383838);
-        graphics.draw_rounded_rect(net_box_x, net_y, NET_W, NET_H, 6, 0xFF4A4A4A, 1);
-
-        let dot_x = net_box_x + NET_PAD;
-        let dot_y2 = net_y + (NET_H - 8) / 2;
-        graphics.fill_rounded_rect(dot_x, dot_y2, 8, 8, 4, dot_col);
-
-        fonts::draw_string(graphics, dot_x + 12, net_y + 7,  label,     label_col);
-        fonts::draw_string(graphics, dot_x + 12, net_y + 20, "Network", 0xFF888888);
+        let dot_col = if net_present { 0xFF26A269u32 } else { 0xFFED333Bu32 };
+        let dot_x = tray_x + 70;
+        let dot_y = icon_cy - 4;
+        graphics.fill_rounded_rect(dot_x, dot_y, 10, 10, 5, dot_col);
+        // Subtle tooltip-style label below dot
+        let net_label = if net_present { "NET" } else { "OFF" };
+        fonts::draw_string(graphics, dot_x - 1, dot_y + 12, net_label, 0xFF666666);
     }
 
     fn draw_taskbar_item(&self, graphics: &Graphics, window: &Window, window_id: usize, x: u64) {
@@ -865,4 +862,23 @@ impl WindowManager {
     pub fn get_screen_dimensions(&self) -> (u64, u64) {
         (self.screen_width, self.screen_height)
     }
+}
+
+// ── Standalone drawing helpers ────────────────────────────────────────────────
+
+/// Draw a small sun icon centred at (cx, cy).
+/// Uses a filled circle core with 8 short rays.
+fn draw_sun_icon(graphics: &Graphics, cx: u64, cy: u64, color: u32) {
+    // Centre disc (5×5)
+    graphics.fill_rounded_rect(cx.saturating_sub(3), cy.saturating_sub(3), 6, 6, 3, color);
+    // Cardinal rays (2×3 rectangles)
+    graphics.fill_rect(cx.saturating_sub(1), cy.saturating_sub(8), 2, 4, color); // top
+    graphics.fill_rect(cx.saturating_sub(1), cy + 4,               2, 4, color); // bottom
+    graphics.fill_rect(cx.saturating_sub(8), cy.saturating_sub(1), 4, 2, color); // left
+    graphics.fill_rect(cx + 4,               cy.saturating_sub(1), 4, 2, color); // right
+    // Diagonal rays (2×2 dots)
+    graphics.fill_rect(cx.saturating_sub(6), cy.saturating_sub(6), 2, 2, color); // top-left
+    graphics.fill_rect(cx + 4,               cy.saturating_sub(6), 2, 2, color); // top-right
+    graphics.fill_rect(cx.saturating_sub(6), cy + 4,               2, 2, color); // bot-left
+    graphics.fill_rect(cx + 4,               cy + 4,               2, 2, color); // bot-right
 }

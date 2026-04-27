@@ -21,6 +21,7 @@ pub mod installer;
 pub use drivers::serial;
 pub use drivers::pic;
 pub use drivers::timer;
+pub use drivers::rtc;
 pub use drivers::keyboard;
 pub use drivers::ata;
 pub use drivers::disk_store;

@@ -85,13 +85,18 @@ pub static mut KERNEL_BINARY_LEN: usize     = 0;
 /// Target for the kernel-side internet probe: example.com port 80.
 const PROBE_IP:   [u8; 4] = [93, 184, 216, 34];
 const PROBE_PORT: u16      = 80;
+/// Timeout: 10 seconds at 100 Hz.
+const PROBE_TIMEOUT_TICKS: u64 = 1000;
+
+#[derive(Clone, Copy, PartialEq)]
+enum ProbeFailReason { NoSocket, NoConnect, Timeout }
 
 #[derive(Clone, Copy)]
 enum NetProbePhase {
     Idle,
     Connecting { sfd: i64, start_tick: u64 },
     Connected  { ms: u64 },
-    Failed,
+    Failed     { reason: ProbeFailReason },
 }
 
 struct NetProbe {
@@ -106,10 +111,11 @@ impl NetProbe {
     fn tick(&mut self) -> bool {
         if let NetProbePhase::Connecting { sfd, start_tick } = self.phase {
             let now = unsafe { crate::kernel::timer::get_ticks() };
-            // 5-second timeout (500 ticks @ 100 Hz)
-            if now.wrapping_sub(start_tick) > 500 {
+            if now.wrapping_sub(start_tick) > PROBE_TIMEOUT_TICKS {
                 unsafe { crate::kernel::net::socket::sys_close_socket(sfd); }
-                self.phase = NetProbePhase::Failed;
+                unsafe { crate::kernel::serial::SERIAL_PORT
+                    .write_str("[probe] timed out — no SYN-ACK received\n"); }
+                self.phase = NetProbePhase::Failed { reason: ProbeFailReason::Timeout };
                 return true;
             }
             // Poll the stack so the TCP handshake can progress.
@@ -133,7 +139,12 @@ impl NetProbe {
 
         use crate::kernel::net::socket::{sys_socket, sys_connect, AF_INET, SOCK_STREAM};
         let sfd = unsafe { sys_socket(AF_INET, SOCK_STREAM, 0) };
-        if sfd < 0 { self.phase = NetProbePhase::Failed; return; }
+        if sfd < 0 {
+            unsafe { crate::kernel::serial::SERIAL_PORT
+                .write_str("[probe] sys_socket failed — NIC or stack not ready\n"); }
+            self.phase = NetProbePhase::Failed { reason: ProbeFailReason::NoSocket };
+            return;
+        }
 
         // Build sockaddr_in: family(LE u16) | port(BE u16) | ip[4]
         let mut addr = [0u8; 8];
@@ -141,12 +152,19 @@ impl NetProbe {
         addr[2..4].copy_from_slice(&PROBE_PORT.to_be_bytes());
         addr[4..8].copy_from_slice(&PROBE_IP);
 
+        unsafe { crate::kernel::serial::SERIAL_PORT
+            .write_str("[probe] connecting to 93.184.216.34:80...\n"); }
+
         let r = unsafe { sys_connect(sfd, addr.as_ptr(), 8) };
         if r < 0 {
-            // smoltcp returns 0 on non-blocking connect initiation.
-            // Any negative value here means a hard error.
-            unsafe { crate::kernel::net::socket::sys_close_socket(sfd); }
-            self.phase = NetProbePhase::Failed;
+            unsafe {
+                let sp = &crate::kernel::serial::SERIAL_PORT;
+                sp.write_str("[probe] sys_connect failed, code=");
+                sp.write_decimal((-r) as u32);
+                sp.write_str("\n");
+                crate::kernel::net::socket::sys_close_socket(sfd);
+            }
+            self.phase = NetProbePhase::Failed { reason: ProbeFailReason::NoConnect };
             return;
         }
 
@@ -158,9 +176,9 @@ impl NetProbe {
     fn is_button_hit(&self, wm: &WindowManager, sysinfo_id: usize, mx: u64, my: u64) -> bool {
         let Some(win) = wm.get_window(sysinfo_id) else { return false; };
         if !wm.is_window_visible(sysinfo_id) { return false; }
-        // Button is placed at cy = win.y + 266 (see draw_sysinfo_panel)
+        // Button is placed at cy = win.y + 260 (see draw_sysinfo_panel)
         let btn_x = win.x + 12;
-        let btn_y = win.y + 266;
+        let btn_y = win.y + 260;
         let btn_w = win.width.saturating_sub(24);
         mx >= btn_x && mx < btn_x + btn_w && my >= btn_y && my < btn_y + 22
     }
@@ -978,38 +996,44 @@ unsafe fn draw_sysinfo_panel(
     let Some(win) = wm.get_window(window_id) else { return; };
 
     let cx = win.x + 12;
-    let mut cy = win.y + 38;
+    // Start content 42px below window top — clears the 34px title bar with an 8px gap.
+    let mut cy = win.y + 42;
     let row = 20u64;
     let bar_w = win.width.saturating_sub(24);
 
-    // ── Header divider ─────────────────────────────────────────────────────
-    graphics.fill_rect(cx, cy, bar_w, 1, 0xFF1A5F9A);
-    cy += 6;
-
     // ── OS name & version ──────────────────────────────────────────────────
     fonts::draw_string(graphics, cx, cy, "OxideOS  v0.1.0-dev", 0xFF7FC8FF);
-    cy += row;
+    cy += row - 2;
     fonts::draw_string(graphics, cx, cy, "x86_64  Limine bootloader", 0xFF4A6080);
-    cy += row + 4;
+    cy += row + 2;
 
     graphics.fill_rect(cx, cy, bar_w, 1, 0xFF1E2840);
     cy += 8;
 
+    // ── Real-time clock (12-hour AM/PM) ───────────────────────────────────
+    fonts::draw_string(graphics, cx, cy, "TIME", 0xFF007ACC);
+    let mut tbuf = [0u8; 11];
+    kernel::rtc::format_time_ampm(&mut tbuf);
+    if let Ok(ts) = core::str::from_utf8(&tbuf) {
+        fonts::draw_string(graphics, cx + 54, cy, ts, 0xFFE0F0FF);
+    }
+    cy += row;
+
     // ── Uptime ────────────────────────────────────────────────────────────
-    let ticks = unsafe { kernel::timer::get_ticks() };
     fonts::draw_string(graphics, cx, cy, "UPTIME", 0xFF007ACC);
-    let mut tbuf = [0u8; 8];
+    let ticks = unsafe { kernel::timer::get_ticks() };
+    let mut ubuf = [0u8; 8];
     {
         let total = ticks / 100;
         let h = (total / 3600) % 100;
         let m = (total / 60) % 60;
         let s = total % 60;
-        tbuf[0] = b'0' + (h/10) as u8; tbuf[1] = b'0' + (h%10) as u8; tbuf[2] = b':';
-        tbuf[3] = b'0' + (m/10) as u8; tbuf[4] = b'0' + (m%10) as u8; tbuf[5] = b':';
-        tbuf[6] = b'0' + (s/10) as u8; tbuf[7] = b'0' + (s%10) as u8;
+        ubuf[0] = b'0' + (h/10) as u8; ubuf[1] = b'0' + (h%10) as u8; ubuf[2] = b':';
+        ubuf[3] = b'0' + (m/10) as u8; ubuf[4] = b'0' + (m%10) as u8; ubuf[5] = b':';
+        ubuf[6] = b'0' + (s/10) as u8; ubuf[7] = b'0' + (s%10) as u8;
     }
-    let tstr = core::str::from_utf8(&tbuf).unwrap_or("00:00:00");
-    fonts::draw_string(graphics, cx + 72, cy, tstr, 0xFFE0F0FF);
+    let ustr = core::str::from_utf8(&ubuf).unwrap_or("00:00:00");
+    fonts::draw_string(graphics, cx + 72, cy, ustr, 0xFF8090A8);
     cy += row;
 
     // ── Memory bar ────────────────────────────────────────────────────────
@@ -1027,14 +1051,6 @@ unsafe fn draw_sysinfo_panel(
     // ── Disk ──────────────────────────────────────────────────────────────
     fonts::draw_string(graphics, cx, cy, "DISK", 0xFF007ACC);
     let (disk_str, disk_col) = if kernel::ata::is_present() {
-        let mut sec_str = [b' '; 12];
-        let secs = kernel::ata::sector_count();
-        // write decimal
-        let mb = secs / 2048;
-        // simple format: "XXX MB"
-        let mut n = mb; let mut i = 5usize;
-        sec_str[6] = b'M'; sec_str[7] = b'B';
-        loop { sec_str[i] = b'0' + (n % 10) as u8; n /= 10; if n == 0 || i == 0 { break; } i -= 1; }
         ("ATA detected", 0xFF40C040u32)
     } else {
         ("No disk", 0xFF806040u32)
@@ -1054,20 +1070,9 @@ unsafe fn draw_sysinfo_panel(
         5 => ("5 running",  0xFF40C040),
         6 => ("6 running",  0xFF40C040),
         7 => ("7 running",  0xFF40C040),
-        _ => ("8 running",  0xFF40C040),
+        _ => ("many running", 0xFF40C040),
     };
     fonts::draw_string(graphics, cx + 63, cy, task_str, task_col);
-    cy += row;
-
-    // ── Ticks ─────────────────────────────────────────────────────────────
-    fonts::draw_string(graphics, cx, cy, "TICKS", 0xFF007ACC);
-    // write tick count (up to 10 digits)
-    let mut num_buf = [b' '; 12];
-    let mut n = ticks; let mut i = 11usize;
-    loop { num_buf[i] = b'0' + (n % 10) as u8; n /= 10; if n == 0 || i == 0 { break; } i -= 1; }
-    if let Ok(s) = core::str::from_utf8(&num_buf[i..12]) {
-        fonts::draw_string(graphics, cx + 63, cy, s, 0xFF4A8090);
-    }
     cy += row;
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -1091,14 +1096,26 @@ unsafe fn draw_sysinfo_panel(
     // ── IP / MAC row ──────────────────────────────────────────────────────────
     fonts::draw_string(graphics, cx, cy, "IP", 0xFF007ACC);
     if net_up {
-        fonts::draw_string(graphics, cx + 27, cy, "10.0.2.15 / 24", 0xFFB0C8E8);
+        let ip = kernel::net::get_ip();
+        let mut ip_buf = [0u8; 20];
+        let mut pos = 0usize;
+        for (i, &octet) in ip.iter().enumerate() {
+            if i > 0 { ip_buf[pos] = b'.'; pos += 1; }
+            let mut n = octet as u32;
+            if n >= 100 { ip_buf[pos] = b'0' + (n / 100) as u8; pos += 1; n %= 100; }
+            if n >= 10  { ip_buf[pos] = b'0' + (n / 10)  as u8; pos += 1; n %= 10; }
+            ip_buf[pos] = b'0' + n as u8; pos += 1;
+        }
+        if let Ok(s) = core::str::from_utf8(&ip_buf[..pos]) {
+            fonts::draw_string(graphics, cx + 27, cy, s, 0xFFB0C8E8);
+        }
     } else {
         fonts::draw_string(graphics, cx + 27, cy, "—", 0xFF3A4050);
     }
     cy += row;
 
     // ── Test button ───────────────────────────────────────────────────────────
-    // cy = win.y + 266 at this point (matching NetProbe::is_button_hit)
+    // cy = win.y + 260 at this point (matching NetProbe::is_button_hit)
     let btn_w = bar_w;
     let btn_h = 22u64;
     let (bt, bb, bd, btxt) = if net_up {
@@ -1143,9 +1160,14 @@ unsafe fn draw_sysinfo_panel(
                 fonts::draw_string(graphics, cx + 14 + 72, cy, ms_str, 0xFF60B070);
             }
         }
-        NetProbePhase::Failed => {
+        NetProbePhase::Failed { reason } => {
             graphics.fill_rounded_rect(cx, cy + 3, 8, 8, 2, 0xFFC03030);
-            fonts::draw_string(graphics, cx + 14, cy, "Failed / timeout", 0xFFD04040);
+            let msg = match reason {
+                ProbeFailReason::NoSocket  => "No socket (NIC/stack error)",
+                ProbeFailReason::NoConnect => "Connect rejected by stack",
+                ProbeFailReason::Timeout   => "Timeout — no reply from host",
+            };
+            fonts::draw_string(graphics, cx + 14, cy, msg, 0xFFD04040);
         }
     }
 }

@@ -141,8 +141,25 @@ install-vdi: install-image
 clean-install:
 	rm -f $(INSTALL_IMAGE) oxide_install.vdi
 
+# MODE selects the QEMU launch style for `make run`.
+# Options: gui (default), bios, uefi, kvm, hdd, hdd-bios
+# Example: make run MODE=bios
+$(call USER_VARIABLE,MODE,gui)
+
 .PHONY: run
+ifeq ($(MODE),bios)
+run: run-bios
+else ifeq ($(MODE),hdd-bios)
+run: run-hdd-bios
+else ifeq ($(MODE),kvm)
+run: run-kvm-$(KARCH)
+else ifeq ($(MODE),hdd)
+run: run-hdd-$(KARCH)
+else ifeq ($(MODE),uefi)
 run: run-$(KARCH)
+else
+run: run-gui-$(KARCH)
+endif
 
 .PHONY: run-gui
 run-gui: run-gui-$(KARCH)

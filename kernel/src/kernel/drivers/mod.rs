@@ -12,6 +12,7 @@
 pub mod serial;
 pub mod pic;
 pub mod timer;
+pub mod rtc;
 pub mod keyboard;
 pub mod ata;
 pub mod disk_store;

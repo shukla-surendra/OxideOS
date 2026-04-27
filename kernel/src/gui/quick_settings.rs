@@ -112,10 +112,21 @@ impl QuickSettings {
         // ── Network card ──────────────────────────────────────────────────────
         cy = draw_card_header(graphics, px, cy, "Network", 0xFF5294E2);
         let net_up = crate::kernel::net::is_present();
-        let (dot_col, net_str) = if net_up {
-            (0xFF26A269, "Connected   10.0.2.15")
+        let dot_col = if net_up { 0xFF26A269u32 } else { 0xFFED333Bu32 };
+        let mut ip_buf = [0u8; 20];
+        let net_str: &str = if net_up {
+            let ip = crate::kernel::net::get_ip();
+            let mut pos = 0usize;
+            for (i, &oct) in ip.iter().enumerate() {
+                if i > 0 { ip_buf[pos] = b'.'; pos += 1; }
+                let mut n = oct as u32;
+                if n >= 100 { ip_buf[pos] = b'0' + (n/100) as u8; pos += 1; n %= 100; }
+                if n >= 10  { ip_buf[pos] = b'0' + (n/10)  as u8; pos += 1; n %= 10;  }
+                ip_buf[pos] = b'0' + n as u8; pos += 1;
+            }
+            core::str::from_utf8(&ip_buf[..pos]).unwrap_or("Connected")
         } else {
-            (0xFFED333B, "No network interface")
+            "No network interface"
         };
         graphics.fill_rounded_rect(px + 16, cy + 5, 12, 12, 6, dot_col);
         fonts::draw_string(graphics, px + 36, cy + 5, net_str, 0xFFAAAAAA);
