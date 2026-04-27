@@ -14,6 +14,7 @@ mod panic;
 mod kernel;
 mod gui;
 mod wallpaper;
+mod version;
 
 // ============================================================================
 // IMPORTS
@@ -28,6 +29,9 @@ use kernel::{gdt, idt, interrupts, timer, pic};
 use gui::window_manager::WindowManager;
 use gui::launcher::LauncherApp;
 use gui::start_menu::StartMenu;
+use gui::overview::Overview;
+use gui::quick_settings::{QuickSettings, QsAction};
+use gui::notifications::NotificationManager;
 use core::ptr;
 
 use limine::BaseRevision;
@@ -82,13 +86,18 @@ pub static mut KERNEL_BINARY_LEN: usize     = 0;
 /// Target for the kernel-side internet probe: example.com port 80.
 const PROBE_IP:   [u8; 4] = [93, 184, 216, 34];
 const PROBE_PORT: u16      = 80;
+/// Timeout: 10 seconds at 100 Hz.
+const PROBE_TIMEOUT_TICKS: u64 = 1000;
+
+#[derive(Clone, Copy, PartialEq)]
+enum ProbeFailReason { NoSocket, NoConnect, Timeout }
 
 #[derive(Clone, Copy)]
 enum NetProbePhase {
     Idle,
     Connecting { sfd: i64, start_tick: u64 },
     Connected  { ms: u64 },
-    Failed,
+    Failed     { reason: ProbeFailReason },
 }
 
 struct NetProbe {
@@ -103,10 +112,11 @@ impl NetProbe {
     fn tick(&mut self) -> bool {
         if let NetProbePhase::Connecting { sfd, start_tick } = self.phase {
             let now = unsafe { crate::kernel::timer::get_ticks() };
-            // 5-second timeout (500 ticks @ 100 Hz)
-            if now.wrapping_sub(start_tick) > 500 {
+            if now.wrapping_sub(start_tick) > PROBE_TIMEOUT_TICKS {
                 unsafe { crate::kernel::net::socket::sys_close_socket(sfd); }
-                self.phase = NetProbePhase::Failed;
+                unsafe { crate::kernel::serial::SERIAL_PORT
+                    .write_str("[probe] timed out — no SYN-ACK received\n"); }
+                self.phase = NetProbePhase::Failed { reason: ProbeFailReason::Timeout };
                 return true;
             }
             // Poll the stack so the TCP handshake can progress.
@@ -130,7 +140,12 @@ impl NetProbe {
 
         use crate::kernel::net::socket::{sys_socket, sys_connect, AF_INET, SOCK_STREAM};
         let sfd = unsafe { sys_socket(AF_INET, SOCK_STREAM, 0) };
-        if sfd < 0 { self.phase = NetProbePhase::Failed; return; }
+        if sfd < 0 {
+            unsafe { crate::kernel::serial::SERIAL_PORT
+                .write_str("[probe] sys_socket failed — NIC or stack not ready\n"); }
+            self.phase = NetProbePhase::Failed { reason: ProbeFailReason::NoSocket };
+            return;
+        }
 
         // Build sockaddr_in: family(LE u16) | port(BE u16) | ip[4]
         let mut addr = [0u8; 8];
@@ -138,12 +153,19 @@ impl NetProbe {
         addr[2..4].copy_from_slice(&PROBE_PORT.to_be_bytes());
         addr[4..8].copy_from_slice(&PROBE_IP);
 
+        unsafe { crate::kernel::serial::SERIAL_PORT
+            .write_str("[probe] connecting to 93.184.216.34:80...\n"); }
+
         let r = unsafe { sys_connect(sfd, addr.as_ptr(), 8) };
         if r < 0 {
-            // smoltcp returns 0 on non-blocking connect initiation.
-            // Any negative value here means a hard error.
-            unsafe { crate::kernel::net::socket::sys_close_socket(sfd); }
-            self.phase = NetProbePhase::Failed;
+            unsafe {
+                let sp = &crate::kernel::serial::SERIAL_PORT;
+                sp.write_str("[probe] sys_connect failed, code=");
+                sp.write_decimal((-r) as u32);
+                sp.write_str("\n");
+                crate::kernel::net::socket::sys_close_socket(sfd);
+            }
+            self.phase = NetProbePhase::Failed { reason: ProbeFailReason::NoConnect };
             return;
         }
 
@@ -155,9 +177,9 @@ impl NetProbe {
     fn is_button_hit(&self, wm: &WindowManager, sysinfo_id: usize, mx: u64, my: u64) -> bool {
         let Some(win) = wm.get_window(sysinfo_id) else { return false; };
         if !wm.is_window_visible(sysinfo_id) { return false; }
-        // Button is placed at cy = win.y + 266 (see draw_sysinfo_panel)
+        // Button is placed at cy = win.y + 260 (see draw_sysinfo_panel)
         let btn_x = win.x + 12;
-        let btn_y = win.y + 266;
+        let btn_y = win.y + 260;
         let btn_w = win.width.saturating_sub(24);
         mx >= btn_x && mx < btn_x + btn_w && my >= btn_y && my < btn_y + 22
     }
@@ -204,13 +226,30 @@ unsafe extern "C" fn kmain() -> ! {
         crate::kernel::fs::ramfs::RAMFS.init();
         SERIAL_PORT.write_str("✓ RamFS initialized\n");
 
+        // procfs — /proc virtual filesystem (must come after RamFS init)
+        crate::kernel::procfs::populate();
+        SERIAL_PORT.write_str("✓ procfs initialized\n");
+
         // Environment variable store — populate defaults before any process runs
         crate::kernel::env::init_defaults();
         SERIAL_PORT.write_str("✓ Environment initialized\n");
 
-        // ATA disks — primary then secondary
-        crate::kernel::ata::init();
-        crate::kernel::ata::init_secondary();
+        // ATA disks — probe all four positions (primary/secondary × master/slave)
+        crate::kernel::ata::init_all();
+
+        // Disk record store — mount on primary disk (disk 0) if present.
+        // Falls back to formatting a fresh store if the disk is unformatted.
+        if crate::kernel::ata::is_present() {
+            unsafe { crate::kernel::disk_store::mount(0); }
+        }
+        // Mount secondary disk store too if a secondary disk is present.
+        if crate::kernel::ata::is_present_sec() {
+            unsafe { crate::kernel::disk_store::mount(2); }
+        }
+
+        // diskfs — create visible mount-point dirs and /diskinfo in RamFS
+        crate::kernel::diskfs::populate();
+        SERIAL_PORT.write_str("✓ diskfs populated\n");
 
         // MBR partition table — must run before FAT so fat::init() can find its partition
         crate::kernel::mbr::init();
@@ -258,8 +297,8 @@ unsafe extern "C" fn kmain() -> ! {
                 interrupts::init_mouse_system(width, height);
                 SERIAL_PORT.write_str("=== MOUSE INIT COMPLETED ===\n");
 
-                let (terminal_window_id, sysinfo_window_id, launcher_window_id) = create_boot_screen(&graphics);
-                run_gui_with_mouse(&graphics, terminal_window_id, sysinfo_window_id, launcher_window_id);
+                let (terminal_window_id, sysinfo_window_id) = create_boot_screen(&graphics);
+                run_gui_with_mouse(&graphics, terminal_window_id, sysinfo_window_id);
             }
         } else {
             unsafe {
@@ -366,7 +405,7 @@ unsafe fn test_paging_allocation() {
 // GUI
 // ============================================================================
 
-unsafe fn create_boot_screen(graphics: &Graphics) -> (usize, usize, usize) {
+unsafe fn create_boot_screen(graphics: &Graphics) -> (usize, usize) {
     let (width, height) = graphics.get_dimensions();
     SERIAL_PORT.write_str("Creating boot screen...\n");
 
@@ -376,11 +415,11 @@ unsafe fn create_boot_screen(graphics: &Graphics) -> (usize, usize, usize) {
     unsafe { (*wm).set_screen_dimensions(width, height); }
     unsafe { (*wm).draw_taskbar(graphics); }
 
-    let ids = init_demo_windows(width, height);
+    let (terminal_id, sysinfo_id) = init_demo_windows(width, height);
 
     // Initialise the compositor so userspace programs can draw into the terminal window.
     const TITLE_BAR_H: u64 = 34; // matches TITLEBAR_H in window_manager
-    if let Some(win) = unsafe { (*wm).get_window(ids.0) } {
+    if let Some(win) = unsafe { (*wm).get_window(terminal_id) } {
         unsafe {
             kernel::compositor::init(
                 graphics,
@@ -392,10 +431,10 @@ unsafe fn create_boot_screen(graphics: &Graphics) -> (usize, usize, usize) {
     }
 
     SERIAL_PORT.write_str("Boot screen created\n");
-    ids
+    (terminal_id, sysinfo_id)
 }
 
-unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sysinfo_window_id: usize, launcher_window_id: usize) {
+unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sysinfo_window_id: usize) {
     SERIAL_PORT.write_str("Starting GUI with enhanced window manager...\n");
 
     let mut last_cursor_pos = (-1i64, -1i64);
@@ -410,17 +449,26 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
     let mut terminals: Vec<terminal::TerminalApp> = Vec::new();
     terminals.push(terminal::TerminalApp::new(terminal_window_id));
     let mut notepads: Vec<notepad::NotepadApp> = Vec::new();
-    let mut launcher_app = LauncherApp::new(launcher_window_id);
-    let mut start_menu   = StartMenu::new();
+    let mut launcher_app = LauncherApp::new();
+    let mut start_menu       = StartMenu::new();
+    let mut overview         = Overview::new();
+    let mut quick_settings   = QuickSettings::new();
+    let mut notifications    = NotificationManager::new();
     let mut last_clock_sec: u64 = u64::MAX; // force draw on first frame
 
     let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
     terminal::install_input_hooks();
 
+    let (screen_w, screen_h) = unsafe { &*wm }.get_screen_dimensions();
+
+    // Welcome notification
+    notifications.push(crate::version::NAME, "System ready. Click Activities to open apps.", 0xFF5294E2);
+
     // Initialize the per-process GUI subsystem.
     unsafe { kernel::gui_proc::init(wm, graphics); }
 
-    // DEBUG: auto-spawn bash at startup for crash diagnosis
+    // DEBUG: auto-spawn bash at startup for crash diagnosis (only if bash is embedded)
+    #[cfg(has_bash)]
     {
         use crate::kernel::programs;
         let _ = unsafe { crate::kernel::scheduler::spawn(programs::BASH, "bash") };
@@ -496,6 +544,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             }
         }
 
+        let prev_cursor_pos = last_cursor_pos;
         if last_cursor_pos.0 >= 0 {
             graphics.restore_cursor_area(last_cursor_pos.0, last_cursor_pos.1, &saved_pixels);
         }
@@ -510,7 +559,12 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                 if start_menu.handle_mouse_move(mx as u64, my as u64) {
                     needs_redraw = true;
                 }
-                if launcher_app.handle_mouse_move(unsafe { &*wm }, mx as u64, my as u64) {
+                if launcher_app.handle_mouse_move(mx as u64, my as u64, screen_h) {
+                    needs_redraw = true;
+                }
+                // Update quick settings button hover state.
+                quick_settings.handle_mouse_move(mx as u64, my as u64, screen_w, left_button);
+                if quick_settings.visible {
                     needs_redraw = true;
                 }
                 last_cursor_pos = (mx, my);
@@ -536,35 +590,87 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                 }
             }
             if left_button && !last_left_button {
-                // Start menu gets first pick — it handles its own button + popup.
-                let (prog_name, sm_action, sm_consumed) = start_menu.handle_click(mx as u64, my as u64);
-                if let Some(name) = prog_name {
-                    spawn_program(name, &mut terminals, graphics, unsafe { &mut *wm });
+                let mx64 = mx as u64;
+                let my64 = my as u64;
+
+                // ── 0. Notification dismiss (click on a toast card) ───────────
+                if notifications.handle_click(mx64, my64, screen_w) {
                     needs_redraw = true;
-                } else if sm_action == 1 {
-                    crate::kernel::shutdown::poweroff();
-                } else if sm_action == 2 {
-                    crate::kernel::shutdown::reboot();
-                } else if sm_consumed {
+                // ── 1. Overview consumes all clicks when visible ──────────────
+                } else if overview.is_visible() {
+                    let (_, focused_wid) = overview.handle_click(
+                        mx64, my64, unsafe { &mut *wm }, screen_w, screen_h,
+                    );
+                    // Clean up any window the user closed from within the overview.
+                    if let Some(closed_id) = overview.take_last_closed() {
+                        handle_window_close(closed_id, &mut terminals, &mut notepads,
+                                            terminal_window_id);
+                    }
+                    let _ = focused_wid;
                     needs_redraw = true;
+
+                // ── 2. Quick-settings panel consumes clicks when visible ───────
+                } else if quick_settings.visible {
+                    let action = quick_settings.handle_click(mx64, my64, screen_w);
+                    match action {
+                        QsAction::Shutdown => crate::kernel::shutdown::poweroff(),
+                        QsAction::Reboot   => crate::kernel::shutdown::reboot(),
+                        _                  => {}
+                    }
+                    needs_redraw = true;
+
+                // ── 3. System-tray area → open Quick Settings ─────────────────
+                } else if QuickSettings::is_toggle_area(mx64, my64, screen_w) {
+                    quick_settings.toggle();
+                    start_menu.close();
+                    needs_redraw = true;
+
+                // ── 4. Normal click dispatch ───────────────────────────────────
                 } else {
-                    // Check launcher tiles.
-                    let launched = launcher_app.handle_click(unsafe { &*wm }, mx as u64, my as u64);
-                    if let Some(prog_name) = launched {
-                        spawn_program(prog_name, &mut terminals, graphics, unsafe { &mut *wm });
+                    // Activities button click is signalled by start_menu.
+                    let (prog_name, sm_action, sm_consumed) = start_menu.handle_click(mx64, my64);
+                    if start_menu.take_activities_request() {
+                        // Activities click: toggle the launcher panel (program drawer)
+                        launcher_app.toggle();
+                        overview.toggle();
+                        quick_settings.close();
+                        start_menu.close();
                         needs_redraw = true;
-                    } else if net_probe.is_button_hit(unsafe { &*wm }, sysinfo_window_id, mx as u64, my as u64) {
-                        // "Test Internet Connection" button inside the sysinfo panel.
-                        if crate::kernel::net::is_present() {
-                            net_probe.start();
+                    } else if let Some(name) = prog_name {
+                        spawn_program(name, &mut terminals, &mut notepads, graphics, unsafe { &mut *wm });
+                        notifications.push(name, "Application started", 0xFF26A269);
+                        needs_redraw = true;
+                    } else if sm_action == 1 {
+                        crate::kernel::shutdown::poweroff();
+                    } else if sm_action == 2 {
+                        crate::kernel::shutdown::reboot();
+                    } else if sm_consumed {
+                        needs_redraw = true;
+                    } else {
+                        // Launcher panel click (when visible it consumes clicks)
+                        if launcher_app.visible {
+                            let launched = launcher_app.handle_click(mx64, my64, screen_h);
+                            if let Some(prog_name) = launched {
+                                spawn_program(prog_name, &mut terminals, &mut notepads, graphics, unsafe { &mut *wm });
+                                notifications.push(prog_name, "Application started", 0xFF26A269);
+                            }
+                            needs_redraw = true;
+                        } else if net_probe.is_button_hit(unsafe { &*wm }, sysinfo_window_id, mx64, my64) {
+                            if crate::kernel::net::is_present() {
+                                net_probe.start();
+                                needs_redraw = true;
+                            }
+                        } else {
+                            let consumed = unsafe { (*wm).handle_context_menu_click(mx64, my64) };
+                            if !consumed {
+                                unsafe { (*wm).handle_click(mx64, my64); }
+                                if let Some(closed_id) = unsafe { (*wm).take_closed_window() } {
+                                    handle_window_close(closed_id, &mut terminals, &mut notepads,
+                                                        terminal_window_id);
+                                }
+                            }
                             needs_redraw = true;
                         }
-                    } else {
-                        let consumed = unsafe { (*wm).handle_context_menu_click(mx as u64, my as u64) };
-                        if !consumed {
-                            unsafe { (*wm).handle_click(mx as u64, my as u64); }
-                        }
-                        needs_redraw = true;
                     }
                 }
             }
@@ -605,6 +711,14 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             needs_redraw = true;
         }
 
+        // Tick notification timers; redraw only when a slot actually expires.
+        // Animation updates come from the clock_dirty path (once per second) —
+        // this avoids forcing a full 3 MB blit on every interrupt while a
+        // notification is visible, which was the primary source of mouse lag.
+        if notifications.tick() {
+            needs_redraw = true;
+        }
+
         // Advance the network connectivity probe state machine.
         if net_probe.tick() {
             needs_redraw = true;
@@ -613,6 +727,8 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
         if matches!(net_probe.phase, NetProbePhase::Connecting { .. }) {
             needs_redraw = true;
         }
+
+        let mut did_draw = false;
 
         if needs_redraw {
             unsafe { refresh_compositor_geometry(graphics, &*wm, terminal_window_id); }
@@ -641,16 +757,19 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                     draw_sysinfo_panel(graphics, unsafe { &*wm }, sysinfo_window_id, &net_probe);
                 }
             }
-            launcher_app.draw(graphics, unsafe { &*wm });
+            launcher_app.draw(graphics, screen_h);
             unsafe { (*wm).draw_context_menu(graphics); }
             start_menu.draw_menu(graphics);
             // Composite GUI-proc window content on top of all kernel draws.
-            // This keeps filemanager/etc. content visible during full redraws
-            // and ensures GUI-proc windows respect z-order over terminal/sysinfo.
             unsafe { kernel::gui_proc::composite_all(graphics); }
+            // GNOME overlay layers — drawn last so they sit on top of everything.
+            overview.draw(graphics, unsafe { &*wm }, screen_w, screen_h);
+            quick_settings.draw(graphics, screen_w);
+            notifications.draw(graphics, screen_w);
             needs_redraw   = false;
             terminal_dirty = false;
             clock_dirty    = false;
+            did_draw       = true;
         } else if terminal_dirty {
             // Redraw kernel-terminal and notepad windows that changed.
             for term in terminals.iter() {
@@ -663,25 +782,28 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                 unsafe { (*wm).draw_window(graphics, np.window_id()); }
                 np.draw(graphics, unsafe { &*wm });
             }
-            // Re-composite GUI-proc content so terminal redraws don't paint
-            // over overlapping GUI-proc windows.
             unsafe { kernel::gui_proc::composite_all(graphics); }
+            // Keep overlay layers visible during terminal partial redraws.
+            overview.draw(graphics, unsafe { &*wm }, screen_w, screen_h);
+            quick_settings.draw(graphics, screen_w);
+            notifications.draw(graphics, screen_w);
             terminal_dirty = false;
             clock_dirty    = false;
+            did_draw       = true;
         } else if clock_dirty {
             // Only the taskbar clock changed — redraw just the taskbar.
             unsafe { (*wm).draw_taskbar(graphics); }
             start_menu.draw_button(graphics);
+            notifications.draw(graphics, screen_w);
             clock_dirty = false;
+            did_draw    = true;
         }
 
         // Process compositor IPC messages AFTER the draw section so that
         // userspace-terminal output overlays the freshly-drawn window frames
         // rather than being overwritten by them.
         if unsafe { kernel::compositor::process_messages() } {
-            // Don't set terminal_dirty here — compositor content is already
-            // applied to the backbuffer and will be presented this frame.
-            // Kernel-terminal dirty redraws happen separately above.
+            did_draw = true;
         }
 
         // Run the scheduler BEFORE the blit so GUI-proc tasks (filemanager,
@@ -707,24 +829,59 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             }
         }
 
-        // Check the GUI-proc present flag after the tick so we see flags set
-        // by this frame's task run.  No separate needs_redraw: the kernel will
-        // already redraw next frame if the window chrome changed; the proc
-        // content is already in the back-buffer and will be blit below.
-        let _ = unsafe { kernel::gui_proc::take_present_flag() };
+        // GUI-proc content painted into the back-buffer this tick needs a blit.
+        if unsafe { kernel::gui_proc::take_present_flag() } {
+            did_draw = true;
+        }
+
+        let cursor_moved = cursor_pos
+            .map(|(mx, my)| (mx, my) != prev_cursor_pos)
+            .unwrap_or(false);
 
         if let Some((mx, my)) = cursor_pos {
             saved_pixels = graphics.save_cursor_area(mx, my);
             graphics.draw_cursor(mx, my, 0xFFFFFFFF);
         }
 
-        // Blit the completed back buffer to the real framebuffer in one pass.
-        graphics.present();
+        // Present only what actually changed:
+        //   • Full redraw happened → full blit (covers cursor too).
+        //   • Only cursor moved   → blit the two 11×19 cursor regions (~1.6 KB
+        //                           vs ~3 MB for full blit — eliminates QEMU lag).
+        //   • Nothing changed     → skip the blit entirely.
+        if did_draw {
+            graphics.present();
+        } else if cursor_moved {
+            const CW: usize = 11;
+            const CH: usize = 19;
+            if prev_cursor_pos.0 >= 0 {
+                graphics.present_region(prev_cursor_pos.0, prev_cursor_pos.1, CW, CH);
+            }
+            if let Some((mx, my)) = cursor_pos {
+                graphics.present_region(mx, my, CW, CH);
+            }
+        }
 
         // Drive the network stack (RX poll + TCP timers).
         unsafe { crate::kernel::net::poll(); }
 
         unsafe { core::arch::asm!("hlt"); }
+    }
+}
+
+/// Clean up all kernel-side state for a window that was just closed.
+fn handle_window_close(
+    closed_id: usize,
+    terminals: &mut Vec<terminal::TerminalApp>,
+    notepads: &mut Vec<notepad::NotepadApp>,
+    terminal_window_id: usize,
+) {
+    if unsafe { kernel::gui_proc::is_proc_window(closed_id as u32) } {
+        unsafe { kernel::gui_proc::on_window_closed(closed_id as u32); }
+    }
+    terminals.retain(|t| t.window_id() != closed_id);
+    notepads.retain(|n| n.window_id() != closed_id);
+    if closed_id == terminal_window_id {
+        unsafe { kernel::compositor::disable(); }
     }
 }
 
@@ -787,29 +944,20 @@ fn spawn_program(
     }
 }
 
-unsafe fn init_demo_windows(screen_width: u64, screen_height: u64) -> (usize, usize, usize) {
+unsafe fn init_demo_windows(screen_width: u64, screen_height: u64) -> (usize, usize) {
     let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
 
-    // Terminal — left side, comfortable reading area
+    // Terminal — left side
     let term_h = (screen_height.saturating_sub(80 + 50)).min(420).max(260);
     let win1 = widgets::Window::new(10, 50, 540, term_h, "Terminal");
     let terminal_id = unsafe { (*wm).add_window(win1).unwrap_or(0) };
 
-    // System Info — top-right corner (taller to include network section)
+    // System Info — top-right corner
     let win2 = widgets::Window::new(screen_width - 310, 50, 290, 340, "System Info");
     let sysinfo_id = unsafe { (*wm).add_window(win2).unwrap_or(1) };
 
-    // Launcher — below sysinfo on the right side, shows all programs as clickable tiles
-    // Width: 3 columns × (160 + 10) - 10 + 24 pad = 510 + 4 = 514, round to 520
-    // Height: 2 section headers × 18 + 4 rows × (72 + 10) - 10 + 20 status + 20 pad ≈ 400
-    let launcher_x = screen_width - 530;
-    let launcher_y = 50u64 + 340 + 12; // below sysinfo (sysinfo now 340px tall)
-    let launcher_h = screen_height.saturating_sub(launcher_y + 50).min(440).max(300);
-    let win3 = widgets::Window::new(launcher_x, launcher_y, 520, launcher_h, "Programs");
-    let launcher_id = unsafe { (*wm).add_window(win3).unwrap_or(2) };
-
     SERIAL_PORT.write_str("Demo windows initialized\n");
-    (terminal_id, sysinfo_id, launcher_id)
+    (terminal_id, sysinfo_id)
 }
 
 /// Re-compute the terminal window's content area and refresh the compositor.
@@ -844,38 +992,44 @@ unsafe fn draw_sysinfo_panel(
     let Some(win) = wm.get_window(window_id) else { return; };
 
     let cx = win.x + 12;
-    let mut cy = win.y + 38;
+    // Start content 42px below window top — clears the 34px title bar with an 8px gap.
+    let mut cy = win.y + 42;
     let row = 20u64;
     let bar_w = win.width.saturating_sub(24);
 
-    // ── Header divider ─────────────────────────────────────────────────────
-    graphics.fill_rect(cx, cy, bar_w, 1, 0xFF1A5F9A);
-    cy += 6;
-
     // ── OS name & version ──────────────────────────────────────────────────
-    fonts::draw_string(graphics, cx, cy, "OxideOS  v0.1.0-dev", 0xFF7FC8FF);
-    cy += row;
-    fonts::draw_string(graphics, cx, cy, "x86_64  Limine bootloader", 0xFF4A6080);
-    cy += row + 4;
+    fonts::draw_string(graphics, cx, cy, crate::version::DISPLAY_NAME_VER, 0xFF7FC8FF);
+    cy += row - 2;
+    fonts::draw_string(graphics, cx, cy, crate::version::DISPLAY_ARCH_LINE, 0xFF4A6080);
+    cy += row + 2;
 
     graphics.fill_rect(cx, cy, bar_w, 1, 0xFF1E2840);
     cy += 8;
 
+    // ── Real-time clock (12-hour AM/PM) ───────────────────────────────────
+    fonts::draw_string(graphics, cx, cy, "TIME", 0xFF007ACC);
+    let mut tbuf = [0u8; 11];
+    kernel::rtc::format_time_ampm(&mut tbuf);
+    if let Ok(ts) = core::str::from_utf8(&tbuf) {
+        fonts::draw_string(graphics, cx + 54, cy, ts, 0xFFE0F0FF);
+    }
+    cy += row;
+
     // ── Uptime ────────────────────────────────────────────────────────────
-    let ticks = unsafe { kernel::timer::get_ticks() };
     fonts::draw_string(graphics, cx, cy, "UPTIME", 0xFF007ACC);
-    let mut tbuf = [0u8; 8];
+    let ticks = unsafe { kernel::timer::get_ticks() };
+    let mut ubuf = [0u8; 8];
     {
         let total = ticks / 100;
         let h = (total / 3600) % 100;
         let m = (total / 60) % 60;
         let s = total % 60;
-        tbuf[0] = b'0' + (h/10) as u8; tbuf[1] = b'0' + (h%10) as u8; tbuf[2] = b':';
-        tbuf[3] = b'0' + (m/10) as u8; tbuf[4] = b'0' + (m%10) as u8; tbuf[5] = b':';
-        tbuf[6] = b'0' + (s/10) as u8; tbuf[7] = b'0' + (s%10) as u8;
+        ubuf[0] = b'0' + (h/10) as u8; ubuf[1] = b'0' + (h%10) as u8; ubuf[2] = b':';
+        ubuf[3] = b'0' + (m/10) as u8; ubuf[4] = b'0' + (m%10) as u8; ubuf[5] = b':';
+        ubuf[6] = b'0' + (s/10) as u8; ubuf[7] = b'0' + (s%10) as u8;
     }
-    let tstr = core::str::from_utf8(&tbuf).unwrap_or("00:00:00");
-    fonts::draw_string(graphics, cx + 72, cy, tstr, 0xFFE0F0FF);
+    let ustr = core::str::from_utf8(&ubuf).unwrap_or("00:00:00");
+    fonts::draw_string(graphics, cx + 72, cy, ustr, 0xFF8090A8);
     cy += row;
 
     // ── Memory bar ────────────────────────────────────────────────────────
@@ -893,14 +1047,6 @@ unsafe fn draw_sysinfo_panel(
     // ── Disk ──────────────────────────────────────────────────────────────
     fonts::draw_string(graphics, cx, cy, "DISK", 0xFF007ACC);
     let (disk_str, disk_col) = if kernel::ata::is_present() {
-        let mut sec_str = [b' '; 12];
-        let secs = kernel::ata::sector_count();
-        // write decimal
-        let mb = secs / 2048;
-        // simple format: "XXX MB"
-        let mut n = mb; let mut i = 5usize;
-        sec_str[6] = b'M'; sec_str[7] = b'B';
-        loop { sec_str[i] = b'0' + (n % 10) as u8; n /= 10; if n == 0 || i == 0 { break; } i -= 1; }
         ("ATA detected", 0xFF40C040u32)
     } else {
         ("No disk", 0xFF806040u32)
@@ -920,20 +1066,9 @@ unsafe fn draw_sysinfo_panel(
         5 => ("5 running",  0xFF40C040),
         6 => ("6 running",  0xFF40C040),
         7 => ("7 running",  0xFF40C040),
-        _ => ("8 running",  0xFF40C040),
+        _ => ("many running", 0xFF40C040),
     };
     fonts::draw_string(graphics, cx + 63, cy, task_str, task_col);
-    cy += row;
-
-    // ── Ticks ─────────────────────────────────────────────────────────────
-    fonts::draw_string(graphics, cx, cy, "TICKS", 0xFF007ACC);
-    // write tick count (up to 10 digits)
-    let mut num_buf = [b' '; 12];
-    let mut n = ticks; let mut i = 11usize;
-    loop { num_buf[i] = b'0' + (n % 10) as u8; n /= 10; if n == 0 || i == 0 { break; } i -= 1; }
-    if let Ok(s) = core::str::from_utf8(&num_buf[i..12]) {
-        fonts::draw_string(graphics, cx + 63, cy, s, 0xFF4A8090);
-    }
     cy += row;
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -946,7 +1081,7 @@ unsafe fn draw_sysinfo_panel(
     fonts::draw_string(graphics, cx, cy, "NETWORK", 0xFF007ACC);
     let net_up = kernel::net::is_present();
     let (dot_col, net_label, net_col) = if net_up {
-        (0xFF30C040u32, "RTL8139", 0xFF40D050u32)
+        (0xFF30C040u32, kernel::net::nic_name(), 0xFF40D050u32)
     } else {
         (0xFF803030u32, "No NIC ", 0xFF805050u32)
     };
@@ -957,14 +1092,26 @@ unsafe fn draw_sysinfo_panel(
     // ── IP / MAC row ──────────────────────────────────────────────────────────
     fonts::draw_string(graphics, cx, cy, "IP", 0xFF007ACC);
     if net_up {
-        fonts::draw_string(graphics, cx + 27, cy, "10.0.2.15 / 24", 0xFFB0C8E8);
+        let ip = kernel::net::get_ip();
+        let mut ip_buf = [0u8; 20];
+        let mut pos = 0usize;
+        for (i, &octet) in ip.iter().enumerate() {
+            if i > 0 { ip_buf[pos] = b'.'; pos += 1; }
+            let mut n = octet as u32;
+            if n >= 100 { ip_buf[pos] = b'0' + (n / 100) as u8; pos += 1; n %= 100; }
+            if n >= 10  { ip_buf[pos] = b'0' + (n / 10)  as u8; pos += 1; n %= 10; }
+            ip_buf[pos] = b'0' + n as u8; pos += 1;
+        }
+        if let Ok(s) = core::str::from_utf8(&ip_buf[..pos]) {
+            fonts::draw_string(graphics, cx + 27, cy, s, 0xFFB0C8E8);
+        }
     } else {
         fonts::draw_string(graphics, cx + 27, cy, "—", 0xFF3A4050);
     }
     cy += row;
 
     // ── Test button ───────────────────────────────────────────────────────────
-    // cy = win.y + 266 at this point (matching NetProbe::is_button_hit)
+    // cy = win.y + 260 at this point (matching NetProbe::is_button_hit)
     let btn_w = bar_w;
     let btn_h = 22u64;
     let (bt, bb, bd, btxt) = if net_up {
@@ -1009,9 +1156,14 @@ unsafe fn draw_sysinfo_panel(
                 fonts::draw_string(graphics, cx + 14 + 72, cy, ms_str, 0xFF60B070);
             }
         }
-        NetProbePhase::Failed => {
+        NetProbePhase::Failed { reason } => {
             graphics.fill_rounded_rect(cx, cy + 3, 8, 8, 2, 0xFFC03030);
-            fonts::draw_string(graphics, cx + 14, cy, "Failed / timeout", 0xFFD04040);
+            let msg = match reason {
+                ProbeFailReason::NoSocket  => "No socket (NIC/stack error)",
+                ProbeFailReason::NoConnect => "Connect rejected by stack",
+                ProbeFailReason::Timeout   => "Timeout — no reply from host",
+            };
+            fonts::draw_string(graphics, cx + 14, cy, msg, 0xFFD04040);
         }
     }
 }

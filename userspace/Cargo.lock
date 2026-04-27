@@ -56,6 +56,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ping"
+version = "0.1.0"
+dependencies = [
+ "oxide-rt",
+]
+
+[[package]]
 name = "sh"
 version = "0.1.0"
 dependencies = [

@@ -69,7 +69,7 @@ pub unsafe fn init() {
     if !ata::is_present() { return; }
 
     let mut buf = [0u8; 512];
-    if !unsafe { ata::read_sector(0, &mut buf) } {
+    if !unsafe { ata::read_sector(0, 0, &mut buf) } {
         unsafe { SERIAL_PORT.write_str("MBR: failed to read LBA 0\n"); }
         return;
     }

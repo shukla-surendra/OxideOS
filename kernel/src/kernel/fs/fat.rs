@@ -277,12 +277,12 @@ unsafe fn resolve_parent(bpb: &Bpb, raw_path: &[u8]) -> Option<(DirLoc, [u8; 11]
 
 /// Read one 512-byte sector into a stack buffer. Returns false on error.
 unsafe fn read_sector_buf(lba: u32, buf: &mut [u8; 512]) -> bool {
-    unsafe { ata::read_sector(lba, buf) }
+    unsafe { ata::read_sector(0, lba, buf) }
 }
 
 /// Write one 512-byte sector from a stack buffer. Returns false on error.
 unsafe fn write_sector_buf(lba: u32, buf: &[u8; 512]) -> bool {
-    unsafe { ata::write_sector(lba, buf) }
+    unsafe { ata::write_sector(0, lba, buf) }
 }
 
 /// Write a FAT16 entry for `cluster` to both FAT copies.

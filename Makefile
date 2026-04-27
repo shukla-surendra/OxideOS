@@ -10,7 +10,9 @@ $(call USER_VARIABLE,KARCH,x86_64)
 
 # Default user QEMU flags. These are appended to the QEMU command calls.
 # -cpu max: expose all available CPU features so LLVM-vectorised code (fill_rect, etc.) can use SSE/AVX.
-$(call USER_VARIABLE,QEMUFLAGS,-m 2G -cpu max)
+# -device qemu-xhci,id=xhci: USB 3.0 host controller
+# -device usb-tablet: absolute mouse positioning (better than PS/2 relative movements)
+$(call USER_VARIABLE,QEMUFLAGS,-m 2G -cpu max -device qemu-xhci,id=xhci -device usb-tablet)
 
 # Network flags: expose an RTL8139 NIC via QEMU user-mode NAT.
 # The guest gets IP 10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3.
@@ -139,8 +141,25 @@ install-vdi: install-image
 clean-install:
 	rm -f $(INSTALL_IMAGE) oxide_install.vdi
 
+# MODE selects the QEMU launch style for `make run`.
+# Options: gui (default), bios, uefi, kvm, hdd, hdd-bios
+# Example: make run MODE=bios
+$(call USER_VARIABLE,MODE,gui)
+
 .PHONY: run
+ifeq ($(MODE),bios)
+run: run-bios
+else ifeq ($(MODE),hdd-bios)
+run: run-hdd-bios
+else ifeq ($(MODE),kvm)
+run: run-kvm-$(KARCH)
+else ifeq ($(MODE),hdd)
+run: run-hdd-$(KARCH)
+else ifeq ($(MODE),uefi)
 run: run-$(KARCH)
+else
+run: run-gui-$(KARCH)
+endif
 
 .PHONY: run-gui
 run-gui: run-gui-$(KARCH)
@@ -179,7 +198,7 @@ run-gui-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NA
 		-cdrom $(IMAGE_NAME).iso \
 		$(DISK_FLAG) \
 		$(EXT2_FLAG) \
-		-display sdl,grab-on-hover=on \
+		-display sdl \
 		$(NETFLAGS) \
 		$(QEMUFLAGS)
 

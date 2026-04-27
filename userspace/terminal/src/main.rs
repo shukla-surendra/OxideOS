@@ -716,14 +716,21 @@ fn handle_escape(term: &mut Terminal) {
 
 fn print_banner(term: &mut Terminal) {
     term.log("", COL_DEFAULT);
-    term.log("  ___          _    _       ___  ___", 0xFF007ACC);
-    term.log(" / _ \\ __ _(_)__| | ___ / _ \\/ __|", 0xFF007ACC);
-    term.log("| (_) | V / / _` |/ -_) (_) \\__ \\", 0xFF0060AA);
-    term.log(" \\___/ \\_/|_\\__,_|\\___|\\ ___/|___/", 0xFF004888);
+    term.log(" +--------------------------------------------------+", 0xFF007ACC);
+    term.log(" |                                                  |", 0xFF007ACC);
+    term.log(" |   ###  #  #  ###  ###   ##   ###  ###           |", 0xFF00AAFF);
+    term.log(" |   # #   ##   # #  #  # #  #  #    #            |", 0xFF00AAFF);
+    term.log(" |   # #  #  #  # #  ###  ####  ##   ##           |", 0xFF0088CC);
+    term.log(" |   # #  ####  # #  #    #  #  #    #            |", 0xFF0088CC);
+    term.log(" |   ###  #  #  ###  #    #  #  ###  ###          |", 0xFF006699);
+    term.log(" |                                                  |", 0xFF007ACC);
+    term.log(" |         Hobby OS written in Rust                |", 0xFF4A6080);
+    term.log(" |                     v0.1.0-dev                  |", 0xFF4A6080);
+    term.log(" |                                                  |", 0xFF007ACC);
+    term.log(" +--------------------------------------------------+", 0xFF007ACC);
     term.log("", COL_DEFAULT);
-    term.log("  Userspace Terminal  —  OxideOS v0.1", COL_INFO);
-    term.log("  Type 'help' for commands, 'programs' to list apps", COL_DIM);
-    term.log("  Tab-completion and arrow-key history supported", COL_DIM);
+    term.log("  Type 'help' for commands  |  'programs' to list apps", COL_DIM);
+    term.log("  Tab-completion and up/down arrow history supported", COL_DIM);
     term.log("", COL_DEFAULT);
 }
 

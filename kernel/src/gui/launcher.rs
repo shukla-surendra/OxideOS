@@ -1,292 +1,362 @@
-//! Program launcher for OxideOS.
+//! Program launcher panel for OxideOS.
 //!
-//! Displays all registered programs as clickable tiles.
-//! Clicking a tile immediately spawns the program as a new task.
+//! Rendered as a left-anchored overlay panel (not a window).
+//! Opened by clicking the Activities button; dismissed by clicking outside.
+//! Supports scrolling when the program list is taller than the panel.
 
-use crate::gui::colors;
 use crate::gui::fonts;
 use crate::gui::graphics::Graphics;
-use crate::gui::window_manager::WindowManager;
 
-// ── Layout constants ──────────────────────────────────────────────────────────
+// ── Panel geometry ────────────────────────────────────────────────────────────
+const TASKBAR_H:  u64 = 48;
+const PANEL_W:    u64 = 260;
+const PANEL_PAD:  u64 = 10;  // left margin from screen edge
+const ROW_H:      u64 = 56;  // height of one program row
+const SEC_LABEL_H:u64 = 22;  // height of a section divider row
+const SCROLL_BTN: u64 = 28;  // height of the scroll arrow buttons at bottom
 
-const TITLE_BAR_H: u64 = 34; // matches TITLEBAR_H in window_manager
-const COLS:        usize = 3;
-const TILE_W:      u64 = 160;
-const TILE_H:      u64 = 72;
-const GAP_X:       u64 = 10;
-const GAP_Y:       u64 = 10;
-const PAD_X:       u64 = 12;
-const PAD_Y:       u64 = 10;
-
-// ── Colour palette ────────────────────────────────────────────────────────────
-
-const COL_WIN_BG:       u32 = 0xFF08111E;
-const COL_TILE_BG:      u32 = 0xFF0E1A2E;
-const COL_TILE_HOVER:   u32 = 0xFF142030;
-const COL_TILE_BORDER:  u32 = 0xFF1E3050;
-const COL_TILE_ACTIVE:  u32 = 0xFF1A5F9A;
-const COL_NAME:         u32 = 0xFFDDEEFF;
-const COL_DESC:         u32 = 0xFF5070A0;
-const COL_HINT:         u32 = 0xFF283848;
-const COL_SECTION_LABEL:u32 = 0xFF3A6090;
-const COL_SECTION_LINE: u32 = 0xFF162030;
+// ── Colors ────────────────────────────────────────────────────────────────────
+const C_BG:       u32 = 0xFF1E1E2E;
+const C_SURFACE:  u32 = 0xFF252535;
+const C_BORDER:   u32 = 0xFF383858;
+const C_HOVER:    u32 = 0xFF2A2A44;
+const C_LAUNCH:   u32 = 0xFF1A3A5A;
+const C_SEC:      u32 = 0xFF5060A0;
+const C_SEC_LINE: u32 = 0xFF2A2A44;
+const C_TEXT:     u32 = 0xFFDDEEFF;
+const C_DESC:     u32 = 0xFF7080A0;
+const C_SCROLL:   u32 = 0xFF303050;
+const C_SCROLL_A: u32 = 0xFF5060A0;
 
 // ── Program entries ───────────────────────────────────────────────────────────
-
 struct Entry {
     name:    &'static str,
     desc:    &'static str,
-    accent:  u32,   // top-strip accent colour
-    section: u8,    // 0=Shell, 1=Demo, 2=Interactive
+    accent:  u32,
+    section: u8,  // 0=Apps, 1=Programs, 2=Interactive
 }
 
 const ENTRIES: &[Entry] = &[
-    // ── Shell / terminal ──────────────────────────────────────
-    Entry { name: "terminal",    desc: "GUI Terminal (IPC)",   accent: 0xFF007ACC, section: 0 },
-    Entry { name: "sh",          desc: "Minimal Shell",        accent: 0xFF1A9A50, section: 0 },
-    Entry { name: "filemanager", desc: "GUI File Manager",     accent: 0xFF8844CC, section: 0 },
-    // ── Rust programs ─────────────────────────────────────────
-    Entry { name: "hello_rust",  desc: "Hello from Rust",      accent: 0xFFCC6633, section: 1 },
-    Entry { name: "sysinfo",     desc: "System Information",   accent: 0xFF3399AA, section: 1 },
-    Entry { name: "fib",         desc: "Fibonacci Sequence",   accent: 0xFF2277CC, section: 1 },
-    Entry { name: "primes",      desc: "Primes up to 100",     accent: 0xFF227788, section: 1 },
-    // ── ASM demos ─────────────────────────────────────────────
-    Entry { name: "hello",       desc: "Hello World (asm)",    accent: 0xFF886644, section: 1 },
-    Entry { name: "counter",     desc: "Count 1 – 9",          accent: 0xFF446688, section: 1 },
-    Entry { name: "countdown",   desc: "Countdown 10 → 1",     accent: 0xFF996633, section: 1 },
-    Entry { name: "spinner",     desc: "Spinner Animation",    accent: 0xFF886699, section: 1 },
-    Entry { name: "filetest",    desc: "File I/O Demo",        accent: 0xFF885533, section: 1 },
-    // ── Interactive ───────────────────────────────────────────
-    Entry { name: "input",       desc: "Stdin Echo (Ctrl-C)",  accent: 0xFF558844, section: 2 },
+    // Apps
+    Entry { name: "terminal",    desc: "GUI Terminal",          accent: 0xFF007ACC, section: 0 },
+    Entry { name: "notepad",     desc: "GUI Text Editor",       accent: 0xFFE5A50A, section: 0 },
+    Entry { name: "filemanager", desc: "GUI File Manager",      accent: 0xFF8844CC, section: 0 },
+    Entry { name: "sh",          desc: "Minimal Shell",         accent: 0xFF1A9A50, section: 0 },
+    // Programs
+    Entry { name: "hello_rust",  desc: "Hello from Rust",       accent: 0xFFCC6633, section: 1 },
+    Entry { name: "sysinfo",     desc: "System Information",    accent: 0xFF3399AA, section: 1 },
+    Entry { name: "fib",         desc: "Fibonacci Sequence",    accent: 0xFF2277CC, section: 1 },
+    Entry { name: "primes",      desc: "Primes up to 100",      accent: 0xFF227788, section: 1 },
+    Entry { name: "hello",       desc: "Hello World (asm)",     accent: 0xFF886644, section: 1 },
+    Entry { name: "counter",     desc: "Count 1–9",             accent: 0xFF446688, section: 1 },
+    Entry { name: "countdown",   desc: "Countdown 10→1",        accent: 0xFF996633, section: 1 },
+    Entry { name: "spinner",     desc: "Spinner Animation",     accent: 0xFF886699, section: 1 },
+    Entry { name: "filetest",    desc: "File I/O Demo",         accent: 0xFF885533, section: 1 },
+    // Interactive
+    Entry { name: "input",       desc: "Stdin Echo (Ctrl-C)",   accent: 0xFF558844, section: 2 },
 ];
 
-const SECTION_LABELS: &[&str] = &["Shell / Terminal / GUI", "Programs", "Interactive"];
+const SECTION_NAMES: &[&str] = &["Applications", "Programs", "Interactive"];
 
-// ── Launcher application ──────────────────────────────────────────────────────
+// ── Total content height ──────────────────────────────────────────────────────
+fn total_content_h() -> u64 {
+    let mut h = 0u64;
+    let mut prev_sec: Option<u8> = None;
+    for e in ENTRIES {
+        if prev_sec != Some(e.section) {
+            h += SEC_LABEL_H;
+            prev_sec = Some(e.section);
+        }
+        h += ROW_H;
+    }
+    h
+}
 
+// ── Launcher panel ────────────────────────────────────────────────────────────
 pub struct LauncherApp {
-    pub window_id:    usize,
-    /// Index of the tile currently under the mouse (for hover highlight).
+    pub visible:      bool,
+    scroll_offset:    u64,  // pixels scrolled down
     hovered:          Option<usize>,
-    /// Tile launched on last click — shown briefly in a different colour.
-    last_launched:    Option<usize>,
-    /// Ticks since the last launch highlight started (cleared after a few frames).
+    launched_idx:     Option<usize>,
     launched_frames:  u8,
-    /// Status message shown in the header.
-    status:           [u8; 48],
-    status_len:       usize,
-    status_color:     u32,
 }
 
 impl LauncherApp {
-    pub fn new(window_id: usize) -> Self {
-        let mut app = Self {
-            window_id,
+    pub const fn new() -> Self {
+        Self {
+            visible:         false,
+            scroll_offset:   0,
             hovered:         None,
-            last_launched:   None,
+            launched_idx:    None,
             launched_frames: 0,
-            status:          [0; 48],
-            status_len:      0,
-            status_color:    COL_DESC,
-        };
-        app.set_status("Click a tile to launch a program.", COL_DESC);
-        app
+        }
     }
 
-    fn set_status(&mut self, msg: &str, color: u32) {
-        let bytes = msg.as_bytes();
-        let len   = bytes.len().min(self.status.len());
-        self.status[..len].copy_from_slice(&bytes[..len]);
-        self.status_len  = len;
-        self.status_color = color;
+    pub fn toggle(&mut self) {
+        self.visible = !self.visible;
+        if !self.visible { self.scroll_offset = 0; }
     }
-
-    fn status_str(&self) -> &str {
-        core::str::from_utf8(&self.status[..self.status_len]).unwrap_or("")
+    pub fn close(&mut self) {
+        self.visible      = false;
+        self.scroll_offset = 0;
+        self.hovered      = None;
     }
 
     // ── Geometry ──────────────────────────────────────────────────────────────
 
-    /// Tile content-area position for tile `i`.
-    fn tile_rect(i: usize) -> (u64, u64) {
-        let col = (i % COLS) as u64;
-        let row = (i / COLS) as u64;
-        // Account for section labels — count how many section headers appear before row `row`.
-        // Simple: each section adds 18px of label height before its first row.
-        let logical_row = i / COLS;
-        let mut section_offset = 0u64;
-        let mut prev_section: Option<u8> = None;
-        for j in 0..i {
-            if j % COLS == 0 {
-                let sec = ENTRIES[j].section;
-                if prev_section != Some(sec) {
-                    section_offset += 18; // section label height
-                    prev_section = Some(sec);
-                }
-            }
-        }
-        // Section label for THIS tile
-        let this_sec = ENTRIES[i].section;
-        if prev_section != Some(this_sec) {
-            section_offset += 18;
-        }
+    fn panel_x() -> u64 { PANEL_PAD }
+    fn panel_y() -> u64 { TASKBAR_H }
 
-        let x = PAD_X + col * (TILE_W + GAP_X);
-        let y = PAD_Y + section_offset + logical_row as u64 * (TILE_H + GAP_Y);
-        (x, y)
+    /// Visible content height = panel height minus the header and scroll buttons.
+    fn visible_h(screen_h: u64) -> u64 {
+        screen_h.saturating_sub(TASKBAR_H + SCROLL_BTN + 2)
+    }
+
+    /// y-coordinate of a row inside the content (before clipping/scroll).
+    /// Returns (row_y, is_section_label).
+    fn row_positions() -> [(u64, bool, usize); /* ENTRIES.len() + sections */ 32] {
+        let mut out = [(0u64, false, 0usize); 32];
+        let mut idx = 0usize;
+        let mut y   = 0u64;
+        let mut prev_sec: Option<u8> = None;
+        for (ei, e) in ENTRIES.iter().enumerate() {
+            if prev_sec != Some(e.section) {
+                out[idx] = (y, true, e.section as usize); // section label
+                idx += 1;
+                y += SEC_LABEL_H;
+                prev_sec = Some(e.section);
+            }
+            out[idx] = (y, false, ei); // program row
+            idx += 1;
+            y += ROW_H;
+        }
+        out
+    }
+
+    // ── Scroll helpers ────────────────────────────────────────────────────────
+
+    fn max_scroll(screen_h: u64) -> u64 {
+        total_content_h().saturating_sub(Self::visible_h(screen_h))
+    }
+
+    pub fn scroll_up(&mut self) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(ROW_H);
+    }
+
+    pub fn scroll_down(&mut self, screen_h: u64) {
+        let max = Self::max_scroll(screen_h);
+        self.scroll_offset = (self.scroll_offset + ROW_H).min(max);
+    }
+
+    // ── Scroll-button hit areas ───────────────────────────────────────────────
+    fn scroll_up_rect(screen_h: u64) -> (u64, u64, u64, u64) {
+        let py = Self::panel_y() + Self::visible_h(screen_h) + 1;
+        (Self::panel_x(), py, PANEL_W / 2 - 1, SCROLL_BTN)
+    }
+    fn scroll_down_rect(screen_h: u64) -> (u64, u64, u64, u64) {
+        let py = Self::panel_y() + Self::visible_h(screen_h) + 1;
+        (Self::panel_x() + PANEL_W / 2 + 1, py, PANEL_W / 2 - 1, SCROLL_BTN)
     }
 
     // ── Mouse events ──────────────────────────────────────────────────────────
 
-    /// Update hover state given absolute mouse position.
-    /// Returns true if the hover state changed (needs redraw).
-    pub fn handle_mouse_move(&mut self, wm: &WindowManager, abs_x: u64, abs_y: u64) -> bool {
+    /// Returns `true` if the launcher consumed the event (click or dismiss).
+    pub fn is_toggle_area(mx: u64, my: u64) -> bool {
+        // Left strip of the taskbar can re-open the launcher (handled elsewhere)
+        my < TASKBAR_H && mx < 150
+    }
+
+    /// Update hover. Call every mouse-move frame.
+    pub fn handle_mouse_move(&mut self, mx: u64, my: u64, screen_h: u64) -> bool {
+        if !self.visible { return false; }
         let prev = self.hovered;
-        self.hovered = self.tile_at(wm, abs_x, abs_y);
+        self.hovered = self.entry_at(mx, my, screen_h);
         self.hovered != prev
     }
 
-    /// Handle a mouse click.  Returns the program name if a tile was hit.
-    pub fn handle_click(&mut self, wm: &WindowManager, abs_x: u64, abs_y: u64) -> Option<&'static str> {
-        let idx = self.tile_at(wm, abs_x, abs_y)?;
-        let entry = &ENTRIES[idx];
-        self.last_launched   = Some(idx);
-        self.launched_frames = 0;
-        let mut msg = [0u8; 48];
-        let prefix = b"Launching: ";
-        msg[..prefix.len()].copy_from_slice(prefix);
-        let n = entry.name.len().min(48 - prefix.len());
-        msg[prefix.len()..prefix.len() + n].copy_from_slice(&entry.name.as_bytes()[..n]);
-        let msg_str = core::str::from_utf8(&msg[..prefix.len() + n]).unwrap_or("");
-        self.set_status(msg_str, 0xFF40C870);
-        Some(entry.name)
+    /// Handle a left-click. Returns the program name to launch, if any.
+    pub fn handle_click(&mut self, mx: u64, my: u64, screen_h: u64) -> Option<&'static str> {
+        if !self.visible { return None; }
+
+        let px = Self::panel_x();
+
+        // Click outside panel → dismiss
+        let panel_bottom = Self::panel_y() + Self::visible_h(screen_h) + SCROLL_BTN + 2;
+        if mx < px || mx >= px + PANEL_W || my < Self::panel_y() || my >= panel_bottom {
+            self.close();
+            return None;
+        }
+
+        // Scroll buttons
+        let (ux, uy, uw, uh) = Self::scroll_up_rect(screen_h);
+        if mx >= ux && mx < ux+uw && my >= uy && my < uy+uh {
+            self.scroll_up();
+            return None;
+        }
+        let (dx, dy, dw, dh) = Self::scroll_down_rect(screen_h);
+        if mx >= dx && mx < dx+dw && my >= dy && my < dy+dh {
+            self.scroll_down(screen_h);
+            return None;
+        }
+
+        // Program entry
+        if let Some(idx) = self.entry_at(mx, my, screen_h) {
+            self.launched_idx    = Some(idx);
+            self.launched_frames = 0;
+            let name = ENTRIES[idx].name;
+            self.close();
+            return Some(name);
+        }
+        None
     }
 
-    /// Called each frame; clears the "launched" highlight after a few frames.
+    fn entry_at(&self, mx: u64, my: u64, screen_h: u64) -> Option<usize> {
+        if !self.visible { return None; }
+        let px = Self::panel_x();
+        let py = Self::panel_y();
+        let vh = Self::visible_h(screen_h);
+        if mx < px || mx >= px + PANEL_W { return None; }
+        if my < py || my >= py + vh       { return None; }
+
+        let rel_y = my - py + self.scroll_offset;
+        let rows = Self::row_positions();
+        for &(ry, is_sec, idx) in rows.iter() {
+            if ry == 0 && is_sec == false && idx == 0 && ry + ROW_H == 0 { break; }
+            if is_sec { continue; }
+            if rel_y >= ry && rel_y < ry + ROW_H {
+                if idx < ENTRIES.len() { return Some(idx); }
+            }
+        }
+        None
+    }
+
+    /// Advance animation state. Returns `true` when a redraw is needed.
     pub fn tick(&mut self) -> bool {
-        if self.last_launched.is_some() {
+        if self.launched_idx.is_some() {
             self.launched_frames += 1;
-            if self.launched_frames > 12 {
-                self.last_launched   = None;
+            if self.launched_frames > 10 {
+                self.launched_idx    = None;
                 self.launched_frames = 0;
-                self.set_status("Click a tile to launch a program.", COL_DESC);
                 return true;
             }
         }
         false
     }
 
-    fn tile_at(&self, wm: &WindowManager, abs_x: u64, abs_y: u64) -> Option<usize> {
-        let win = wm.get_window(self.window_id)?;
-        if abs_y < win.y + TITLE_BAR_H { return None; }
-        let rx = abs_x.wrapping_sub(win.x);
-        let ry = abs_y.wrapping_sub(win.y + TITLE_BAR_H);
-        for i in 0..ENTRIES.len() {
-            let (tx, ty) = Self::tile_rect(i);
-            if rx >= tx && rx < tx + TILE_W && ry >= ty && ry < ty + TILE_H {
-                return Some(i);
-            }
-        }
-        None
-    }
-
     // ── Drawing ───────────────────────────────────────────────────────────────
 
-    pub fn draw(&self, graphics: &Graphics, wm: &WindowManager) {
-        if !wm.is_window_visible(self.window_id) { return; }
-        let win = match wm.get_window(self.window_id) {
-            Some(w) => w,
-            None    => return,
-        };
+    pub fn draw(&self, graphics: &Graphics, screen_h: u64) {
+        if !self.visible { return; }
 
-        let ox = win.x;
-        let oy = win.y + TITLE_BAR_H;
-        let content_w = win.width;
-        let content_h = win.height.saturating_sub(TITLE_BAR_H);
+        let px = Self::panel_x();
+        let py = Self::panel_y();
+        let vh = Self::visible_h(screen_h);
 
-        // Window background
-        graphics.fill_rect(ox, oy, content_w, content_h, COL_WIN_BG);
+        // ── Panel background ──────────────────────────────────────────────────
+        graphics.draw_soft_shadow(px, py, PANEL_W, vh + SCROLL_BTN + 2, 16, 0x70);
+        graphics.fill_rounded_rect(px, py, PANEL_W, vh, 10, C_BG);
+        graphics.draw_rounded_rect(px, py, PANEL_W, vh, 10, C_BORDER, 1);
 
-        // Status bar at the top of content area
-        graphics.fill_rect(ox, oy, content_w, 20, 0xFF0A1828);
-        graphics.fill_rect(ox, oy + 20, content_w, 1, 0xFF1A3050);
-        fonts::draw_string(graphics, ox + 8, oy + 5, self.status_str(), self.status_color);
+        // ── Clip region: only draw rows visible in [scroll_offset, scroll_offset+vh) ──
+        let rows = Self::row_positions();
+        let clip_top    = py;
+        let clip_bottom = py + vh;
 
-        // Content starts below status bar
-        let oy = oy + 22;
+        let mut prev_sec: Option<u8> = None;
+        for &(ry, is_sec, idx) in rows.iter() {
+            // Stop iterating at the end of the array sentinel
+            if ry == 0 && !is_sec && idx == 0 && prev_sec.is_some() { break; }
 
-        // Draw tiles grouped by section
-        let mut prev_section: Option<u8> = None;
-        for (i, entry) in ENTRIES.iter().enumerate() {
-            // Section label
-            if prev_section != Some(entry.section) {
-                prev_section = Some(entry.section);
-                let (tx, ty) = Self::tile_rect(i);
-                let label_y = oy + ty - 16;
-                if label_y > oy.saturating_sub(4) {
-                    fonts::draw_string(graphics, ox + tx, label_y,
-                        SECTION_LABELS[entry.section as usize], COL_SECTION_LABEL);
-                    graphics.fill_rect(ox + tx, label_y + 13,
-                        content_w.saturating_sub(tx + 4), 1, COL_SECTION_LINE);
-                }
+            let abs_y = py + ry - self.scroll_offset;
+
+            if is_sec {
+                // Section label row
+                let sec_idx = idx;
+                if prev_sec == Some(sec_idx as u8) { continue; }
+                prev_sec = Some(sec_idx as u8);
+                let row_bottom = abs_y + SEC_LABEL_H;
+                if row_bottom <= clip_top || abs_y >= clip_bottom { continue; }
+                // Section divider line
+                graphics.fill_rect(px + 10, abs_y + SEC_LABEL_H - 1, PANEL_W - 20, 1, C_SEC_LINE);
+                // Label
+                fonts::draw_string(graphics, px + 12, abs_y + 6,
+                    SECTION_NAMES[sec_idx], C_SEC);
+            } else {
+                // Program row
+                if idx >= ENTRIES.len() { break; }
+                let row_bottom = abs_y + ROW_H;
+                if row_bottom <= clip_top || abs_y >= clip_bottom { continue; }
+                self.draw_row(graphics, px, abs_y, idx, clip_top, clip_bottom);
             }
-
-            let (tx, ty) = Self::tile_rect(i);
-            self.draw_tile(graphics, ox + tx, oy + ty, i, entry);
         }
+
+        // ── Scroll bar indicator ──────────────────────────────────────────────
+        let total_h = total_content_h();
+        if total_h > vh {
+            let bar_h = (vh * vh / total_h).max(20);
+            let bar_y = py + (vh.saturating_sub(bar_h)) * self.scroll_offset
+                        / Self::max_scroll(screen_h + TASKBAR_H + SCROLL_BTN + 2).max(1);
+            graphics.fill_rounded_rect(px + PANEL_W - 5, bar_y, 4, bar_h, 2, C_SCROLL_A);
+        }
+
+        // ── Scroll buttons at bottom ──────────────────────────────────────────
+        let btn_y = py + vh + 1;
+        let hw = PANEL_W / 2 - 1;
+        // Up arrow
+        let can_up = self.scroll_offset > 0;
+        let up_bg  = if can_up { C_SCROLL_A } else { C_SCROLL };
+        graphics.fill_rounded_rect(px, btn_y, hw, SCROLL_BTN, 6, up_bg);
+        graphics.fill_rect(px + hw/2 - 4, btn_y + 10, 8, 2, C_TEXT);
+        graphics.fill_rect(px + hw/2 - 2, btn_y + 7,  4, 3, C_TEXT); // top spike
+        graphics.fill_rect(px + hw/2 - 0, btn_y + 5,  1, 2, C_TEXT);
+        // Down arrow
+        let can_dn = self.scroll_offset < Self::max_scroll(screen_h + TASKBAR_H + SCROLL_BTN + 2);
+        let dn_bg  = if can_dn { C_SCROLL_A } else { C_SCROLL };
+        graphics.fill_rounded_rect(px + hw + 2, btn_y, hw, SCROLL_BTN, 6, dn_bg);
+        graphics.fill_rect(px + hw + 2 + hw/2 - 4, btn_y + 8,  8, 2, C_TEXT);
+        graphics.fill_rect(px + hw + 2 + hw/2 - 2, btn_y + 10, 4, 3, C_TEXT); // bottom spike
+        graphics.fill_rect(px + hw + 2 + hw/2,     btn_y + 13, 1, 2, C_TEXT);
     }
 
-    fn draw_tile(&self, graphics: &Graphics, ax: u64, ay: u64, idx: usize, entry: &Entry) {
-        let is_launched = self.last_launched == Some(idx);
-        let is_hovered  = self.hovered == Some(idx);
+    fn draw_row(&self, graphics: &Graphics, px: u64, ay: u64, idx: usize,
+                clip_top: u64, clip_bottom: u64) {
+        let entry = &ENTRIES[idx];
+        let is_hover    = self.hovered == Some(idx);
+        let is_launched = self.launched_idx == Some(idx);
 
-        let bg     = if is_launched { 0xFF0A2040 }
-                     else if is_hovered { COL_TILE_HOVER }
-                     else { COL_TILE_BG };
-        let border = if is_launched { 0xFF00AAFF }
-                     else if is_hovered { COL_TILE_ACTIVE }
-                     else { COL_TILE_BORDER };
+        // Visible slice of this row (for clipping)
+        let row_top    = ay.max(clip_top);
+        let row_bottom = (ay + ROW_H).min(clip_bottom);
+        if row_bottom <= row_top { return; }
 
-        // Soft shadow for hovered tile
-        if is_hovered {
-            graphics.draw_soft_shadow(ax, ay, TILE_W, TILE_H, 6, 0x30);
+        let bg = if is_launched { C_LAUNCH }
+                 else if is_hover { C_HOVER }
+                 else { C_BG };
+
+        // Row background (only the visible slice)
+        graphics.fill_rect(px + 1, row_top, PANEL_W - 2, row_bottom - row_top, bg);
+
+        // Only draw the row interior if the full row is visible (avoids clipping artifacts)
+        if ay >= clip_top && ay + ROW_H <= clip_bottom {
+            // Left accent stripe
+            graphics.fill_rounded_rect(px + 8, ay + 10, 4, ROW_H - 20, 2, entry.accent);
+
+            // Separator line above row
+            graphics.fill_rect(px + 16, ay, PANEL_W - 24, 1, C_SEC_LINE);
+
+            // Program name
+            fonts::draw_string(graphics, px + 20, ay + 10, entry.name, C_TEXT);
+            // Description
+            fonts::draw_string(graphics, px + 20, ay + 26, entry.desc, C_DESC);
+
+            // Right arrow indicator on hover
+            if is_hover || is_launched {
+                let arrow_x = px + PANEL_W - 18;
+                let arrow_y = ay + ROW_H / 2;
+                graphics.fill_rect(arrow_x,     arrow_y - 1, 8, 2, entry.accent);
+                graphics.fill_rect(arrow_x + 5, arrow_y - 4, 2, 4, entry.accent);
+                graphics.fill_rect(arrow_x + 5, arrow_y + 1, 2, 4, entry.accent);
+            }
         }
-
-        // Background & border
-        graphics.fill_rounded_rect(ax, ay, TILE_W, TILE_H, 6, bg);
-        graphics.draw_rounded_rect(ax, ay, TILE_W, TILE_H, 6, border, 1);
-
-        // Accent strip (rounded at top)
-        graphics.fill_rounded_rect(ax + 1, ay + 1, TILE_W - 2, 8, 4, entry.accent);
-        // Cover bottom part of accent strip to make it flat
-        graphics.fill_rect(ax + 1, ay + 5, TILE_W - 2, 4, entry.accent);
-        
-        // Subtle gradient fade below accent
-        let dimmed = (entry.accent & 0xFFFFFF) | 0x44000000;
-        graphics.fill_rect(ax + 1, ay + 9, TILE_W - 2, 2, dimmed);
-
-        // Program name (bold feel: draw twice offset by 1)
-        fonts::draw_string(graphics, ax + 8, ay + 17, entry.name, 0xFF000000); // shadow
-        fonts::draw_string(graphics, ax + 7, ay + 16, entry.name, COL_NAME);
-
-        // Description
-        fonts::draw_string(graphics, ax + 8, ay + 34, entry.desc, COL_DESC);
-
-        // Bottom hint row
-        let hint_bg = if is_hovered || is_launched { 0xFF0A1C34 } else { 0xFF090F1A };
-        graphics.fill_rounded_rect(ax + 1, ay + TILE_H - 18, TILE_W - 2, 17, 4, hint_bg);
-        // Cover top part of hint bg to make it flat
-        graphics.fill_rect(ax + 1, ay + TILE_H - 18, TILE_W - 2, 8, hint_bg);
-        
-        graphics.fill_rect(ax + 1, ay + TILE_H - 19, TILE_W - 2, 1, border);
-
-        let hint_txt = if is_launched { "  spawning..." }
-                       else if is_hovered { "  click to run" }
-                       else { "  click to run" };
-        let hint_col = if is_launched { 0xFF40C870 }
-                       else if is_hovered { 0xFF60AADD }
-                       else { COL_HINT };
-        fonts::draw_string(graphics, ax + 2, ay + TILE_H - 14, hint_txt, hint_col);
     }
 }

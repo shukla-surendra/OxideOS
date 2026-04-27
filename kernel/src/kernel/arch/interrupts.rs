@@ -2,9 +2,9 @@
 use core::arch::asm;
 use crate::kernel::serial::SERIAL_PORT;
 use crate::kernel::pic;
-use super::syscall;
+use crate::kernel::syscall;
 use crate::gui::mouse::{PS2Mouse, MouseCursor};
-use super::keyboard::handle_keyboard_interrupt;
+use crate::kernel::keyboard::handle_keyboard_interrupt;
 use crate::kernel::user_mode::TaskContext;
 
 // ============================================================================

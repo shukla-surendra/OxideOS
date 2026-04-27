@@ -122,6 +122,29 @@ impl Graphics {
         }
     }
 
+    /// Blit a small rectangular region of the back buffer to the framebuffer.
+    /// Used for cursor-only updates to avoid the ~3 MB full blit cost in QEMU.
+    pub fn present_region(&self, x: i64, y: i64, w: usize, h: usize) {
+        if x < 0 || y < 0 { return; }
+        let fb_ptr    = self.framebuffer_addr as *mut u32;
+        let pitch_px  = self.pitch_pixels();
+        let bb_w      = self.width  as usize;
+        let bb_h      = self.height as usize;
+        let x         = x as usize;
+        let y         = y as usize;
+        let cols      = w.min(bb_w.saturating_sub(x));
+        if cols == 0 { return; }
+        unsafe {
+            for row in 0..h {
+                let sy = y + row;
+                if sy >= bb_h { break; }
+                let src = self.back_buffer.add(sy * bb_w + x);
+                let dst = fb_ptr.add(sy * pitch_px + x);
+                core::ptr::copy_nonoverlapping(src, dst, cols);
+            }
+        }
+    }
+
     // ── Primitives (all write to back buffer) ──────────────────────────────────
 
     /// Clear entire screen with a solid color.

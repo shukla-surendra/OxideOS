@@ -40,9 +40,9 @@ const SCROLL_AMOUNT: usize = 5;
 
 // ── Tab-completion word list ───────────────────────────────────────────────
 const COMMANDS: &[&str] = &[
-    "about", "cat", "cd", "clear", "cls", "echo",
+    "about", "cat", "cd", "clear", "cls", "diskinfo", "echo",
     "help", "history", "kill", "ls", "mkdir", "pid",
-    "ps", "pwd", "reboot", "rm", "run", "sh", "shutdown", "sysinfo",
+    "ps", "pwd", "reboot", "record", "rm", "run", "sh", "shutdown", "sysinfo",
     "terminal", "ticks", "touch", "uptime", "version", "write",
 ];
 
@@ -681,11 +681,6 @@ impl TerminalApp {
     }
 
     fn print_banner(&mut self) {
-        self.push_line("  ___          _    _       ___  ____");
-        self.push_line(" / _ \\ __  __ (_)  | |     / _ \\/ ___|");
-        self.push_line("| | | |\\ \\/ / | |  | |  _ | | | \\___ \\");
-        self.push_line("| |_| | >  <  | |  | |_| || |_| |___) |");
-        self.push_line(" \\___/ /_/\\_\\ |_|  |_____| \\___/|____/");
         self.push_line("");
         self.push_line("[info] Type 'help' for commands  |  Tab to complete  |  PgUp/PgDn to scroll");
         self.push_line("[info] Run programs with: run <name>   List programs: run");
@@ -950,10 +945,15 @@ impl TerminalApp {
                 self.push_line("  write <path> <txt> - write text to file");
                 self.push_line("  rm <path>          - remove file");
                 self.push_line("  pwd                - print working dir");
-                self.push_line("Disk (FAT16):");
-                self.push_line("  ls /disk/          - list disk contents");
-                self.push_line("  cd /disk/          - enter disk directory");
-                self.push_line("  cat /disk/FILE     - read file from disk");
+                self.push_line("Disk:");
+                self.push_line("  ls /disk/          - list FAT16 contents");
+                self.push_line("  ls /store/         - list persistent records");
+                self.push_line("  cat /store/42      - read record 42");
+                self.push_line("  diskinfo           - show all disk/mount info");
+                self.push_line("  record list        - list record IDs");
+                self.push_line("  record read <id>   - read record");
+                self.push_line("  record write <id> <data>");
+                self.push_line("  record delete <id>");
                 self.push_line("System:");
                 self.push_line("  ticks   - timer ticks");
                 self.push_line("  uptime  - uptime in ms");
@@ -1128,6 +1128,120 @@ impl TerminalApp {
                         } else {
                             self.push_line(&format!("kill: no such task (pid {})", pid));
                         }
+                    }
+                }
+            }
+
+            "diskinfo" => {
+                use crate::kernel::ata;
+                use crate::kernel::disk_store;
+                let labels = ["disk0 (primary master)",  "disk1 (primary slave)",
+                              "disk2 (secondary master)","disk3 (secondary slave)"];
+                let mounts = ["/disk (FAT16)", "(unmounted)", "/ext2 (ext2)", "(unmounted)"];
+                self.push_line("ATA Disks:");
+                for i in 0..4usize {
+                    if ata::is_present_at(i) {
+                        if let Some((secs, _slave, lba48)) = ata::disk_info(i) {
+                            let mb = secs / 2048;
+                            let mode = if lba48 { "LBA48" } else { "LBA28" };
+                            self.push_line(&format!("  {} : {} MB  {}  mount={}",
+                                labels[i], mb, mode, mounts[i]));
+                        }
+                    } else {
+                        self.push_line(&format!("  {} : not present", labels[i]));
+                    }
+                }
+                self.push_line("Disk Record Store (/store):");
+                for i in [0usize, 2usize] {
+                    if disk_store::is_mounted(i) {
+                        let mut ids = [0u32; 255];
+                        let n = unsafe { disk_store::list_records(i, &mut ids) };
+                        self.push_line(&format!("  disk{}: mounted, {} record(s)", i, n));
+                    } else {
+                        self.push_line(&format!("  disk{}: not mounted", i));
+                    }
+                }
+                self.push_line("Mount Points:");
+                self.push_line("  /       ramfs   (volatile)");
+                self.push_line("  /disk   fat16   (persistent, disk0)");
+                self.push_line("  /ext2   ext2    (read-only, disk2)");
+                self.push_line("  /store  oxds    (record store, disk0)");
+                self.push_line("  /proc   procfs  (runtime info)");
+                self.push_line("  /dev    devfs   (devices)");
+            }
+
+            "record" => {
+                use crate::kernel::disk_store;
+                use crate::kernel::diskfs;
+                let sub = parts.next().unwrap_or("");
+                match sub {
+                    "list" => {
+                        if !disk_store::is_mounted(0) {
+                            self.push_line("record: disk store not mounted");
+                        } else {
+                            let mut ids = [0u32; 255];
+                            let n = unsafe { disk_store::list_records(0, &mut ids) };
+                            if n == 0 {
+                                self.push_line("record: no records");
+                            } else {
+                                self.push_line(&format!("record: {} record(s):", n));
+                                for &id in &ids[..n] {
+                                    self.push_line(&format!("  id={}", id));
+                                }
+                            }
+                        }
+                    }
+                    "read" => {
+                        let id_str = parts.next().unwrap_or("");
+                        match id_str.parse::<u32>() {
+                            Err(_) => self.push_line("usage: record read <id>"),
+                            Ok(id) => {
+                                let mut buf = [0u8; crate::kernel::disk_store::RECORD_DATA_MAX];
+                                match unsafe { disk_store::read_record(0, id, &mut buf) } {
+                                    None => self.push_line(&format!("record {}: not found", id)),
+                                    Some(len) => {
+                                        let text = core::str::from_utf8(&buf[..len]).unwrap_or("(binary)");
+                                        self.push_line(&format!("record {}: {}", id, text));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "write" => {
+                        let id_str = parts.next().unwrap_or("");
+                        match id_str.parse::<u32>() {
+                            Err(_) => self.push_line("usage: record write <id> <data>"),
+                            Ok(id) => {
+                                let data = parts.collect::<alloc::vec::Vec<_>>().join(" ");
+                                if data.is_empty() {
+                                    self.push_line("usage: record write <id> <data>");
+                                } else if diskfs::write_record(id, data.as_bytes()) {
+                                    self.push_line(&format!("record {}: written ({} bytes)", id, data.len()));
+                                } else {
+                                    self.push_line(&format!("record {}: write failed (disk not mounted or full)", id));
+                                }
+                            }
+                        }
+                    }
+                    "delete" => {
+                        let id_str = parts.next().unwrap_or("");
+                        match id_str.parse::<u32>() {
+                            Err(_) => self.push_line("usage: record delete <id>"),
+                            Ok(id) => {
+                                if unsafe { disk_store::delete_record(0, id) } {
+                                    self.push_line(&format!("record {}: deleted", id));
+                                } else {
+                                    self.push_line(&format!("record {}: not found or disk not mounted", id));
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        self.push_line("usage: record <list|read|write|delete> [args]");
+                        self.push_line("  record list              - list all record IDs");
+                        self.push_line("  record read <id>         - read record by ID");
+                        self.push_line("  record write <id> <data> - write record");
+                        self.push_line("  record delete <id>       - delete record");
                     }
                 }
             }

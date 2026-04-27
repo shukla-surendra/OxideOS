@@ -8,6 +8,7 @@ use crate::kernel::serial::SERIAL_PORT;
 const MAX_WINDOWS: usize = 16;
 const TASKBAR_HEIGHT: u64 = 48;
 const TITLEBAR_H:    u64 = 34;
+const C_CLOSE_ICON:  u32 = 0xFF7A1015; // X icon color on close button
 
 /// Format timer ticks as "HH:MM:SS" into `buf` (exactly 8 bytes).
 /// The timer runs at 100 Hz, so ticks / 100 = seconds since boot.
@@ -33,6 +34,8 @@ pub enum WindowState {
     Normal,
     Minimized,
     Maximized,
+    SnappedLeft,   // drag-to-left-edge: fills left half of screen
+    SnappedRight,  // drag-to-right-edge: fills right half of screen
 }
 
 pub struct WindowManager {
@@ -52,6 +55,8 @@ pub struct WindowManager {
     context_menu_x: u64,
     context_menu_y: u64,
     background_style: BackgroundStyle,
+    // ID of the last window closed via the × button (cleared by take_closed_window).
+    last_closed_window: Option<usize>,
 }
 
 impl WindowManager {
@@ -72,7 +77,14 @@ impl WindowManager {
             context_menu_x: 0,
             context_menu_y: 0,
             background_style: BackgroundStyle::Default,
+            last_closed_window: None,
         }
+    }
+
+    /// Returns the WM window id of the most recently × -closed window, then
+    /// clears it.  Called from the main loop to propagate close to gui_proc.
+    pub fn take_closed_window(&mut self) -> Option<usize> {
+        self.last_closed_window.take()
     }
 
     pub fn set_screen_dimensions(&mut self, width: u64, height: u64) {
@@ -172,62 +184,69 @@ impl WindowManager {
     }
 
     pub fn maximize_window(&mut self, window_id: usize) {
-        if window_id >= MAX_WINDOWS {
-            return;
-        }
+        if window_id >= MAX_WINDOWS { return; }
 
         if let Some(ref mut window) = self.windows[window_id] {
             match self.window_states[window_id] {
-                WindowState::Maximized => {
-                    // Restore to normal
+                WindowState::Maximized
+                | WindowState::SnappedLeft
+                | WindowState::SnappedRight => {
+                    // Restore to saved pre-snap/pre-maximize position
                     let (x, y, w, h) = self.saved_positions[window_id];
-                    window.x = x;
-                    window.y = y;
-                    window.width = w;
-                    window.height = h;
+                    window.x = x; window.y = y; window.width = w; window.height = h;
                     self.window_states[window_id] = WindowState::Normal;
-                    
-                    unsafe {
-                        SERIAL_PORT.write_str("WindowManager: Restored window ");
-                        SERIAL_PORT.write_decimal(window_id as u32);
-                        SERIAL_PORT.write_str("\n");
-                    }
                 },
                 _ => {
-                    // Save current position
                     self.saved_positions[window_id] = (window.x, window.y, window.width, window.height);
-                    
-                    // Maximize (leave space for taskbar)
                     window.x = 0;
                     window.y = TASKBAR_HEIGHT;
-                    window.width = self.screen_width;
-                    window.height = self.screen_height - TASKBAR_HEIGHT;
+                    window.width  = self.screen_width;
+                    window.height = self.screen_height.saturating_sub(TASKBAR_HEIGHT);
                     self.window_states[window_id] = WindowState::Maximized;
-                    
-                    unsafe {
-                        SERIAL_PORT.write_str("WindowManager: Maximized window ");
-                        SERIAL_PORT.write_decimal(window_id as u32);
-                        SERIAL_PORT.write_str("\n");
-                    }
                 }
             }
         }
     }
 
     pub fn restore_window(&mut self, window_id: usize) {
-        if window_id >= MAX_WINDOWS {
-            return;
-        }
-
+        if window_id >= MAX_WINDOWS { return; }
         match self.window_states[window_id] {
             WindowState::Minimized => {
                 self.window_states[window_id] = WindowState::Normal;
                 self.bring_to_front(window_id);
             },
-            WindowState::Maximized => {
-                self.maximize_window(window_id); // Toggle back to normal
+            WindowState::Maximized
+            | WindowState::SnappedLeft
+            | WindowState::SnappedRight => {
+                self.maximize_window(window_id); // toggles back to Normal
             },
             WindowState::Normal => {}
+        }
+    }
+
+    /// Snap `window_id` to the left half of the screen (saves current position).
+    pub fn snap_left(&mut self, window_id: usize) {
+        if window_id >= MAX_WINDOWS { return; }
+        if let Some(ref mut win) = self.windows[window_id] {
+            self.saved_positions[window_id] = (win.x, win.y, win.width, win.height);
+            win.x = 0;
+            win.y = TASKBAR_HEIGHT;
+            win.width  = self.screen_width / 2;
+            win.height = self.screen_height.saturating_sub(TASKBAR_HEIGHT);
+            self.window_states[window_id] = WindowState::SnappedLeft;
+        }
+    }
+
+    /// Snap `window_id` to the right half of the screen (saves current position).
+    pub fn snap_right(&mut self, window_id: usize) {
+        if window_id >= MAX_WINDOWS { return; }
+        if let Some(ref mut win) = self.windows[window_id] {
+            self.saved_positions[window_id] = (win.x, win.y, win.width, win.height);
+            win.x = self.screen_width / 2;
+            win.y = TASKBAR_HEIGHT;
+            win.width  = self.screen_width / 2;
+            win.height = self.screen_height.saturating_sub(TASKBAR_HEIGHT);
+            self.window_states[window_id] = WindowState::SnappedRight;
         }
     }
 
@@ -322,6 +341,7 @@ impl WindowManager {
 
         if let Some(window_id) = clicked_window {
             if clicked_close_button {
+                self.last_closed_window = Some(window_id);
                 self.remove_window(window_id);
             } else if clicked_maximize_button {
                 self.maximize_window(window_id);
@@ -329,8 +349,12 @@ impl WindowManager {
                 self.minimize_window(window_id);
             } else if clicked_titlebar {
                 self.bring_to_front(window_id);
-                // Don't allow dragging maximized windows
-                if self.window_states[window_id] != WindowState::Maximized {
+                let state = self.window_states[window_id];
+                if state != WindowState::Maximized {
+                    // Dragging a snapped window restores it to its saved size first
+                    if matches!(state, WindowState::SnappedLeft | WindowState::SnappedRight) {
+                        self.restore_window(window_id);
+                    }
                     self.dragging_window = Some(window_id);
                     self.drag_offset_x = drag_offset_x;
                     self.drag_offset_y = drag_offset_y;
@@ -377,24 +401,24 @@ impl WindowManager {
     }
 
     fn is_close_button_clicked(&self, window: &Window, mouse_x: u64, mouse_y: u64) -> bool {
-        let button_x = window.x + window.width.saturating_sub(26);
-        let button_y = window.y + 9;
-        mouse_x >= button_x && mouse_x < button_x + 16 &&
-        mouse_y >= button_y && mouse_y < button_y + 16
-    }
-
-    fn is_maximize_button_clicked(&self, window: &Window, mouse_x: u64, mouse_y: u64) -> bool {
-        let button_x = window.x + window.width.saturating_sub(47);
-        let button_y = window.y + 9;
-        mouse_x >= button_x && mouse_x < button_x + 16 &&
-        mouse_y >= button_y && mouse_y < button_y + 16
+        let bx = window.x + Self::BTN_CLOSE_OX;
+        let by = Self::btn_by(window);
+        mouse_x >= bx && mouse_x < bx + Self::BTN_SIZE &&
+        mouse_y >= by && mouse_y < by + Self::BTN_SIZE
     }
 
     fn is_minimize_button_clicked(&self, window: &Window, mouse_x: u64, mouse_y: u64) -> bool {
-        let button_x = window.x + window.width.saturating_sub(68);
-        let button_y = window.y + 9;
-        mouse_x >= button_x && mouse_x < button_x + 16 &&
-        mouse_y >= button_y && mouse_y < button_y + 16
+        let bx = window.x + Self::BTN_MIN_OX;
+        let by = Self::btn_by(window);
+        mouse_x >= bx && mouse_x < bx + Self::BTN_SIZE &&
+        mouse_y >= by && mouse_y < by + Self::BTN_SIZE
+    }
+
+    fn is_maximize_button_clicked(&self, window: &Window, mouse_x: u64, mouse_y: u64) -> bool {
+        let bx = window.x + Self::BTN_MAX_OX;
+        let by = Self::btn_by(window);
+        mouse_x >= bx && mouse_x < bx + Self::BTN_SIZE &&
+        mouse_y >= by && mouse_y < by + Self::BTN_SIZE
     }
 
     pub fn handle_drag(&mut self, mouse_x: u64, mouse_y: u64) {
@@ -407,7 +431,21 @@ impl WindowManager {
     }
 
     pub fn release_drag(&mut self) {
-        if self.dragging_window.is_some() {
+        if let Some(window_id) = self.dragging_window {
+            // Edge snapping (only for Normal windows; already excluded Maximized from dragging)
+            if self.window_states[window_id] == WindowState::Normal {
+                const SNAP_EDGE: u64 = 20;
+                let snap = if let Some(ref w) = self.windows[window_id] {
+                    if w.x <= SNAP_EDGE { 1i8 }
+                    else if w.x + w.width + SNAP_EDGE >= self.screen_width { 2i8 }
+                    else { 0 }
+                } else { 0 };
+                match snap {
+                    1 => self.snap_left(window_id),
+                    2 => self.snap_right(window_id),
+                    _ => {}
+                }
+            }
             self.dragging_window = None;
         }
     }
@@ -454,178 +492,166 @@ impl WindowManager {
         // Deeper drop shadow for depth
         graphics.draw_soft_shadow(window.x, window.y, window.width, window.height, 18, 0x60);
 
-        // Window body
-        graphics.fill_rounded_rect(window.x, window.y, window.width, window.height, 8, window.bg_color);
+        // Window body with GNOME-style 12px corner radius
+        graphics.fill_rounded_rect(window.x, window.y, window.width, window.height, 12, window.bg_color);
 
-        // Title bar — horizontal gradient with rounded top
+        // Title bar — subtle horizontal gradient, rounded top corners
         let (tb_left, tb_right, accent) = if is_focused {
             (colors::ui::TITLEBAR_FOCUSED_LEFT, colors::ui::TITLEBAR_FOCUSED_RIGHT, colors::ui::TITLEBAR_ACCENT_FOCUSED)
         } else {
             (colors::ui::TITLEBAR_UNFOCUSED_LEFT, colors::ui::TITLEBAR_UNFOCUSED_RIGHT, colors::ui::TITLEBAR_ACCENT_UNFOCUSED)
         };
 
-        graphics.fill_rounded_rect(window.x, window.y, window.width, TITLEBAR_H, 8, tb_left);
-        // Flatten bottom half so it joins the content area cleanly
+        graphics.fill_rounded_rect(window.x, window.y, window.width, TITLEBAR_H, 12, tb_left);
+        // Flatten bottom portion so titlebar joins content area cleanly
         graphics.fill_rect(window.x, window.y + TITLEBAR_H / 2, window.width, TITLEBAR_H / 2, tb_left);
         graphics.fill_rect_gradient_h(window.x, window.y, window.width, TITLEBAR_H, tb_left, tb_right);
 
-        // Top edge specular highlight (glass feel)
-        graphics.fill_rect(window.x, window.y, window.width, 1, 0x30FFFFFF);
-
-        // Thin accent line at bottom of titlebar
+        // Thin accent line at bottom of titlebar (GNOME blue when focused)
         graphics.fill_rect(window.x, window.y + TITLEBAR_H - 1, window.width, 1, accent);
 
-        // Outer border
+        // Outer border — blue highlight when focused, subtle gray when unfocused
         let border_col = if is_focused { colors::ui::WINDOW_BORDER_FOCUSED } else { colors::ui::WINDOW_BORDER_UNFOCUSED };
-        graphics.draw_rounded_rect(window.x, window.y, window.width, window.height, 8, border_col, 1);
+        graphics.draw_rounded_rect(window.x, window.y, window.width, window.height, 12, border_col, 1);
 
-        // Title text — vertically centered in titlebar
+        // Title text — centered horizontally, clear of the left-side buttons
         let title_y = window.y + TITLEBAR_H / 2 - 4;
-        let shadow_txt = 0xFF000000;
-        let title_color = if is_focused { colors::ui::TASKBAR_TEXT } else { colors::dark_theme::TEXT_SECONDARY };
-        fonts::draw_string(graphics, window.x + 11, title_y + 1, window.title, shadow_txt);
-        fonts::draw_string(graphics, window.x + 10, title_y, window.title, title_color);
+        let title_len_px = window.title.len() as u64 * 9;
+        // Center, but never overlap the three left buttons (3×18px + 10 margin = 64px)
+        let title_x = {
+            let centered = window.x + (window.width.saturating_sub(title_len_px)) / 2;
+            centered.max(window.x + 68)
+        };
+        let title_color = if is_focused { 0xFFEEEEEE } else { 0xFF888888 };
+        fonts::draw_string(graphics, title_x + 1, title_y + 1, window.title, 0x80000000);
+        fonts::draw_string(graphics, title_x, title_y, window.title, title_color);
 
-        // Control buttons (right side)
+        // Control buttons — LEFT side (GNOME style): [×] [-] [+]
         self.draw_close_button(graphics, window);
-        self.draw_maximize_button(graphics, window, is_maximized);
         self.draw_minimize_button(graphics, window);
+        self.draw_maximize_button(graphics, window, is_maximized);
     }
 
     // ── Window control button helpers ──────────────────────────────────────────
-    // Layout: right-aligned, 3 buttons of 14×14, 4px gaps, 10px from right edge.
-    //   Close    at window.width - 24  (right edge at window.width - 10)
-    //   Maximize at window.width - 42  (gap 4px)
-    //   Minimize at window.width - 60  (gap 4px)
+    // Layout: LEFT-aligned (GNOME style), 3 buttons of 14×14, 4px gaps, 10px from left.
+    //   Close    at window.x + 10
+    //   Minimize at window.x + 28  (10 + 14 + 4)
+    //   Maximize at window.x + 46  (28 + 14 + 4)
     // Vertical: centered in TITLEBAR_H=34 → by = window.y + 10
     const BTN_SIZE:   u64 = 14;
-    const BTN_RADIUS: u64 = 7;   // = BTN_SIZE/2 → circle
-    const BTN_CLOSE_OX:  u64 = 24; // offset from right
-    const BTN_MAX_OX:    u64 = 42;
-    const BTN_MIN_OX:    u64 = 60;
+    const BTN_RADIUS: u64 = 7;
+    const BTN_CLOSE_OX:  u64 = 10; // offset from left edge
+    const BTN_MIN_OX:    u64 = 28; // close + size + gap
+    const BTN_MAX_OX:    u64 = 46; // min + size + gap
 
     #[inline(always)]
     fn btn_by(window: &Window) -> u64 { window.y + (TITLEBAR_H - Self::BTN_SIZE) / 2 }
 
     fn draw_close_button(&self, graphics: &Graphics, window: &Window) {
-        let bx = window.x + window.width.saturating_sub(Self::BTN_CLOSE_OX);
+        let bx = window.x + Self::BTN_CLOSE_OX;
         let by = Self::btn_by(window);
-        // macOS traffic-light red (#FF5F57)
-        graphics.fill_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFFFF5F57);
-        // 1px darker border for definition
-        graphics.draw_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFFBF3830, 1);
-        // × icon: two 5-pixel diagonals (skip the exact centre to avoid 3-pixel blob)
-        let cx = bx as i64 + 7; let cy = by as i64 + 7;
-        for d in [-2i64, -1, 1, 2] {
-            graphics.put_pixel_safe(cx + d, cy + d, 0xFF8A1A15);
-            graphics.put_pixel_safe(cx + d, cy - d, 0xFF8A1A15);
-        }
-        graphics.put_pixel_safe(cx, cy, 0xFF8A1A15);
-    }
-
-    fn draw_maximize_button(&self, graphics: &Graphics, window: &Window, is_maximized: bool) {
-        let bx = window.x + window.width.saturating_sub(Self::BTN_MAX_OX);
-        let by = Self::btn_by(window);
-        // macOS traffic-light green (#28C940)
-        graphics.fill_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFF28C940);
-        graphics.draw_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFF1A8A28, 1);
-        let icon_col = 0xFF0A5A14u32;
-        if is_maximized {
-            // Restore: two small overlapping squares
-            graphics.draw_rect(bx + 3, by + 6, 4, 4, icon_col, 1);
-            graphics.draw_rect(bx + 6, by + 4, 4, 4, icon_col, 1);
-        } else {
-            // Maximize: single square
-            graphics.draw_rect(bx + 4, by + 4, 6, 6, icon_col, 1);
-        }
+        // Filled red circle
+        graphics.fill_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFFED333B);
+        graphics.draw_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFFA8222A, 1);
+        // Crisp 2-pixel-wide × using two diagonal lines (Bresenham), each drawn
+        // twice offset by 1 px so it's readable on a 14×14 disc.
+        let x0 = bx as i64 + 3; let y0 = by as i64 + 3;
+        let x1 = bx as i64 + 10; let y1 = by as i64 + 10;
+        let xc = C_CLOSE_ICON;
+        graphics.draw_line(x0,   y0,   x1,   y1,   xc);
+        graphics.draw_line(x0+1, y0,   x1+1, y1,   xc);
+        graphics.draw_line(x1,   y0,   x0,   y1,   xc);
+        graphics.draw_line(x1+1, y0,   x0+1, y1,   xc);
     }
 
     fn draw_minimize_button(&self, graphics: &Graphics, window: &Window) {
-        let bx = window.x + window.width.saturating_sub(Self::BTN_MIN_OX);
+        let bx = window.x + Self::BTN_MIN_OX;
         let by = Self::btn_by(window);
-        // macOS traffic-light yellow (#FFBD2E)
-        graphics.fill_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFFFFBD2E);
-        graphics.draw_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFFAA8010, 1);
-        // − icon: 2-pixel-tall bar centred horizontally
-        graphics.fill_rect(bx + 4, by + 6, 6, 2, 0xFF7A5A08);
+        graphics.fill_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFFE5A50A);
+        graphics.draw_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFFA07008, 1);
+        // Clean 2-pixel-high minus bar, centered
+        graphics.fill_rect(bx + 3, by + 6, 8, 2, 0xFF5A3800);
+    }
+
+    fn draw_maximize_button(&self, graphics: &Graphics, window: &Window, is_maximized: bool) {
+        let bx = window.x + Self::BTN_MAX_OX;
+        let by = Self::btn_by(window);
+        graphics.fill_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFF26A269);
+        graphics.draw_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFF186A44, 1);
+        let ic = 0xFF0A4A20u32;
+        if is_maximized {
+            // Two overlapping squares
+            graphics.draw_rect(bx + 4, by + 6, 5, 5, ic, 1);
+            graphics.draw_rect(bx + 6, by + 4, 5, 5, ic, 1);
+        } else {
+            // Single square
+            graphics.draw_rect(bx + 3, by + 3, 8, 8, ic, 2);
+        }
     }
 
     pub fn draw_taskbar(&self, graphics: &Graphics) {
-        // Glass-look taskbar: dark gradient background
-        graphics.fill_rect_gradient_v(0, 0, self.screen_width, TASKBAR_HEIGHT,
-            0xFF252830, 0xFF191D26);
+        // ── Background ────────────────────────────────────────────────────────
+        graphics.fill_rect(0, 0, self.screen_width, TASKBAR_HEIGHT, 0xFF2E2E2E);
+        graphics.fill_rect(0, TASKBAR_HEIGHT - 1, self.screen_width, 1, 0xFF1A1A1A);
 
-        // Top 1px specular highlight (glass reflection)
-        graphics.fill_rect(0, 0, self.screen_width, 1, 0xFF454A5C);
+        // ── Center clock — drawn first so we know its boundaries ──────────────
+        // "HH:MM:SS AM" = 11 chars × 9px = 99px; pill adds 20px → 119px total
+        const CLOCK_TEXT_W: u64 = 99;
+        const CLOCK_PILL_W: u64 = CLOCK_TEXT_W + 20; // 10px padding each side
+        let clock_pill_x = (self.screen_width.saturating_sub(CLOCK_PILL_W)) / 2;
+        let clock_text_x = clock_pill_x + 10;
+        let clock_y      = (TASKBAR_HEIGHT - 8) / 2;
 
-        // Bottom accent line
-        graphics.fill_rect(0, TASKBAR_HEIGHT - 1, self.screen_width, 1, 0xFF0A3A68);
+        let mut time_buf = [0u8; 11];
+        crate::kernel::rtc::format_time_ampm(&mut time_buf);
+        let time_str = core::str::from_utf8(&time_buf).unwrap_or("--:--:-- --");
+        graphics.fill_rounded_rect(clock_pill_x, clock_y - 5, CLOCK_PILL_W, 18, 6, 0xFF3A3A3A);
+        fonts::draw_string(graphics, clock_text_x, clock_y, time_str, 0xFFEEEEEE);
 
-        // Separator after Start button area
-        graphics.fill_rect(96, 10, 1, 28, 0x28FFFFFF);
+        // ── Right-side system tray ─────────────────────────────────────────────
+        // TRAY_W: brightness icon + network dot + margin — no IP text.
+        const TRAY_W: u64 = 90;  // reserved pixels from right edge
+        let tray_x = self.screen_width.saturating_sub(TRAY_W);
+        self.draw_system_tray(graphics, tray_x);
 
-        // Taskbar window items
-        let start_x = 110u64;
+        // ── Left-side: separator + window items ───────────────────────────────
+        // Items are allowed up to `clock_pill_x - 8` so they never touch the clock.
+        graphics.fill_rect(146, 10, 1, 28, 0x28FFFFFF);
+        let items_start = 158u64;
+        let items_max_right = clock_pill_x.saturating_sub(8);
+
         for i in 0..self.window_count {
             let window_id = self.z_order[i];
-            let item_x = start_x + (i as u64) * (TASKBAR_ITEM_WIDTH + TASKBAR_ITEM_SPACING);
+            let item_x = items_start + (i as u64) * (TASKBAR_ITEM_WIDTH + TASKBAR_ITEM_SPACING);
+            // Stop drawing items that would overlap the clock.
+            if item_x + TASKBAR_ITEM_WIDTH > items_max_right { break; }
             if let Some(ref window) = self.windows[window_id] {
                 self.draw_taskbar_item(graphics, window, window_id, item_x);
             }
         }
-
-        // System tray
-        self.draw_system_tray(graphics);
     }
 
-    fn draw_system_tray(&self, graphics: &Graphics) {
-        // ── Clock pill ────────────────────────────────────────────────────────
-        const CLOCK_W: u64 = 8 * 9; // 8 chars × 9px = 72
-        const BOX_PAD: u64 = 8;
-        const BOX_W:   u64 = CLOCK_W + BOX_PAD * 2; // 88
-        const BOX_H:   u64 = 34;
-        const BOX_Y:   u64 = (TASKBAR_HEIGHT - BOX_H) / 2; // vertically centered
-        let box_x = self.screen_width.saturating_sub(BOX_W + 10);
+    /// Draw the right-side system tray: brightness icon + network dot.
+    /// `tray_x` is the left edge of the reserved tray area.
+    fn draw_system_tray(&self, graphics: &Graphics, tray_x: u64) {
+        let icon_cy = TASKBAR_HEIGHT / 2; // vertical centre of taskbar
 
-        graphics.fill_rounded_rect(box_x, BOX_Y, BOX_W, BOX_H, 6, 0xFF14192A);
-        graphics.draw_rounded_rect(box_x, BOX_Y, BOX_W, BOX_H, 6, 0xFF1E3048, 1);
+        // ── Brightness icon (sun) — left of tray ──────────────────────────────
+        // 80% brightness is the fixed display value (visual only for now).
+        let sun_cx = tray_x + 14;
+        let sun_cy = icon_cy;
+        draw_sun_icon(graphics, sun_cx, sun_cy, 0xFFDDAA30);
+        fonts::draw_string(graphics, sun_cx + 12, sun_cy - 4, "80%", 0xFF888888);
 
-        // Time (top line)
-        let mut time_buf = [0u8; 8];
-        let ticks = unsafe { crate::kernel::timer::get_ticks() };
-        format_uptime(ticks, &mut time_buf);
-        let time_str = core::str::from_utf8(&time_buf).unwrap_or("00:00:00");
-        fonts::draw_string(graphics, box_x + BOX_PAD, BOX_Y + 7, time_str, 0xFF8AC8FF);
-
-        // Sub-label (bottom line)
-        fonts::draw_string(graphics, box_x + BOX_PAD + 14, BOX_Y + 20, "uptime", 0xFF384A5E);
-
-        // ── Network indicator pill — left of clock ────────────────────────────
-        const NET_W:   u64 = 118;
-        const NET_H:   u64 = BOX_H;
-        const NET_Y:   u64 = BOX_Y;
-        const NET_PAD: u64 = 8;
-        let net_box_x = box_x.saturating_sub(NET_W + 8);
-
+        // ── Network status dot — right of tray ────────────────────────────────
         let net_present = crate::kernel::net::is_present();
-        let (dot_col, label, label_col, pill_bg, pill_bdr) = if net_present {
-            (0xFF2ECC71u32, "10.0.2.15", 0xFF58D87Eu32,
-             0xFF0B2016u32, 0xFF165530u32)
-        } else {
-            (0xFF8B2020u32, "No NIC   ", 0xFF804040u32,
-             0xFF1A1020u32, 0xFF3A1830u32)
-        };
-
-        graphics.fill_rounded_rect(net_box_x, NET_Y, NET_W, NET_H, 6, pill_bg);
-        graphics.draw_rounded_rect(net_box_x, NET_Y, NET_W, NET_H, 6, pill_bdr, 1);
-
-        // Status dot
-        let dot_x = net_box_x + NET_PAD;
-        let dot_y = NET_Y + (NET_H - 8) / 2;
-        graphics.fill_rounded_rect(dot_x, dot_y, 8, 8, 4, dot_col);
-
-        fonts::draw_string(graphics, dot_x + 12, NET_Y + 7, label, label_col);
-        fonts::draw_string(graphics, dot_x + 12, NET_Y + 20, "Network", 0xFF2A3A4E);
+        let dot_col = if net_present { 0xFF26A269u32 } else { 0xFFED333Bu32 };
+        let dot_x = tray_x + 70;
+        let dot_y = icon_cy - 4;
+        graphics.fill_rounded_rect(dot_x, dot_y, 10, 10, 5, dot_col);
+        // Subtle tooltip-style label below dot
+        let net_label = if net_present { "NET" } else { "OFF" };
+        fonts::draw_string(graphics, dot_x - 1, dot_y + 12, net_label, 0xFF666666);
     }
 
     fn draw_taskbar_item(&self, graphics: &Graphics, window: &Window, window_id: usize, x: u64) {
@@ -636,11 +662,11 @@ impl WindowManager {
         const ITEM_H: u64 = 36;
 
         let (bg_c, border_c, text_c) = if is_focused && !is_minimized {
-            (0xFF1E2438, 0xFF2F6FAE, 0xFFE8F0FE) // Focused: dark slate + blue border
+            (0xFF3A3A3A, 0xFF5294E2, 0xFFEEEEEE) // Focused: GNOME blue border
         } else if is_minimized {
-            (0x00000000, 0xFF2D3244, 0xFF6A737D)  // Minimized: no bg, dim text
+            (0x00000000, 0xFF4A4A4A, 0xFF777777)  // Minimized: dim text
         } else {
-            (0x00000000, 0x00000000, 0xFFB8C4D4)  // Normal: transparent bg
+            (0x00000000, 0x00000000, 0xFFCCCCCC)  // Normal: transparent bg
         };
 
         if bg_c != 0 {
@@ -650,16 +676,14 @@ impl WindowManager {
             graphics.draw_rounded_rect(x, ITEM_Y, TASKBAR_ITEM_WIDTH, ITEM_H, 6, border_c, 1);
         }
 
-        // Windows 11-style bottom indicator
+        // Bottom indicator — GNOME blue pill for active, small dot for open
         if is_focused && !is_minimized {
-            // Wide bar for active
             let ind_w = 28u64;
             let ind_x = x + (TASKBAR_ITEM_WIDTH - ind_w) / 2;
-            graphics.fill_rounded_rect(ind_x, TASKBAR_HEIGHT - 4, ind_w, 3, 1, 0xFF3A8FE0);
+            graphics.fill_rounded_rect(ind_x, TASKBAR_HEIGHT - 4, ind_w, 3, 1, 0xFF5294E2);
         } else if !is_minimized {
-            // Small dot for open but unfocused
             let ind_x = x + TASKBAR_ITEM_WIDTH / 2 - 2;
-            graphics.fill_rounded_rect(ind_x, TASKBAR_HEIGHT - 4, 4, 3, 1, 0xFF3A4B6A);
+            graphics.fill_rounded_rect(ind_x, TASKBAR_HEIGHT - 4, 4, 3, 1, 0xFF5294E2);
         }
 
         fonts::draw_string(graphics, x + 12, ITEM_Y + 14, window.title, text_c);
@@ -831,17 +855,35 @@ impl WindowManager {
     }
 
     pub fn is_window_visible(&self, window_id: usize) -> bool {
-        if window_id >= MAX_WINDOWS {
-            return false;
-        }
-
+        if window_id >= MAX_WINDOWS { return false; }
         self.windows[window_id]
             .as_ref()
             .map(|window| window.visible && self.window_states[window_id] != WindowState::Minimized)
             .unwrap_or(false)
     }
 
-    pub fn is_dragging(&self) -> bool {
-        self.dragging_window.is_some()
+    pub fn is_dragging(&self) -> bool { self.dragging_window.is_some() }
+
+    pub fn get_screen_dimensions(&self) -> (u64, u64) {
+        (self.screen_width, self.screen_height)
     }
+}
+
+// ── Standalone drawing helpers ────────────────────────────────────────────────
+
+/// Draw a small sun icon centred at (cx, cy).
+/// Uses a filled circle core with 8 short rays.
+fn draw_sun_icon(graphics: &Graphics, cx: u64, cy: u64, color: u32) {
+    // Centre disc (5×5)
+    graphics.fill_rounded_rect(cx.saturating_sub(3), cy.saturating_sub(3), 6, 6, 3, color);
+    // Cardinal rays (2×3 rectangles)
+    graphics.fill_rect(cx.saturating_sub(1), cy.saturating_sub(8), 2, 4, color); // top
+    graphics.fill_rect(cx.saturating_sub(1), cy + 4,               2, 4, color); // bottom
+    graphics.fill_rect(cx.saturating_sub(8), cy.saturating_sub(1), 4, 2, color); // left
+    graphics.fill_rect(cx + 4,               cy.saturating_sub(1), 4, 2, color); // right
+    // Diagonal rays (2×2 dots)
+    graphics.fill_rect(cx.saturating_sub(6), cy.saturating_sub(6), 2, 2, color); // top-left
+    graphics.fill_rect(cx + 4,               cy.saturating_sub(6), 2, 2, color); // top-right
+    graphics.fill_rect(cx.saturating_sub(6), cy + 4,               2, 2, color); // bot-left
+    graphics.fill_rect(cx + 4,               cy + 4,               2, 2, color); // bot-right
 }

@@ -1,4 +1,4 @@
-// src/gui/mod.rs - Basic GUI system for OxideOS
+// src/gui/mod.rs - GUI system for OxideOS
 
 pub mod mouse;
 pub mod graphics;
@@ -11,3 +11,6 @@ pub mod terminal;
 pub mod launcher;
 pub mod start_menu;
 pub mod notepad;
+pub mod overview;
+pub mod notifications;
+pub mod quick_settings;

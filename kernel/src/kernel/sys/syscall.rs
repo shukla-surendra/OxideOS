@@ -1288,8 +1288,111 @@ impl SyscallRuntime for KernelRuntime {
             (*task).ctx.rflags = frame.rflags;
             // Pop frame + return address (8 bytes) off the stack.
             (*task).ctx.rsp    = rsp + frame_size + 8;
+
+            // Restore signal mask if we were in sigsuspend.
+            if (*task).in_sigsuspend {
+                (*task).in_sigsuspend = false;
+                (*task).signal_mask   = (*task).saved_signal_mask;
+            }
         }
         0
+    }
+
+    fn sigprocmask_impl(&mut self, how: u32, set_ptr: u64, old_ptr: u64) -> i64 {
+        use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX, SIGKILL, SIGSTOP,
+                                       SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK};
+        unsafe {
+            let sched = &raw mut SCHED;
+            let idx   = CURRENT_TASK_IDX;
+            let task  = &raw mut (*sched).tasks[idx];
+
+            // Write old mask (8-byte sigset_t on x86-64) if caller wants it.
+            if old_ptr != 0 {
+                let old = (*task).signal_mask as u64;
+                core::ptr::write_unaligned(old_ptr as *mut u64, old);
+            }
+
+            if set_ptr != 0 {
+                // sigset_t is 8 bytes on x86-64 Linux; we use the low 32 bits.
+                let raw = core::ptr::read_unaligned(set_ptr as *const u64) as u32;
+                // SIGKILL and SIGSTOP can never be blocked.
+                let unkillable = (1u32 << (SIGKILL as u32 - 1)) | (1u32 << (SIGSTOP as u32 - 1));
+                let new_mask = raw & !unkillable;
+                match how {
+                    SIG_BLOCK   => (*task).signal_mask |= new_mask,
+                    SIG_UNBLOCK => (*task).signal_mask &= !new_mask,
+                    SIG_SETMASK => (*task).signal_mask  = new_mask,
+                    _ => return -22, // EINVAL
+                }
+            }
+        }
+        0
+    }
+
+    fn alarm_impl(&mut self, seconds: u32) -> i64 {
+        use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+        unsafe {
+            let sched = &raw mut SCHED;
+            let idx   = CURRENT_TASK_IDX;
+            let task  = &raw mut (*sched).tasks[idx];
+            let now   = crate::kernel::timer::get_ticks();
+
+            // Compute remaining seconds on any existing alarm.
+            let remaining = if (*task).alarm_deadline > now {
+                ((*task).alarm_deadline - now) / 100
+            } else {
+                0
+            };
+
+            if seconds == 0 {
+                (*task).alarm_deadline = 0; // cancel alarm
+            } else {
+                (*task).alarm_deadline = now + (seconds as u64 * 100); // 100 Hz timer
+            }
+
+            remaining as i64
+        }
+    }
+
+    fn sigpending_impl(&mut self, set_ptr: u64, _sigset_size: u64) -> i64 {
+        use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX};
+        if set_ptr == 0 { return -14; } // EFAULT
+        unsafe {
+            let sched = &raw mut SCHED;
+            let idx   = CURRENT_TASK_IDX;
+            let task  = &raw mut (*sched).tasks[idx];
+            // Only signals that are both pending AND blocked are "pending" per POSIX.
+            let pending = ((*task).pending_signals & (*task).signal_mask) as u64;
+            core::ptr::write_unaligned(set_ptr as *mut u64, pending);
+        }
+        0
+    }
+
+    fn sigsuspend_impl(&mut self, mask_ptr: u64, _sigset_size: u64) -> i64 {
+        use crate::kernel::scheduler::{SCHED, CURRENT_TASK_IDX, TaskState, SIGKILL, SIGSTOP};
+        unsafe {
+            let sched = &raw mut SCHED;
+            let idx   = CURRENT_TASK_IDX;
+            let task  = &raw mut (*sched).tasks[idx];
+
+            // Read the new temporary mask (8-byte sigset_t).
+            let raw_mask = if mask_ptr != 0 {
+                core::ptr::read_unaligned(mask_ptr as *const u64) as u32
+            } else {
+                0
+            };
+            let unkillable = (1u32 << (SIGKILL as u32 - 1)) | (1u32 << (SIGSTOP as u32 - 1));
+            let effective = raw_mask & !unkillable;
+
+            // Save current mask for restoration after signal handler returns.
+            (*task).saved_signal_mask = (*task).signal_mask;
+            (*task).in_sigsuspend     = true;
+            (*task).signal_mask       = effective;
+
+            // Put the task to sleep; send_signal will wake it when a signal arrives.
+            (*task).state = TaskState::Sleeping(u64::MAX / 2);
+        }
+        -4 // EINTR — returned after signal wakes us and handler runs
     }
 
     fn fs_open(&mut self, path: &[u8], flags: u32) -> i64 {

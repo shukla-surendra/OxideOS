@@ -6,179 +6,182 @@
 
 /// "Hello, World" — prints a greeting and exits.
 pub static HELLO: &[u8] =
-    include_bytes!("../../../userspace/bin/hello.bin");
+    include_bytes!("../../../../userspace/bin/hello.bin");
 
 /// Counter — prints the digits 1–9 one per line.
 pub static COUNTER: &[u8] =
-    include_bytes!("../../../userspace/bin/counter.bin");
+    include_bytes!("../../../../userspace/bin/counter.bin");
 
 /// Sysinfo — calls GetSystemInfo and prints uptime + memory.
 pub static SYSINFO: &[u8] =
-    include_bytes!("../../../userspace/bin/sysinfo.bin");
+    include_bytes!("../../../../userspace/bin/sysinfo.bin");
 
 /// Input — echoes stdin characters, exits on Ctrl+C.
 pub static INPUT: &[u8] =
-    include_bytes!("../../../userspace/bin/input.bin");
+    include_bytes!("../../../../userspace/bin/input.bin");
 
 /// Fib — prints the first 15 Fibonacci numbers.
 pub static FIB: &[u8] =
-    include_bytes!("../../../userspace/bin/fib.bin");
+    include_bytes!("../../../../userspace/bin/fib.bin");
 
 /// Primes — prints all primes up to 100.
 pub static PRIMES: &[u8] =
-    include_bytes!("../../../userspace/bin/primes.bin");
+    include_bytes!("../../../../userspace/bin/primes.bin");
 
 /// Countdown — counts down from 10 to 1 with 500 ms delays, then "Liftoff!".
 pub static COUNTDOWN: &[u8] =
-    include_bytes!("../../../userspace/bin/countdown.bin");
+    include_bytes!("../../../../userspace/bin/countdown.bin");
 
 /// Spinner — animates a spinning cursor for ~3 seconds.
 pub static SPINNER: &[u8] =
-    include_bytes!("../../../userspace/bin/spinner.bin");
+    include_bytes!("../../../../userspace/bin/spinner.bin");
 
 /// Filetest — creates a file, writes to it, reads it back.
 pub static FILETEST: &[u8] =
-    include_bytes!("../../../userspace/bin/filetest.bin");
+    include_bytes!("../../../../userspace/bin/filetest.bin");
 
 /// Hello Rust — "Hello from Rust on OxideOS!" (compiled from Rust/no_std).
 pub static HELLO_RUST: &[u8] =
-    include_bytes!("../../../userspace/bin/hello_rust.elf");
+    include_bytes!("../../../../userspace/bin/hello_rust.elf");
 
 /// sh — minimal userspace shell (fork/exec/waitpid, built-in ls/cat/echo).
 pub static SH: &[u8] =
-    include_bytes!("../../../userspace/bin/sh.elf");
+    include_bytes!("../../../../userspace/bin/sh.elf");
 
 /// terminal — userspace GUI terminal (compositor IPC, pipe support).
 pub static TERMINAL: &[u8] =
-    include_bytes!("../../../userspace/bin/terminal.elf");
+    include_bytes!("../../../../userspace/bin/terminal.elf");
 
 // ── Coreutils ────────────────────────────────────────────────────────────────
 
 /// ls — list directory contents.
 pub static LS: &[u8] =
-    include_bytes!("../../../userspace/bin/ls.elf");
+    include_bytes!("../../../../userspace/bin/ls.elf");
 
 /// cat — concatenate and print files.
 pub static CAT: &[u8] =
-    include_bytes!("../../../userspace/bin/cat.elf");
+    include_bytes!("../../../../userspace/bin/cat.elf");
 
 /// ps — show running processes.
 pub static PS: &[u8] =
-    include_bytes!("../../../userspace/bin/ps.elf");
+    include_bytes!("../../../../userspace/bin/ps.elf");
 
 /// cp — copy a file.
 pub static CP: &[u8] =
-    include_bytes!("../../../userspace/bin/cp.elf");
+    include_bytes!("../../../../userspace/bin/cp.elf");
 
 /// mkdir — create a directory.
 pub static MKDIR: &[u8] =
-    include_bytes!("../../../userspace/bin/mkdir.elf");
+    include_bytes!("../../../../userspace/bin/mkdir.elf");
 
 /// pwd — print working directory.
 pub static PWD: &[u8] =
-    include_bytes!("../../../userspace/bin/pwd.elf");
+    include_bytes!("../../../../userspace/bin/pwd.elf");
 
 /// wget — minimal HTTP/1.0 GET client (TCP socket, interactive).
 pub static WGET: &[u8] =
-    include_bytes!("../../../userspace/bin/wget.elf");
+    include_bytes!("../../../../userspace/bin/wget.elf");
 
 /// edit — nano-like full-screen text editor (compositor IPC, Ctrl+S/Q).
 pub static EDIT: &[u8] =
-    include_bytes!("../../../userspace/bin/edit.elf");
+    include_bytes!("../../../../userspace/bin/edit.elf");
 
 /// nc — minimal netcat: TCP/UDP listen and connect.
 pub static NC: &[u8] =
-    include_bytes!("../../../userspace/bin/nc.elf");
+    include_bytes!("../../../../userspace/bin/nc.elf");
 
 /// rm — remove a file.
 pub static RM: &[u8] =
-    include_bytes!("../../../userspace/bin/rm.elf");
+    include_bytes!("../../../../userspace/bin/rm.elf");
 
 /// mv — rename/move a file.
 pub static MV: &[u8] =
-    include_bytes!("../../../userspace/bin/mv.elf");
+    include_bytes!("../../../../userspace/bin/mv.elf");
 
 /// filemanager — GUI file manager with directory navigation.
 pub static FILEMANAGER: &[u8] =
-    include_bytes!("../../../userspace/bin/filemanager.elf");
+    include_bytes!("../../../../userspace/bin/filemanager.elf");
 
 // ── New coreutils (Phase 10.5) ───────────────────────────────────────────────
 
 /// echo — print arguments.
 pub static ECHO: &[u8] =
-    include_bytes!("../../../userspace/bin/echo.elf");
+    include_bytes!("../../../../userspace/bin/echo.elf");
 
 /// grep — filter lines matching a pattern.
 pub static GREP: &[u8] =
-    include_bytes!("../../../userspace/bin/grep.elf");
+    include_bytes!("../../../../userspace/bin/grep.elf");
 
 /// wc — word, line, and byte count.
 pub static WC: &[u8] =
-    include_bytes!("../../../userspace/bin/wc.elf");
+    include_bytes!("../../../../userspace/bin/wc.elf");
 
 /// head — output first N lines.
 pub static HEAD: &[u8] =
-    include_bytes!("../../../userspace/bin/head.elf");
+    include_bytes!("../../../../userspace/bin/head.elf");
 
 /// tail — output last N lines.
 pub static TAIL: &[u8] =
-    include_bytes!("../../../userspace/bin/tail.elf");
+    include_bytes!("../../../../userspace/bin/tail.elf");
 
 /// sort — sort lines.
 pub static SORT: &[u8] =
-    include_bytes!("../../../userspace/bin/sort.elf");
+    include_bytes!("../../../../userspace/bin/sort.elf");
 
 /// sleep — pause for N seconds.
 pub static SLEEP: &[u8] =
-    include_bytes!("../../../userspace/bin/sleep.elf");
+    include_bytes!("../../../../userspace/bin/sleep.elf");
 
 /// kill — send signal to process.
 pub static KILL: &[u8] =
-    include_bytes!("../../../userspace/bin/kill.elf");
+    include_bytes!("../../../../userspace/bin/kill.elf");
 
 /// touch — create file if not exists.
 pub static TOUCH: &[u8] =
-    include_bytes!("../../../userspace/bin/touch.elf");
+    include_bytes!("../../../../userspace/bin/touch.elf");
 
 /// true — exit 0.
 pub static TRUE: &[u8] =
-    include_bytes!("../../../userspace/bin/true.elf");
+    include_bytes!("../../../../userspace/bin/true.elf");
 
 /// false — exit 1.
 pub static FALSE: &[u8] =
-    include_bytes!("../../../userspace/bin/false.elf");
+    include_bytes!("../../../../userspace/bin/false.elf");
 
 /// hello_c — "Hello from C on OxideOS!" compiled from C with gcc (Linux syscall ABI).
 pub static HELLO_C: &[u8] =
-    include_bytes!("../../../userspace/bin/hello_c.elf");
+    include_bytes!("../../../../userspace/bin/hello_c.elf");
 
 /// install — interactive disk installer; writes OxideOS to the secondary ATA disk.
 pub static INSTALL: &[u8] =
-    include_bytes!("../../../userspace/bin/install.elf");
+    include_bytes!("../../../../userspace/bin/install.elf");
 
 /// hello_musl — "Hello from musl libc!" compiled with musl-gcc -static.
 pub static HELLO_MUSL: &[u8] =
-    include_bytes!("../../../userspace/bin/hello_musl.elf");
+    include_bytes!("../../../../userspace/bin/hello_musl.elf");
 
 /// musl_test — tests malloc/free, envp, clock_gettime, getcwd via musl libc.
 pub static MUSL_TEST: &[u8] =
-    include_bytes!("../../../userspace/bin/musl_test.elf");
+    include_bytes!("../../../../userspace/bin/musl_test.elf");
 
-/// lua — Lua 5.4.7 interpreter compiled with musl-gcc -static.
+/// lua — Lua 5.4.7 interpreter compiled with musl-gcc -static (optional).
+#[cfg(has_lua)]
 pub static LUA: &[u8] =
-    include_bytes!("../../../userspace/bin/lua.elf");
+    include_bytes!("../../../../userspace/bin/lua.elf");
 
-/// busybox — BusyBox 1.36.1 compiled with musl-gcc -static.
+/// busybox — BusyBox 1.36.1 compiled with musl-gcc -static (optional).
+#[cfg(has_busybox)]
 pub static BUSYBOX: &[u8] =
-    include_bytes!("../../../userspace/bin/busybox.elf");
+    include_bytes!("../../../../userspace/bin/busybox.elf");
 
-/// bash — GNU Bash 5.2 compiled with musl-gcc -static.
+/// bash — GNU Bash 5.2 compiled with musl-gcc -static (optional).
+#[cfg(has_bash)]
 pub static BASH: &[u8] =
-    include_bytes!("../../../userspace/bin/bash.elf");
+    include_bytes!("../../../../userspace/bin/bash.elf");
 
 /// sysmon — GUI system monitor showing memory, uptime, and process count.
 pub static SYSMON: &[u8] =
-    include_bytes!("../../../userspace/bin/sysmon.elf");
+    include_bytes!("../../../../userspace/bin/sysmon.elf");
 
 /// Look up a built-in program by name.
 pub fn find(name: &str) -> Option<&'static [u8]> {
@@ -222,8 +225,11 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
         "install"    => Some(INSTALL),
         "hello_musl" => Some(HELLO_MUSL),
         "musl_test"  => Some(MUSL_TEST),
+        #[cfg(has_lua)]
         "lua"        => Some(LUA),
+        #[cfg(has_busybox)]
         "busybox"    => Some(BUSYBOX),
+        #[cfg(has_bash)]
         "bash"       => Some(BASH),
         "sysmon"     => Some(SYSMON),
         _            => None,
