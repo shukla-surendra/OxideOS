@@ -26,12 +26,39 @@ pub enum QsAction {
 
 pub struct QuickSettings {
     pub visible: bool,
+    hovered_shutdown: bool,
+    hovered_reboot: bool,
 }
 
 impl QuickSettings {
-    pub const fn new() -> Self { Self { visible: false } }
+    pub const fn new() -> Self { Self { visible: false, hovered_shutdown: false, hovered_reboot: false } }
     pub fn toggle(&mut self) { self.visible = !self.visible; }
     pub fn close(&mut self) { self.visible = false; }
+
+    /// Track mouse movement for hover effects on buttons.
+    pub fn handle_mouse_move(&mut self, mx: u64, my: u64, screen_w: u64) {
+        if !self.visible {
+            self.hovered_shutdown = false;
+            self.hovered_reboot = false;
+            return;
+        }
+
+        let px = panel_x(screen_w);
+        let ph = panel_h();
+        let footer_y = PANEL_TOP + ph - FOOTER_H;
+        let btn_y = footer_y + 14;
+        let btn_h = 32u64; // slightly increased
+        let half_w = PANEL_W / 2 - 18;
+
+        // Shutdown button hover
+        self.hovered_shutdown = mx >= px + 12 && mx < px + 12 + half_w &&
+                                my >= btn_y && my < btn_y + btn_h;
+
+        // Reboot button hover
+        let rb_x = px + PANEL_W / 2 + 6;
+        self.hovered_reboot = mx >= rb_x && mx < rb_x + half_w &&
+                              my >= btn_y && my < btn_y + btn_h;
+    }
 
     /// Returns `true` if `(mx, my)` is inside the right-side "system tray" zone of
     /// the taskbar — used by the main loop to decide whether to open the panel.
@@ -108,24 +135,30 @@ impl QuickSettings {
         let footer_y = PANEL_TOP + ph - FOOTER_H;
         graphics.fill_rect(px + 1, footer_y, PANEL_W - 2, 1, 0xFF3A3A3A);
 
-        let btn_y = footer_y + 14;
-        let btn_h = 30u64;
+        let btn_y = footer_y + 12;
+        let btn_h = 36u64; // increased from 30 for better visibility
         let half_w = PANEL_W / 2 - 18;
 
-        // Shut Down
-        graphics.fill_rounded_rect(px + 12, btn_y, half_w, btn_h, 6, 0xFF3A1414);
-        graphics.draw_rounded_rect(px + 12, btn_y, half_w, btn_h, 6, 0xFF6A2020, 1);
+        // Shut Down — use brighter colors and hover effect
+        let sd_bg = if self.hovered_shutdown { 0xFF6A2020 } else { 0xFF4A1414 };
+        let sd_border = if self.hovered_shutdown { 0xFF8A3030 } else { 0xFF6A2020 };
+        graphics.fill_rounded_rect(px + 12, btn_y, half_w, btn_h, 6, sd_bg);
+        graphics.draw_rounded_rect(px + 12, btn_y, half_w, btn_h, 6, sd_border, 2);
         let sd_lbl = "Shut Down";
         let sd_px = sd_lbl.len() as u64 * 9;
-        fonts::draw_string(graphics, px + 12 + (half_w.saturating_sub(sd_px)) / 2, btn_y + 11, sd_lbl, 0xFFE05050);
+        let sd_text_col = if self.hovered_shutdown { 0xFFFF6666 } else { 0xFFDD5050 };
+        fonts::draw_string(graphics, px + 12 + (half_w.saturating_sub(sd_px)) / 2, btn_y + 11, sd_lbl, sd_text_col);
 
-        // Reboot
+        // Reboot — use brighter colors and hover effect
         let rb_x = px + PANEL_W / 2 + 6;
-        graphics.fill_rounded_rect(rb_x, btn_y, half_w, btn_h, 6, 0xFF101828);
-        graphics.draw_rounded_rect(rb_x, btn_y, half_w, btn_h, 6, 0xFF1E3A6A, 1);
+        let rb_bg = if self.hovered_reboot { 0xFF1E4A8A } else { 0xFF101838 };
+        let rb_border = if self.hovered_reboot { 0xFF2E5AAA } else { 0xFF1E3A6A };
+        graphics.fill_rounded_rect(rb_x, btn_y, half_w, btn_h, 6, rb_bg);
+        graphics.draw_rounded_rect(rb_x, btn_y, half_w, btn_h, 6, rb_border, 2);
         let rb_lbl = "Reboot";
         let rb_px = rb_lbl.len() as u64 * 9;
-        fonts::draw_string(graphics, rb_x + (half_w.saturating_sub(rb_px)) / 2, btn_y + 11, rb_lbl, 0xFF569CD6);
+        let rb_text_col = if self.hovered_reboot { 0xFF88CCFF } else { 0xFF6699DD };
+        fonts::draw_string(graphics, rb_x + (half_w.saturating_sub(rb_px)) / 2, btn_y + 11, rb_lbl, rb_text_col);
     }
 }
 

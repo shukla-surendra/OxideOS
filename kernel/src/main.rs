@@ -542,6 +542,11 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                 if launcher_app.handle_mouse_move(unsafe { &*wm }, mx as u64, my as u64) {
                     needs_redraw = true;
                 }
+                // Update quick settings button hover state.
+                quick_settings.handle_mouse_move(mx as u64, my as u64, screen_w);
+                if quick_settings.visible {
+                    needs_redraw = true;
+                }
                 last_cursor_pos = (mx, my);
 
                 // Forward mouse-move to focused GUI-proc window (content-relative).
