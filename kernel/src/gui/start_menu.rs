@@ -80,22 +80,42 @@ pub struct StartMenu {
     pub open:            bool,
     pub btn_hover:       bool,
     hovered_item:        Option<usize>,
+    hovered_shutdown:    bool,
+    hovered_reboot:      bool,
     activities_request:  bool,
 }
 
 impl StartMenu {
     pub const fn new() -> Self {
-        Self { open: false, btn_hover: false, hovered_item: None, activities_request: false }
+        Self {
+            open: false, btn_hover: false, hovered_item: None,
+            hovered_shutdown: false, hovered_reboot: false,
+            activities_request: false,
+        }
     }
 
     pub fn toggle(&mut self) { self.open = !self.open; }
-    pub fn close(&mut self)  { self.open = false; self.hovered_item = None; }
+    pub fn close(&mut self) {
+        self.open = false;
+        self.hovered_item = None;
+        self.hovered_shutdown = false;
+        self.hovered_reboot = false;
+    }
 
     /// Returns `true` once (then resets) when the Activities button was clicked.
     pub fn take_activities_request(&mut self) -> bool {
         let r = self.activities_request;
         self.activities_request = false;
         r
+    }
+
+    /// Returns (shutdown_x, reboot_x, btn_y, btn_w, btn_h) for the footer power buttons.
+    fn footer_rects() -> (u64, u64, u64, u64, u64) {
+        let mh = menu_height();
+        let footer_y = MENU_Y + mh - FOOTER_H;
+        let btn_y    = footer_y + (FOOTER_H - 26) / 2;
+        let half     = MENU_W / 2;
+        (MENU_X + 12, MENU_X + half + 8, btn_y, half - 20, 26)
     }
 
     pub fn handle_mouse_move(&mut self, mx: u64, my: u64) -> bool {
@@ -106,15 +126,31 @@ impl StartMenu {
             let prev = self.hovered_item;
             self.hovered_item = self.item_at(mx, my);
             if self.hovered_item != prev { dirty = true; }
+
+            let (sd_x, rb_x, btn_y, btn_w, btn_h) = Self::footer_rects();
+            let prev_sd = self.hovered_shutdown;
+            let prev_rb = self.hovered_reboot;
+            self.hovered_shutdown = mx >= sd_x && mx < sd_x + btn_w
+                                 && my >= btn_y && my < btn_y + btn_h;
+            self.hovered_reboot   = mx >= rb_x && mx < rb_x + btn_w
+                                 && my >= btn_y && my < btn_y + btn_h;
+            if self.hovered_shutdown != prev_sd || self.hovered_reboot != prev_rb {
+                dirty = true;
+            }
         }
         dirty
     }
 
     pub fn handle_click(&mut self, mx: u64, my: u64) -> (Option<&'static str>, u8, bool) {
-        // Activities button → signal to open the Activities Overview
+        // Activities button: first click opens the start menu; clicking again
+        // closes it and opens the Activities Overview instead.
         if my < BTN_H && mx < BTN_W {
-            self.close();
-            self.activities_request = true;
+            if self.open {
+                self.close();
+                self.activities_request = true;
+            } else {
+                self.open = true;
+            }
             return (None, 0, true);
         }
 
@@ -256,14 +292,20 @@ impl StartMenu {
         let btn_y = footer_y + (FOOTER_H - 26) / 2;
 
         // Shut Down button
-        graphics.fill_rounded_rect(MENU_X + 12, btn_y, half - 20, 26, 5, 0xFF2A1214);
-        graphics.draw_rounded_rect(MENU_X + 12, btn_y, half - 20, 26, 5, 0xFF6A2020, 1);
-        fonts::draw_string(graphics, MENU_X + 22, btn_y + 9, "Shut Down", 0xFFE05050);
+        let sd_bg  = if self.hovered_shutdown { 0xFF7A2020 } else { 0xFF3A1414 };
+        let sd_bdr = if self.hovered_shutdown { 0xFFAA3030 } else { 0xFF6A2020 };
+        let sd_txt = if self.hovered_shutdown { 0xFFFF9090 } else { 0xFFE05050 };
+        graphics.fill_rounded_rect(MENU_X + 12, btn_y, half - 20, 26, 5, sd_bg);
+        graphics.draw_rounded_rect(MENU_X + 12, btn_y, half - 20, 26, 5, sd_bdr, 1);
+        fonts::draw_string(graphics, MENU_X + 22, btn_y + 9, "Shut Down", sd_txt);
 
         // Reboot button
-        graphics.fill_rounded_rect(MENU_X + half + 8, btn_y, half - 20, 26, 5, 0xFF101828);
-        graphics.draw_rounded_rect(MENU_X + half + 8, btn_y, half - 20, 26, 5, 0xFF1E3A6A, 1);
-        fonts::draw_string(graphics, MENU_X + half + 22, btn_y + 9, "Reboot", 0xFF569CD6);
+        let rb_bg  = if self.hovered_reboot { 0xFF1E4A8A } else { 0xFF101828 };
+        let rb_bdr = if self.hovered_reboot { 0xFF2E6AAA } else { 0xFF1E3A6A };
+        let rb_txt = if self.hovered_reboot { 0xFF99DDFF } else { 0xFF569CD6 };
+        graphics.fill_rounded_rect(MENU_X + half + 8, btn_y, half - 20, 26, 5, rb_bg);
+        graphics.draw_rounded_rect(MENU_X + half + 8, btn_y, half - 20, 26, 5, rb_bdr, 1);
+        fonts::draw_string(graphics, MENU_X + half + 22, btn_y + 9, "Reboot", rb_txt);
 
         // Outer border
         graphics.draw_rounded_rect(MENU_X, MENU_Y, MENU_W, mh, 10, COL_MENU_BDR, 1);

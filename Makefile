@@ -10,8 +10,9 @@ $(call USER_VARIABLE,KARCH,x86_64)
 
 # Default user QEMU flags. These are appended to the QEMU command calls.
 # -cpu max: expose all available CPU features so LLVM-vectorised code (fill_rect, etc.) can use SSE/AVX.
+# -device qemu-xhci,id=xhci: USB 3.0 host controller
 # -device usb-tablet: absolute mouse positioning (better than PS/2 relative movements)
-$(call USER_VARIABLE,QEMUFLAGS,-m 2G -cpu max -device usb-tablet)
+$(call USER_VARIABLE,QEMUFLAGS,-m 2G -cpu max -device qemu-xhci,id=xhci -device usb-tablet)
 
 # Network flags: expose an RTL8139 NIC via QEMU user-mode NAT.
 # The guest gets IP 10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3.

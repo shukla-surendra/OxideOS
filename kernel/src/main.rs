@@ -525,6 +525,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             }
         }
 
+        let prev_cursor_pos = last_cursor_pos;
         if last_cursor_pos.0 >= 0 {
             graphics.restore_cursor_area(last_cursor_pos.0, last_cursor_pos.1, &saved_pixels);
         }
@@ -573,8 +574,11 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                 let mx64 = mx as u64;
                 let my64 = my as u64;
 
+                // ── 0. Notification dismiss (click on a toast card) ───────────
+                if notifications.handle_click(mx64, my64, screen_w) {
+                    needs_redraw = true;
                 // ── 1. Overview consumes all clicks when visible ──────────────
-                if overview.is_visible() {
+                } else if overview.is_visible() {
                     let (_, focused_wid) = overview.handle_click(
                         mx64, my64, unsafe { &mut *wm }, screen_w, screen_h,
                     );
@@ -599,6 +603,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                 // ── 3. System-tray area → open Quick Settings ─────────────────
                 } else if QuickSettings::is_toggle_area(mx64, my64, screen_w) {
                     quick_settings.toggle();
+                    start_menu.close();
                     needs_redraw = true;
 
                 // ── 4. Normal click dispatch ───────────────────────────────────
@@ -608,6 +613,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                     if start_menu.take_activities_request() {
                         overview.toggle();
                         quick_settings.close();
+                        start_menu.close();
                         needs_redraw = true;
                     } else if let Some(name) = prog_name {
                         spawn_program(name, &mut terminals, &mut notepads, graphics, unsafe { &mut *wm });
@@ -682,12 +688,11 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             needs_redraw = true;
         }
 
-        // Tick notification timers; redraw when one expires.
+        // Tick notification timers; redraw only when a slot actually expires.
+        // Animation updates come from the clock_dirty path (once per second) —
+        // this avoids forcing a full 3 MB blit on every interrupt while a
+        // notification is visible, which was the primary source of mouse lag.
         if notifications.tick() {
-            needs_redraw = true;
-        }
-        // Keep redrawing while notifications are visible (progress bar animation).
-        if notifications.any_active() {
             needs_redraw = true;
         }
 
@@ -699,6 +704,8 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
         if matches!(net_probe.phase, NetProbePhase::Connecting { .. }) {
             needs_redraw = true;
         }
+
+        let mut did_draw = false;
 
         if needs_redraw {
             unsafe { refresh_compositor_geometry(graphics, &*wm, terminal_window_id); }
@@ -739,6 +746,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             needs_redraw   = false;
             terminal_dirty = false;
             clock_dirty    = false;
+            did_draw       = true;
         } else if terminal_dirty {
             // Redraw kernel-terminal and notepad windows that changed.
             for term in terminals.iter() {
@@ -758,21 +766,21 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             notifications.draw(graphics, screen_w);
             terminal_dirty = false;
             clock_dirty    = false;
+            did_draw       = true;
         } else if clock_dirty {
             // Only the taskbar clock changed — redraw just the taskbar.
             unsafe { (*wm).draw_taskbar(graphics); }
             start_menu.draw_button(graphics);
             notifications.draw(graphics, screen_w);
             clock_dirty = false;
+            did_draw    = true;
         }
 
         // Process compositor IPC messages AFTER the draw section so that
         // userspace-terminal output overlays the freshly-drawn window frames
         // rather than being overwritten by them.
         if unsafe { kernel::compositor::process_messages() } {
-            // Don't set terminal_dirty here — compositor content is already
-            // applied to the backbuffer and will be presented this frame.
-            // Kernel-terminal dirty redraws happen separately above.
+            did_draw = true;
         }
 
         // Run the scheduler BEFORE the blit so GUI-proc tasks (filemanager,
@@ -798,19 +806,37 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             }
         }
 
-        // Check the GUI-proc present flag after the tick so we see flags set
-        // by this frame's task run.  No separate needs_redraw: the kernel will
-        // already redraw next frame if the window chrome changed; the proc
-        // content is already in the back-buffer and will be blit below.
-        let _ = unsafe { kernel::gui_proc::take_present_flag() };
+        // GUI-proc content painted into the back-buffer this tick needs a blit.
+        if unsafe { kernel::gui_proc::take_present_flag() } {
+            did_draw = true;
+        }
+
+        let cursor_moved = cursor_pos
+            .map(|(mx, my)| (mx, my) != prev_cursor_pos)
+            .unwrap_or(false);
 
         if let Some((mx, my)) = cursor_pos {
             saved_pixels = graphics.save_cursor_area(mx, my);
             graphics.draw_cursor(mx, my, 0xFFFFFFFF);
         }
 
-        // Blit the completed back buffer to the real framebuffer in one pass.
-        graphics.present();
+        // Present only what actually changed:
+        //   • Full redraw happened → full blit (covers cursor too).
+        //   • Only cursor moved   → blit the two 11×19 cursor regions (~1.6 KB
+        //                           vs ~3 MB for full blit — eliminates QEMU lag).
+        //   • Nothing changed     → skip the blit entirely.
+        if did_draw {
+            graphics.present();
+        } else if cursor_moved {
+            const CW: usize = 11;
+            const CH: usize = 19;
+            if prev_cursor_pos.0 >= 0 {
+                graphics.present_region(prev_cursor_pos.0, prev_cursor_pos.1, CW, CH);
+            }
+            if let Some((mx, my)) = cursor_pos {
+                graphics.present_region(mx, my, CW, CH);
+            }
+        }
 
         // Drive the network stack (RX poll + TCP timers).
         unsafe { crate::kernel::net::poll(); }

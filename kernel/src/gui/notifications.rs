@@ -10,7 +10,7 @@ const NOTIF_H:         u64   = 72;
 const NOTIF_GAP:       u64   = 8;
 const NOTIF_MARGIN:    u64   = 16;
 const NOTIF_TOP:       u64   = 56; // just below the 48px taskbar
-const NOTIF_DURATION:  u32   = 500; // ~5 s at 100 Hz
+const NOTIF_DURATION:  u32   = 800; // ~8 s at 100 Hz
 
 #[derive(Copy, Clone)]
 struct Notification {
@@ -93,6 +93,22 @@ impl NotificationManager {
 
     pub fn any_active(&self) -> bool {
         self.slots.iter().any(|s| s.is_some())
+    }
+
+    /// Dismiss a notification if `(mx, my)` falls on its card. Returns `true` if one was dismissed.
+    pub fn handle_click(&mut self, mx: u64, my: u64, screen_w: u64) -> bool {
+        let x = screen_w.saturating_sub(NOTIF_W + NOTIF_MARGIN);
+        let mut y = NOTIF_TOP;
+        for slot in self.slots.iter_mut() {
+            if slot.is_some() {
+                if mx >= x && mx < x + NOTIF_W && my >= y && my < y + NOTIF_H {
+                    *slot = None;
+                    return true;
+                }
+                y += NOTIF_H + NOTIF_GAP;
+            }
+        }
+        false
     }
 
     pub fn draw(&self, graphics: &Graphics, screen_w: u64) {

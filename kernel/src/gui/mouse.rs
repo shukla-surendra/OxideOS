@@ -194,6 +194,8 @@ impl PS2Mouse {
 
         // Now send other commands
         self.send_mouse_command(0xF6); // Set defaults
+        self.send_mouse_command(0xF3); // Set sample rate
+        self.send_mouse_command(200);  // 200 samples/second (doubles default 100 Hz)
         self.send_mouse_command(0xF4); // Enable reporting
 
         SERIAL_PORT.write_str("PS/2 mouse initialized\n");
