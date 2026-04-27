@@ -414,7 +414,7 @@ impl RamFs {
 
         // Pre-populated files
         let _ = fs.write_file("/etc/hostname", b"oxideos\n");
-        let _ = fs.write_file("/etc/version",  b"OxideOS 0.1.0 - Hobby Kernel\n");
+        let _ = fs.write_file("/etc/version",  crate::version::ETC_VERSION.as_bytes());
         let _ = fs.write_file(
             "/etc/motd",
             b"Welcome to OxideOS!\nType 'help' in the terminal for commands.\n",

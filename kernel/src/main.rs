@@ -14,6 +14,7 @@ mod panic;
 mod kernel;
 mod gui;
 mod wallpaper;
+mod version;
 
 // ============================================================================
 // IMPORTS
@@ -296,8 +297,8 @@ unsafe extern "C" fn kmain() -> ! {
                 interrupts::init_mouse_system(width, height);
                 SERIAL_PORT.write_str("=== MOUSE INIT COMPLETED ===\n");
 
-                let (terminal_window_id, sysinfo_window_id, launcher_window_id) = create_boot_screen(&graphics);
-                run_gui_with_mouse(&graphics, terminal_window_id, sysinfo_window_id, launcher_window_id);
+                let (terminal_window_id, sysinfo_window_id) = create_boot_screen(&graphics);
+                run_gui_with_mouse(&graphics, terminal_window_id, sysinfo_window_id);
             }
         } else {
             unsafe {
@@ -404,7 +405,7 @@ unsafe fn test_paging_allocation() {
 // GUI
 // ============================================================================
 
-unsafe fn create_boot_screen(graphics: &Graphics) -> (usize, usize, usize) {
+unsafe fn create_boot_screen(graphics: &Graphics) -> (usize, usize) {
     let (width, height) = graphics.get_dimensions();
     SERIAL_PORT.write_str("Creating boot screen...\n");
 
@@ -414,11 +415,11 @@ unsafe fn create_boot_screen(graphics: &Graphics) -> (usize, usize, usize) {
     unsafe { (*wm).set_screen_dimensions(width, height); }
     unsafe { (*wm).draw_taskbar(graphics); }
 
-    let ids = init_demo_windows(width, height);
+    let (terminal_id, sysinfo_id) = init_demo_windows(width, height);
 
     // Initialise the compositor so userspace programs can draw into the terminal window.
     const TITLE_BAR_H: u64 = 34; // matches TITLEBAR_H in window_manager
-    if let Some(win) = unsafe { (*wm).get_window(ids.0) } {
+    if let Some(win) = unsafe { (*wm).get_window(terminal_id) } {
         unsafe {
             kernel::compositor::init(
                 graphics,
@@ -430,10 +431,10 @@ unsafe fn create_boot_screen(graphics: &Graphics) -> (usize, usize, usize) {
     }
 
     SERIAL_PORT.write_str("Boot screen created\n");
-    ids
+    (terminal_id, sysinfo_id)
 }
 
-unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sysinfo_window_id: usize, launcher_window_id: usize) {
+unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sysinfo_window_id: usize) {
     SERIAL_PORT.write_str("Starting GUI with enhanced window manager...\n");
 
     let mut last_cursor_pos = (-1i64, -1i64);
@@ -448,7 +449,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
     let mut terminals: Vec<terminal::TerminalApp> = Vec::new();
     terminals.push(terminal::TerminalApp::new(terminal_window_id));
     let mut notepads: Vec<notepad::NotepadApp> = Vec::new();
-    let mut launcher_app = LauncherApp::new(launcher_window_id);
+    let mut launcher_app = LauncherApp::new();
     let mut start_menu       = StartMenu::new();
     let mut overview         = Overview::new();
     let mut quick_settings   = QuickSettings::new();
@@ -461,7 +462,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
     let (screen_w, screen_h) = unsafe { &*wm }.get_screen_dimensions();
 
     // Welcome notification
-    notifications.push("OxideOS", "System ready. Click Activities to see open windows.", 0xFF5294E2);
+    notifications.push(crate::version::NAME, "System ready. Click Activities to open apps.", 0xFF5294E2);
 
     // Initialize the per-process GUI subsystem.
     unsafe { kernel::gui_proc::init(wm, graphics); }
@@ -558,11 +559,11 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                 if start_menu.handle_mouse_move(mx as u64, my as u64) {
                     needs_redraw = true;
                 }
-                if launcher_app.handle_mouse_move(unsafe { &*wm }, mx as u64, my as u64) {
+                if launcher_app.handle_mouse_move(mx as u64, my as u64, screen_h) {
                     needs_redraw = true;
                 }
                 // Update quick settings button hover state.
-                quick_settings.handle_mouse_move(mx as u64, my as u64, screen_w);
+                quick_settings.handle_mouse_move(mx as u64, my as u64, screen_w, left_button);
                 if quick_settings.visible {
                     needs_redraw = true;
                 }
@@ -629,6 +630,8 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                     // Activities button click is signalled by start_menu.
                     let (prog_name, sm_action, sm_consumed) = start_menu.handle_click(mx64, my64);
                     if start_menu.take_activities_request() {
+                        // Activities click: toggle the launcher panel (program drawer)
+                        launcher_app.toggle();
                         overview.toggle();
                         quick_settings.close();
                         start_menu.close();
@@ -644,11 +647,13 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                     } else if sm_consumed {
                         needs_redraw = true;
                     } else {
-                        // Check launcher tiles.
-                        let launched = launcher_app.handle_click(unsafe { &*wm }, mx64, my64);
-                        if let Some(prog_name) = launched {
-                            spawn_program(prog_name, &mut terminals, &mut notepads, graphics, unsafe { &mut *wm });
-                            notifications.push(prog_name, "Application started", 0xFF26A269);
+                        // Launcher panel click (when visible it consumes clicks)
+                        if launcher_app.visible {
+                            let launched = launcher_app.handle_click(mx64, my64, screen_h);
+                            if let Some(prog_name) = launched {
+                                spawn_program(prog_name, &mut terminals, &mut notepads, graphics, unsafe { &mut *wm });
+                                notifications.push(prog_name, "Application started", 0xFF26A269);
+                            }
                             needs_redraw = true;
                         } else if net_probe.is_button_hit(unsafe { &*wm }, sysinfo_window_id, mx64, my64) {
                             if crate::kernel::net::is_present() {
@@ -752,7 +757,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                     draw_sysinfo_panel(graphics, unsafe { &*wm }, sysinfo_window_id, &net_probe);
                 }
             }
-            launcher_app.draw(graphics, unsafe { &*wm });
+            launcher_app.draw(graphics, screen_h);
             unsafe { (*wm).draw_context_menu(graphics); }
             start_menu.draw_menu(graphics);
             // Composite GUI-proc window content on top of all kernel draws.
@@ -939,29 +944,20 @@ fn spawn_program(
     }
 }
 
-unsafe fn init_demo_windows(screen_width: u64, screen_height: u64) -> (usize, usize, usize) {
+unsafe fn init_demo_windows(screen_width: u64, screen_height: u64) -> (usize, usize) {
     let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
 
-    // Terminal — left side, comfortable reading area
+    // Terminal — left side
     let term_h = (screen_height.saturating_sub(80 + 50)).min(420).max(260);
     let win1 = widgets::Window::new(10, 50, 540, term_h, "Terminal");
     let terminal_id = unsafe { (*wm).add_window(win1).unwrap_or(0) };
 
-    // System Info — top-right corner (taller to include network section)
+    // System Info — top-right corner
     let win2 = widgets::Window::new(screen_width - 310, 50, 290, 340, "System Info");
     let sysinfo_id = unsafe { (*wm).add_window(win2).unwrap_or(1) };
 
-    // Launcher — below sysinfo on the right side, shows all programs as clickable tiles
-    // Width: 3 columns × (160 + 10) - 10 + 24 pad = 510 + 4 = 514, round to 520
-    // Height: 2 section headers × 18 + 4 rows × (72 + 10) - 10 + 20 status + 20 pad ≈ 400
-    let launcher_x = screen_width - 530;
-    let launcher_y = 50u64 + 340 + 12; // below sysinfo (sysinfo now 340px tall)
-    let launcher_h = screen_height.saturating_sub(launcher_y + 50).min(440).max(300);
-    let win3 = widgets::Window::new(launcher_x, launcher_y, 520, launcher_h, "Programs");
-    let launcher_id = unsafe { (*wm).add_window(win3).unwrap_or(2) };
-
     SERIAL_PORT.write_str("Demo windows initialized\n");
-    (terminal_id, sysinfo_id, launcher_id)
+    (terminal_id, sysinfo_id)
 }
 
 /// Re-compute the terminal window's content area and refresh the compositor.
@@ -1002,9 +998,9 @@ unsafe fn draw_sysinfo_panel(
     let bar_w = win.width.saturating_sub(24);
 
     // ── OS name & version ──────────────────────────────────────────────────
-    fonts::draw_string(graphics, cx, cy, "OxideOS  v0.1.0-dev", 0xFF7FC8FF);
+    fonts::draw_string(graphics, cx, cy, crate::version::DISPLAY_NAME_VER, 0xFF7FC8FF);
     cy += row - 2;
-    fonts::draw_string(graphics, cx, cy, "x86_64  Limine bootloader", 0xFF4A6080);
+    fonts::draw_string(graphics, cx, cy, crate::version::DISPLAY_ARCH_LINE, 0xFF4A6080);
     cy += row + 2;
 
     graphics.fill_rect(cx, cy, bar_w, 1, 0xFF1E2840);

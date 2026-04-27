@@ -8,6 +8,7 @@ use crate::kernel::serial::SERIAL_PORT;
 const MAX_WINDOWS: usize = 16;
 const TASKBAR_HEIGHT: u64 = 48;
 const TITLEBAR_H:    u64 = 34;
+const C_CLOSE_ICON:  u32 = 0xFF7A1015; // X icon color on close button
 
 /// Format timer ticks as "HH:MM:SS" into `buf` (exactly 8 bytes).
 /// The timer runs at 100 Hz, so ticks / 100 = seconds since boot.
@@ -549,38 +550,42 @@ impl WindowManager {
     fn draw_close_button(&self, graphics: &Graphics, window: &Window) {
         let bx = window.x + Self::BTN_CLOSE_OX;
         let by = Self::btn_by(window);
-        // GNOME-style red close button
+        // Filled red circle
         graphics.fill_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFFED333B);
         graphics.draw_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFFA8222A, 1);
-        let cx = bx as i64 + 7; let cy = by as i64 + 7;
-        for d in [-2i64, -1, 1, 2] {
-            graphics.put_pixel_safe(cx + d, cy + d, 0xFF7A1015);
-            graphics.put_pixel_safe(cx + d, cy - d, 0xFF7A1015);
-        }
-        graphics.put_pixel_safe(cx, cy, 0xFF7A1015);
+        // Crisp 2-pixel-wide × using two diagonal lines (Bresenham), each drawn
+        // twice offset by 1 px so it's readable on a 14×14 disc.
+        let x0 = bx as i64 + 3; let y0 = by as i64 + 3;
+        let x1 = bx as i64 + 10; let y1 = by as i64 + 10;
+        let xc = C_CLOSE_ICON;
+        graphics.draw_line(x0,   y0,   x1,   y1,   xc);
+        graphics.draw_line(x0+1, y0,   x1+1, y1,   xc);
+        graphics.draw_line(x1,   y0,   x0,   y1,   xc);
+        graphics.draw_line(x1+1, y0,   x0+1, y1,   xc);
     }
 
     fn draw_minimize_button(&self, graphics: &Graphics, window: &Window) {
         let bx = window.x + Self::BTN_MIN_OX;
         let by = Self::btn_by(window);
-        // GNOME-style amber minimize button
         graphics.fill_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFFE5A50A);
         graphics.draw_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFFA07008, 1);
-        graphics.fill_rect(bx + 4, by + 6, 6, 2, 0xFF6A4A04);
+        // Clean 2-pixel-high minus bar, centered
+        graphics.fill_rect(bx + 3, by + 6, 8, 2, 0xFF5A3800);
     }
 
     fn draw_maximize_button(&self, graphics: &Graphics, window: &Window, is_maximized: bool) {
         let bx = window.x + Self::BTN_MAX_OX;
         let by = Self::btn_by(window);
-        // GNOME-style green maximize button
         graphics.fill_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFF26A269);
         graphics.draw_rounded_rect(bx, by, Self::BTN_SIZE, Self::BTN_SIZE, Self::BTN_RADIUS, 0xFF186A44, 1);
-        let icon_col = 0xFF0A4A28u32;
+        let ic = 0xFF0A4A20u32;
         if is_maximized {
-            graphics.draw_rect(bx + 3, by + 6, 4, 4, icon_col, 1);
-            graphics.draw_rect(bx + 6, by + 4, 4, 4, icon_col, 1);
+            // Two overlapping squares
+            graphics.draw_rect(bx + 4, by + 6, 5, 5, ic, 1);
+            graphics.draw_rect(bx + 6, by + 4, 5, 5, ic, 1);
         } else {
-            graphics.draw_rect(bx + 4, by + 4, 6, 6, icon_col, 1);
+            // Single square
+            graphics.draw_rect(bx + 3, by + 3, 8, 8, ic, 2);
         }
     }
 

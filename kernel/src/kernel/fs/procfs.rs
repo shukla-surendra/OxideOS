@@ -28,10 +28,10 @@ pub fn populate() {
 
     let _ = fs.create_dir("/proc");
 
-    // /proc/version — static
+    // /proc/version — sourced from the central version module
     let _ = fs.write_file(
         "/proc/version",
-        b"OxideOS version 0.1.0 (rust-kernel-2024) #1\n",
+        crate::version::PROC_VERSION.as_bytes(),
     );
 
     // /proc/cpuinfo — static (single CPU)
