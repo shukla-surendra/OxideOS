@@ -179,7 +179,7 @@ run-gui-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NA
 		-cdrom $(IMAGE_NAME).iso \
 		$(DISK_FLAG) \
 		$(EXT2_FLAG) \
-		-display sdl,grab-on-hover=on \
+		-display sdl \
 		$(NETFLAGS) \
 		$(QEMUFLAGS)
 

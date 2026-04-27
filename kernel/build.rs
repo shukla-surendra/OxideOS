@@ -1,11 +1,20 @@
 fn main() {
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
-    // Tell cargo to pass the linker script to the linker..
     println!("cargo:rustc-link-arg=-Tlinker-{arch}.ld");
-    // ..and to re-run if it changes.
     println!("cargo:rerun-if-changed=linker-{arch}.ld");
 
     encode_wallpaper();
+    probe_optional_binaries();
+}
+
+fn probe_optional_binaries() {
+    for name in &["lua", "busybox", "bash"] {
+        let path = format!("../userspace/bin/{}.elf", name);
+        println!("cargo:rerun-if-changed={path}");
+        if std::path::Path::new(&path).exists() {
+            println!("cargo:rustc-cfg=has_{name}");
+        }
+    }
 }
 
 /// Decode `assets/wallpaper.png` (if present) into a raw RGBA blob + a small

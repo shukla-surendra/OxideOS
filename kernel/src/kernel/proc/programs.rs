@@ -164,15 +164,18 @@ pub static HELLO_MUSL: &[u8] =
 pub static MUSL_TEST: &[u8] =
     include_bytes!("../../../../userspace/bin/musl_test.elf");
 
-/// lua — Lua 5.4.7 interpreter compiled with musl-gcc -static.
+/// lua — Lua 5.4.7 interpreter compiled with musl-gcc -static (optional).
+#[cfg(has_lua)]
 pub static LUA: &[u8] =
     include_bytes!("../../../../userspace/bin/lua.elf");
 
-/// busybox — BusyBox 1.36.1 compiled with musl-gcc -static.
+/// busybox — BusyBox 1.36.1 compiled with musl-gcc -static (optional).
+#[cfg(has_busybox)]
 pub static BUSYBOX: &[u8] =
     include_bytes!("../../../../userspace/bin/busybox.elf");
 
-/// bash — GNU Bash 5.2 compiled with musl-gcc -static.
+/// bash — GNU Bash 5.2 compiled with musl-gcc -static (optional).
+#[cfg(has_bash)]
 pub static BASH: &[u8] =
     include_bytes!("../../../../userspace/bin/bash.elf");
 
@@ -222,8 +225,11 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
         "install"    => Some(INSTALL),
         "hello_musl" => Some(HELLO_MUSL),
         "musl_test"  => Some(MUSL_TEST),
+        #[cfg(has_lua)]
         "lua"        => Some(LUA),
+        #[cfg(has_busybox)]
         "busybox"    => Some(BUSYBOX),
+        #[cfg(has_bash)]
         "bash"       => Some(BASH),
         "sysmon"     => Some(SYSMON),
         _            => None,

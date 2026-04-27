@@ -1,15 +1,15 @@
-//! Start Menu for OxideOS.
+//! Activities button and application menu for OxideOS.
 //!
-//! Draws a "Start" button in the taskbar (x=0..100, y=0..40).
-//! Clicking it toggles a popup panel that lists every registered program.
+//! The Activities button (x=0..140) opens the Activities Overview when clicked.
+//! A secondary popup lists every registered program (power options included).
 
 use crate::gui::fonts;
 use crate::gui::graphics::Graphics;
 
 // ── Button geometry ────────────────────────────────────────────────────────
 const BTN_X: u64 = 0;
-const BTN_W: u64 = 100;
-const BTN_H: u64 = 48; // matches TASKBAR_HEIGHT
+const BTN_W: u64 = 140; // wide enough for "Activities"
+const BTN_H: u64 = 48;  // matches TASKBAR_HEIGHT
 
 // ── Menu geometry ──────────────────────────────────────────────────────────
 const MENU_X:    u64 = 6;
@@ -77,18 +77,26 @@ fn menu_height() -> u64 {
 }
 
 pub struct StartMenu {
-    pub open:       bool,
-    pub btn_hover:  bool,
-    hovered_item:   Option<usize>,
+    pub open:            bool,
+    pub btn_hover:       bool,
+    hovered_item:        Option<usize>,
+    activities_request:  bool,
 }
 
 impl StartMenu {
     pub const fn new() -> Self {
-        Self { open: false, btn_hover: false, hovered_item: None }
+        Self { open: false, btn_hover: false, hovered_item: None, activities_request: false }
     }
 
     pub fn toggle(&mut self) { self.open = !self.open; }
     pub fn close(&mut self)  { self.open = false; self.hovered_item = None; }
+
+    /// Returns `true` once (then resets) when the Activities button was clicked.
+    pub fn take_activities_request(&mut self) -> bool {
+        let r = self.activities_request;
+        self.activities_request = false;
+        r
+    }
 
     pub fn handle_mouse_move(&mut self, mx: u64, my: u64) -> bool {
         let mut dirty = false;
@@ -103,8 +111,10 @@ impl StartMenu {
     }
 
     pub fn handle_click(&mut self, mx: u64, my: u64) -> (Option<&'static str>, u8, bool) {
+        // Activities button → signal to open the Activities Overview
         if my < BTN_H && mx < BTN_W {
-            self.toggle();
+            self.close();
+            self.activities_request = true;
             return (None, 0, true);
         }
 
@@ -158,30 +168,27 @@ impl StartMenu {
     }
 
     pub fn draw_button(&self, graphics: &Graphics) {
-        let bg = if self.open         { COL_BTN_ACTIVE }
-                 else if self.btn_hover { COL_BTN_HOVER  }
-                 else                   { COL_BTN_IDLE   };
-
+        let bg = if self.btn_hover { COL_BTN_HOVER } else { COL_BTN_IDLE };
         if bg != 0 {
-            graphics.fill_rect(BTN_X, 0, BTN_W, BTN_H, bg);
+            graphics.fill_rounded_rect(BTN_X + 6, 6, BTN_W - 12, BTN_H - 12, 8, bg);
         }
 
+        // GNOME Activities icon: outer ring + inner dot
+        let ix = BTN_X + 16;
+        let iy = (BTN_H - 18) / 2;
+        graphics.fill_rounded_rect(ix, iy, 18, 18, 9, 0x40FFFFFF); // outer ring bg
+        graphics.draw_rounded_rect(ix, iy, 18, 18, 9, COL_ACCENT, 1); // ring border
+        graphics.fill_rounded_rect(ix + 5, iy + 5, 8, 8, 4, COL_ACCENT); // inner dot
+
+        // "Activities" label
+        fonts::draw_string(graphics, BTN_X + 42, (BTN_H - 8) / 2, "Activities", COL_BTN_TEXT);
+
+        // Active indicator — blue underline bar
         if self.open {
-            // Blue bottom indicator line (Windows 11-style)
-            graphics.fill_rect(BTN_X + 20, BTN_H - 3, 60, 3, COL_ACCENT);
+            let ind_w = 60u64;
+            let ind_x = BTN_X + (BTN_W - ind_w) / 2;
+            graphics.fill_rounded_rect(ind_x, BTN_H - 4, ind_w, 3, 1, COL_ACCENT);
         }
-
-        // 2×2 grid icon (Windows-style), vertically centered
-        let ix = BTN_X + 15;
-        let iy = (BTN_H - 15) / 2;
-        let r  = 5u64;
-        let gap = 3u64;
-        graphics.fill_rounded_rect(ix,           iy,           r, r, 2, COL_ACCENT);
-        graphics.fill_rounded_rect(ix + r + gap, iy,           r, r, 2, COL_ACCENT);
-        graphics.fill_rounded_rect(ix,           iy + r + gap, r, r, 2, COL_ACCENT);
-        graphics.fill_rounded_rect(ix + r + gap, iy + r + gap, r, r, 2, COL_ACCENT);
-
-        fonts::draw_string(graphics, BTN_X + 42, (BTN_H - 8) / 2, "Start", COL_BTN_TEXT);
     }
 
     pub fn draw_menu(&self, graphics: &Graphics) {

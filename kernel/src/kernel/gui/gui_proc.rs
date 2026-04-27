@@ -584,6 +584,10 @@ pub unsafe fn composite_all(graphics: &Graphics) {
     for i in 0..MAX_ENTRIES {
         let e = unsafe { &entries()[i] };
         if !e.active { continue; }
+        // Don't blit if the WM window has been removed (e.g. user clicked ×).
+        if !WM_PTR.is_null() && !unsafe { (*WM_PTR).is_window_visible(e.window_id as usize) } {
+            continue;
+        }
         let w = e.back_w as u64;
         let h = e.back_h as u64;
         if w == 0 || h == 0 { continue; }

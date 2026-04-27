@@ -423,7 +423,7 @@ pub fn is_present_at(idx: usize) -> bool {
 
 /// Returns how many disks were detected across all four positions.
 pub fn disk_count() -> usize {
-    unsafe { DISKS.iter().filter(|d| d.is_some()).count() }
+    unsafe { (*core::ptr::addr_of!(DISKS)).iter().filter(|d| d.is_some()).count() }
 }
 
 /// Returns a human-readable description of disk `idx`.

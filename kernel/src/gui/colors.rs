@@ -147,27 +147,27 @@ pub mod retro_theme {
 // SEMANTIC COLORS FOR UI COMPONENTS
 // ============================================================================
 pub mod ui {
-    // Window components
-    pub const TITLEBAR: u32          = 0xFF2D2D2D;  // Window title bar
-    pub const TITLEBAR_ACTIVE: u32   = 0xFF007ACC;  // Active window title bar
-    pub const TITLEBAR_TEXT: u32     = 0xFFE1E1E1;  // Title bar text
+    // Window components — GNOME Adwaita dark
+    pub const TITLEBAR: u32          = 0xFF303030;  // Window title bar (unfocused)
+    pub const TITLEBAR_ACTIVE: u32   = 0xFF383838;  // Active window title bar
+    pub const TITLEBAR_TEXT: u32     = 0xFFEEEEEE;  // Title bar text
 
-    // Improved UI gradients and effects
-    pub const TITLEBAR_FOCUSED_LEFT: u32  = 0xFF0D5FA0; // Vivid blue
-    pub const TITLEBAR_FOCUSED_RIGHT: u32 = 0xFF072C50; // Deep blue
-    pub const TITLEBAR_UNFOCUSED_LEFT: u32  = 0xFF2A2D38; // Dark slate
-    pub const TITLEBAR_UNFOCUSED_RIGHT: u32 = 0xFF1C1F28; // Darker slate
-    pub const TITLEBAR_ACCENT_FOCUSED: u32  = 0xFF00AAFF;
-    pub const TITLEBAR_ACCENT_UNFOCUSED: u32 = 0xFF3A3F50;
+    // Titlebar gradient pairs and accent lines
+    pub const TITLEBAR_FOCUSED_LEFT: u32   = 0xFF3A3A3A; // GNOME focused dark gray
+    pub const TITLEBAR_FOCUSED_RIGHT: u32  = 0xFF424242;
+    pub const TITLEBAR_UNFOCUSED_LEFT: u32  = 0xFF282828; // GNOME unfocused
+    pub const TITLEBAR_UNFOCUSED_RIGHT: u32 = 0xFF2E2E2E;
+    pub const TITLEBAR_ACCENT_FOCUSED: u32  = 0xFF5294E2; // GNOME blue
+    pub const TITLEBAR_ACCENT_UNFOCUSED: u32 = 0xFF3A3A3A;
 
-    pub const WINDOW_SHADOW: u32     = 0x50000000;
-    pub const WINDOW_BORDER_FOCUSED: u32   = 0xFF1A5F9A;
-    pub const WINDOW_BORDER_UNFOCUSED: u32 = 0xFF2A2F3E;
+    pub const WINDOW_SHADOW: u32     = 0x60000000;
+    pub const WINDOW_BORDER_FOCUSED: u32   = 0xFF5294E2; // GNOME blue border
+    pub const WINDOW_BORDER_UNFOCUSED: u32 = 0xFF464646;
 
-    // Taskbar
-    pub const TASKBAR_BG: u32        = 0xCC1A1E2A; // Translucent dark
-    pub const TASKBAR_ACCENT: u32    = 0xFF007ACC;
-    pub const TASKBAR_TEXT: u32      = 0xFFE8F0FE;
+    // Taskbar — GNOME-style dark panel
+    pub const TASKBAR_BG: u32        = 0xFF2E2E2E;
+    pub const TASKBAR_ACCENT: u32    = 0xFF5294E2; // GNOME blue
+    pub const TASKBAR_TEXT: u32      = 0xFFEEEEEE;
 
     // Menu and toolbar
     pub const MENU_BACKGROUND: u32   = 0xFF2D2D2D;  // Menu background

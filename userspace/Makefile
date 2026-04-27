@@ -1,7 +1,7 @@
 NASM      := nasm
 BINDIR    := bin
 CARGO     := cargo
-MUSL_GCC  := /home/surendra/musl-oxide/bin/musl-gcc
+MUSL_GCC  := /usr/bin/musl-gcc
 
 SRCS := hello.asm counter.asm sysinfo.asm input.asm \
         fib.asm primes.asm countdown.asm spinner.asm filetest.asm

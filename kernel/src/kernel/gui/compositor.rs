@@ -79,6 +79,13 @@ pub unsafe fn update_geometry(
     CONTENT_H = content_h;
 }
 
+/// Disable the compositor — zero the content area so no further IPC draw
+/// commands are rendered.  Call when the associated window is closed.
+pub unsafe fn disable() {
+    CONTENT_W = 0;
+    CONTENT_H = 0;
+}
+
 // ── Message processing ────────────────────────────────────────────────────────
 
 /// Drain all pending compositor messages from queue 1 and render them.

@@ -28,6 +28,9 @@ use kernel::{gdt, idt, interrupts, timer, pic};
 use gui::window_manager::WindowManager;
 use gui::launcher::LauncherApp;
 use gui::start_menu::StartMenu;
+use gui::overview::Overview;
+use gui::quick_settings::{QuickSettings, QsAction};
+use gui::notifications::NotificationManager;
 use core::ptr;
 
 use limine::BaseRevision;
@@ -428,16 +431,25 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
     terminals.push(terminal::TerminalApp::new(terminal_window_id));
     let mut notepads: Vec<notepad::NotepadApp> = Vec::new();
     let mut launcher_app = LauncherApp::new(launcher_window_id);
-    let mut start_menu   = StartMenu::new();
+    let mut start_menu       = StartMenu::new();
+    let mut overview         = Overview::new();
+    let mut quick_settings   = QuickSettings::new();
+    let mut notifications    = NotificationManager::new();
     let mut last_clock_sec: u64 = u64::MAX; // force draw on first frame
 
     let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
     terminal::install_input_hooks();
 
+    let (screen_w, screen_h) = unsafe { &*wm }.get_screen_dimensions();
+
+    // Welcome notification
+    notifications.push("OxideOS", "System ready. Click Activities to see open windows.", 0xFF5294E2);
+
     // Initialize the per-process GUI subsystem.
     unsafe { kernel::gui_proc::init(wm, graphics); }
 
-    // DEBUG: auto-spawn bash at startup for crash diagnosis
+    // DEBUG: auto-spawn bash at startup for crash diagnosis (only if bash is embedded)
+    #[cfg(has_bash)]
     {
         use crate::kernel::programs;
         let _ = unsafe { crate::kernel::scheduler::spawn(programs::BASH, "bash") };
@@ -553,42 +565,78 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                 }
             }
             if left_button && !last_left_button {
-                // Start menu gets first pick — it handles its own button + popup.
-                let (prog_name, sm_action, sm_consumed) = start_menu.handle_click(mx as u64, my as u64);
-                if let Some(name) = prog_name {
-                    spawn_program(name, &mut terminals, graphics, unsafe { &mut *wm });
+                let mx64 = mx as u64;
+                let my64 = my as u64;
+
+                // ── 1. Overview consumes all clicks when visible ──────────────
+                if overview.is_visible() {
+                    let (_, focused_wid) = overview.handle_click(
+                        mx64, my64, unsafe { &mut *wm }, screen_w, screen_h,
+                    );
+                    // Clean up any window the user closed from within the overview.
+                    if let Some(closed_id) = overview.take_last_closed() {
+                        handle_window_close(closed_id, &mut terminals, &mut notepads,
+                                            terminal_window_id);
+                    }
+                    let _ = focused_wid;
                     needs_redraw = true;
-                } else if sm_action == 1 {
-                    crate::kernel::shutdown::poweroff();
-                } else if sm_action == 2 {
-                    crate::kernel::shutdown::reboot();
-                } else if sm_consumed {
+
+                // ── 2. Quick-settings panel consumes clicks when visible ───────
+                } else if quick_settings.visible {
+                    let action = quick_settings.handle_click(mx64, my64, screen_w);
+                    match action {
+                        QsAction::Shutdown => crate::kernel::shutdown::poweroff(),
+                        QsAction::Reboot   => crate::kernel::shutdown::reboot(),
+                        _                  => {}
+                    }
                     needs_redraw = true;
+
+                // ── 3. System-tray area → open Quick Settings ─────────────────
+                } else if QuickSettings::is_toggle_area(mx64, my64, screen_w) {
+                    quick_settings.toggle();
+                    needs_redraw = true;
+
+                // ── 4. Normal click dispatch ───────────────────────────────────
                 } else {
-                    // Check launcher tiles.
-                    let launched = launcher_app.handle_click(unsafe { &*wm }, mx as u64, my as u64);
-                    if let Some(prog_name) = launched {
-                        spawn_program(prog_name, &mut terminals, graphics, unsafe { &mut *wm });
+                    // Activities button click is signalled by start_menu.
+                    let (prog_name, sm_action, sm_consumed) = start_menu.handle_click(mx64, my64);
+                    if start_menu.take_activities_request() {
+                        overview.toggle();
+                        quick_settings.close();
                         needs_redraw = true;
-                    } else if net_probe.is_button_hit(unsafe { &*wm }, sysinfo_window_id, mx as u64, my as u64) {
-                        // "Test Internet Connection" button inside the sysinfo panel.
-                        if crate::kernel::net::is_present() {
-                            net_probe.start();
-                            needs_redraw = true;
-                        }
+                    } else if let Some(name) = prog_name {
+                        spawn_program(name, &mut terminals, &mut notepads, graphics, unsafe { &mut *wm });
+                        notifications.push(name, "Application started", 0xFF26A269);
+                        needs_redraw = true;
+                    } else if sm_action == 1 {
+                        crate::kernel::shutdown::poweroff();
+                    } else if sm_action == 2 {
+                        crate::kernel::shutdown::reboot();
+                    } else if sm_consumed {
+                        needs_redraw = true;
                     } else {
-                        let consumed = unsafe { (*wm).handle_context_menu_click(mx as u64, my as u64) };
-                        if !consumed {
-                            unsafe { (*wm).handle_click(mx as u64, my as u64); }
-                            // If the × button closed a gui-proc window, push the
-                            // close event so the userspace process can exit cleanly.
-                            if let Some(closed_id) = unsafe { (*wm).take_closed_window() } {
-                                if kernel::gui_proc::is_proc_window(closed_id as u32) {
-                                    unsafe { kernel::gui_proc::on_window_closed(closed_id as u32); }
+                        // Check launcher tiles.
+                        let launched = launcher_app.handle_click(unsafe { &*wm }, mx64, my64);
+                        if let Some(prog_name) = launched {
+                            spawn_program(prog_name, &mut terminals, &mut notepads, graphics, unsafe { &mut *wm });
+                            notifications.push(prog_name, "Application started", 0xFF26A269);
+                            needs_redraw = true;
+                        } else if net_probe.is_button_hit(unsafe { &*wm }, sysinfo_window_id, mx64, my64) {
+                            if crate::kernel::net::is_present() {
+                                net_probe.start();
+                                needs_redraw = true;
+                            }
+                        } else {
+                            let consumed = unsafe { (*wm).handle_context_menu_click(mx64, my64) };
+                            if !consumed {
+                                unsafe { (*wm).handle_click(mx64, my64); }
+                                if let Some(closed_id) = unsafe { (*wm).take_closed_window() } {
+                                    handle_window_close(closed_id, &mut terminals, &mut notepads,
+                                                        terminal_window_id);
                                 }
                             }
+                            needs_redraw = true;
                         }
-                        needs_redraw = true;
                     }
                 }
             }
@@ -626,6 +674,15 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
 
         // Tick the launcher highlight animation; force redraw if it changed.
         if launcher_app.tick() {
+            needs_redraw = true;
+        }
+
+        // Tick notification timers; redraw when one expires.
+        if notifications.tick() {
+            needs_redraw = true;
+        }
+        // Keep redrawing while notifications are visible (progress bar animation).
+        if notifications.any_active() {
             needs_redraw = true;
         }
 
@@ -669,9 +726,11 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             unsafe { (*wm).draw_context_menu(graphics); }
             start_menu.draw_menu(graphics);
             // Composite GUI-proc window content on top of all kernel draws.
-            // This keeps filemanager/etc. content visible during full redraws
-            // and ensures GUI-proc windows respect z-order over terminal/sysinfo.
             unsafe { kernel::gui_proc::composite_all(graphics); }
+            // GNOME overlay layers — drawn last so they sit on top of everything.
+            overview.draw(graphics, unsafe { &*wm }, screen_w, screen_h);
+            quick_settings.draw(graphics, screen_w);
+            notifications.draw(graphics, screen_w);
             needs_redraw   = false;
             terminal_dirty = false;
             clock_dirty    = false;
@@ -687,15 +746,18 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                 unsafe { (*wm).draw_window(graphics, np.window_id()); }
                 np.draw(graphics, unsafe { &*wm });
             }
-            // Re-composite GUI-proc content so terminal redraws don't paint
-            // over overlapping GUI-proc windows.
             unsafe { kernel::gui_proc::composite_all(graphics); }
+            // Keep overlay layers visible during terminal partial redraws.
+            overview.draw(graphics, unsafe { &*wm }, screen_w, screen_h);
+            quick_settings.draw(graphics, screen_w);
+            notifications.draw(graphics, screen_w);
             terminal_dirty = false;
             clock_dirty    = false;
         } else if clock_dirty {
             // Only the taskbar clock changed — redraw just the taskbar.
             unsafe { (*wm).draw_taskbar(graphics); }
             start_menu.draw_button(graphics);
+            notifications.draw(graphics, screen_w);
             clock_dirty = false;
         }
 
@@ -749,6 +811,23 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
         unsafe { crate::kernel::net::poll(); }
 
         unsafe { core::arch::asm!("hlt"); }
+    }
+}
+
+/// Clean up all kernel-side state for a window that was just closed.
+fn handle_window_close(
+    closed_id: usize,
+    terminals: &mut Vec<terminal::TerminalApp>,
+    notepads: &mut Vec<notepad::NotepadApp>,
+    terminal_window_id: usize,
+) {
+    if unsafe { kernel::gui_proc::is_proc_window(closed_id as u32) } {
+        unsafe { kernel::gui_proc::on_window_closed(closed_id as u32); }
+    }
+    terminals.retain(|t| t.window_id() != closed_id);
+    notepads.retain(|n| n.window_id() != closed_id);
+    if closed_id == terminal_window_id {
+        unsafe { kernel::compositor::disable(); }
     }
 }
 
