@@ -243,6 +243,12 @@ pub fn is_proc_window(window_id: u32) -> bool {
     slot_by_win(window_id).is_some()
 }
 
+/// Return the PID that owns `window_id`, or `None` if not a GUI-proc window.
+pub fn pid_by_window(window_id: u32) -> Option<u32> {
+    let slot = slot_by_win(window_id)?;
+    unsafe { Some(entries()[slot].pid) }
+}
+
 // ── Static title helper ───────────────────────────────────────────────────────
 
 /// Return a `&'static str` backed by the entry's static title buffer.

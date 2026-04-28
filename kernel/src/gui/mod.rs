@@ -10,6 +10,7 @@ pub mod text_editor;
 pub mod terminal;
 pub mod launcher;
 pub mod start_menu;
+pub mod menu;
 pub mod notepad;
 pub mod overview;
 pub mod notifications;

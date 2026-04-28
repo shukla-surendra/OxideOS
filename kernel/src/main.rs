@@ -562,6 +562,12 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                 if launcher_app.handle_mouse_move(mx as u64, my as u64, screen_h) {
                     needs_redraw = true;
                 }
+                // Update notepad menu bar hover state.
+                for np in notepads.iter_mut() {
+                    if np.handle_mouse_move(mx as u64, my as u64, unsafe { &*wm }) {
+                        needs_redraw = true;
+                    }
+                }
                 // Update quick settings button hover state.
                 quick_settings.handle_mouse_move(mx as u64, my as u64, screen_w, left_button);
                 if quick_settings.visible {
@@ -661,15 +667,39 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                                 needs_redraw = true;
                             }
                         } else {
-                            let consumed = unsafe { (*wm).handle_context_menu_click(mx64, my64) };
-                            if !consumed {
-                                unsafe { (*wm).handle_click(mx64, my64); }
-                                if let Some(closed_id) = unsafe { (*wm).take_closed_window() } {
-                                    handle_window_close(closed_id, &mut terminals, &mut notepads,
-                                                        terminal_window_id);
+                            // Check notepad menu bar clicks first.
+                            let mut notepad_menu_consumed = false;
+                            let mut notepad_exit_id: Option<usize> = None;
+                            {
+                                use gui::menu::MenuAction;
+                                for np in notepads.iter_mut() {
+                                    let action = np.handle_click(mx64, my64, unsafe { &*wm });
+                                    if action != MenuAction::None {
+                                        notepad_menu_consumed = true;
+                                        needs_redraw = true;
+                                        if action == MenuAction::FileExit {
+                                            notepad_exit_id = Some(np.window_id());
+                                        }
+                                        break;
+                                    }
                                 }
                             }
-                            needs_redraw = true;
+                            if let Some(exit_wid) = notepad_exit_id {
+                                unsafe { (*wm).remove_window(exit_wid); }
+                                handle_window_close(exit_wid, &mut terminals, &mut notepads,
+                                                    terminal_window_id);
+                            }
+                            if !notepad_menu_consumed {
+                                let consumed = unsafe { (*wm).handle_context_menu_click(mx64, my64) };
+                                if !consumed {
+                                    unsafe { (*wm).handle_click(mx64, my64); }
+                                    if let Some(closed_id) = unsafe { (*wm).take_closed_window() } {
+                                        handle_window_close(closed_id, &mut terminals, &mut notepads,
+                                                            terminal_window_id);
+                                    }
+                                }
+                                needs_redraw = true;
+                            }
                         }
                     }
                 }
@@ -747,7 +777,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                         break;
                     }
                 }
-                for np in notepads.iter() {
+                for np in notepads.iter_mut() {
                     if np.window_id() == wid {
                         np.draw(graphics, unsafe { &*wm });
                         break;
@@ -778,7 +808,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                     term.draw(graphics, unsafe { &*wm });
                 }
             }
-            for np in notepads.iter() {
+            for np in notepads.iter_mut() {
                 unsafe { (*wm).draw_window(graphics, np.window_id()); }
                 np.draw(graphics, unsafe { &*wm });
             }
@@ -876,7 +906,13 @@ fn handle_window_close(
     terminal_window_id: usize,
 ) {
     if unsafe { kernel::gui_proc::is_proc_window(closed_id as u32) } {
+        // Push close event, then immediately SIGKILL the owning process so it
+        // stops drawing into the (now-removed) window area. Without the kill the
+        // process continues compositing its backing buffer, leaving visual marks.
         unsafe { kernel::gui_proc::on_window_closed(closed_id as u32); }
+        if let Some(pid) = kernel::gui_proc::pid_by_window(closed_id as u32) {
+            unsafe { kernel::scheduler::kill(pid as u8); }
+        }
     }
     terminals.retain(|t| t.window_id() != closed_id);
     notepads.retain(|n| n.window_id() != closed_id);

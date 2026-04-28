@@ -94,13 +94,16 @@ impl PhysicalFrameAllocator {
         unsafe { SERIAL_PORT.write_str("=== INITIALIZING PHYSICAL FRAME ALLOCATOR ===\n") };
 
         if let Some(map) = memory_map.get_response() {
-            for word in &mut self.bitmap { *word = u64::MAX; } // all used
+            for word in &mut self.bitmap { *word = u64::MAX; } // all used initially
 
             for entry in map.entries() {
                 if entry.entry_type == EntryType::USABLE {
                     let start = (entry.base   as usize) / 4096;
                     let count = (entry.length as usize) / 4096;
-                    let safe  = core::cmp::max(start, 4096); // skip first 16 MB
+                    // Skip the first 32 MB to protect the kernel binary,
+                    // Limine's page-table frames, and other boot structures
+                    // that Limine may have placed below that boundary.
+                    let safe  = core::cmp::max(start, 8192); // 8192 * 4096 = 32 MB
 
                     if safe < 65536 {
                         let end = core::cmp::min(start + count, 65536);
@@ -119,6 +122,12 @@ impl PhysicalFrameAllocator {
                 }
             }
 
+            // Walk the existing Limine page-table hierarchy from CR3 and
+            // mark every intermediate table frame as used.  This prevents
+            // the allocator from handing out a frame that Limine already
+            // uses for an L4/L3/L2/L1 entry and corrupting kernel mappings.
+            unsafe { self.protect_page_table_frames(); }
+
             unsafe {
                 SERIAL_PORT.write_str("Total trackable frames: ");
                 SERIAL_PORT.write_decimal(self.total_frames as u32);
@@ -126,6 +135,52 @@ impl PhysicalFrameAllocator {
                 SERIAL_PORT.write_decimal((self.total_frames * 4) as u32);
                 SERIAL_PORT.write_str(" KB)\n");
             }
+        }
+    }
+
+    /// Walk the four-level page table rooted at CR3 (HHDM-mapped) and mark
+    /// every frame that holds an intermediate table as used in the bitmap.
+    unsafe fn protect_page_table_frames(&mut self) {
+        const HHDM: u64 = 0xFFFF_8000_0000_0000;
+        const PRESENT: u64 = 1;
+        const HUGE: u64 = 1 << 7;
+        const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
+
+        let cr3: u64;
+        unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3); }
+        let l4_phys = cr3 & ADDR_MASK;
+        self.mark_frame_used(l4_phys);
+
+        let l4 = unsafe { &*((l4_phys + HHDM) as *const [u64; 512]) };
+        for &l4e in l4.iter() {
+            if l4e & PRESENT == 0 || l4e & HUGE != 0 { continue; }
+            let l3_phys = l4e & ADDR_MASK;
+            self.mark_frame_used(l3_phys);
+
+            let l3 = unsafe { &*((l3_phys + HHDM) as *const [u64; 512]) };
+            for &l3e in l3.iter() {
+                if l3e & PRESENT == 0 || l3e & HUGE != 0 { continue; }
+                let l2_phys = l3e & ADDR_MASK;
+                self.mark_frame_used(l2_phys);
+
+                let l2 = unsafe { &*((l2_phys + HHDM) as *const [u64; 512]) };
+                for &l2e in l2.iter() {
+                    if l2e & PRESENT == 0 || l2e & HUGE != 0 { continue; }
+                    let l1_phys = l2e & ADDR_MASK;
+                    self.mark_frame_used(l1_phys);
+                }
+            }
+        }
+    }
+
+    fn mark_frame_used(&mut self, phys: u64) {
+        let frame = (phys / 4096) as usize;
+        if frame < 65536 {
+            // If this frame was previously marked free, remove it from the count.
+            if self.is_free(frame) {
+                self.total_frames = self.total_frames.saturating_sub(1);
+            }
+            self.mark_used(frame);
         }
     }
 
