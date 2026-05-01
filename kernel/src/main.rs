@@ -32,6 +32,7 @@ use gui::start_menu::StartMenu;
 use gui::overview::Overview;
 use gui::quick_settings::{QuickSettings, QsAction};
 use gui::notifications::NotificationManager;
+use gui::calendar::CalendarPanel;
 use core::ptr;
 
 use limine::BaseRevision;
@@ -454,6 +455,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
     let mut overview         = Overview::new();
     let mut quick_settings   = QuickSettings::new();
     let mut notifications    = NotificationManager::new();
+    let mut calendar         = CalendarPanel::new();
     let mut last_clock_sec: u64 = u64::MAX; // force draw on first frame
 
     let wm = ptr::addr_of_mut!(WINDOW_MANAGER);
@@ -602,6 +604,10 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                 // ── 0. Notification dismiss (click on a toast card) ───────────
                 if notifications.handle_click(mx64, my64, screen_w) {
                     needs_redraw = true;
+                // ── 0b. Calendar panel — click inside navigates, outside closes
+                } else if calendar.visible {
+                    calendar.handle_click(mx64, my64, screen_w);
+                    needs_redraw = true;
                 // ── 1. Overview consumes all clicks when visible ──────────────
                 } else if overview.is_visible() {
                     let (_, focused_wid) = overview.handle_click(
@@ -629,6 +635,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                 } else if QuickSettings::is_toggle_area(mx64, my64, screen_w) {
                     quick_settings.toggle();
                     start_menu.close();
+                    calendar.close();
                     needs_redraw = true;
 
                 // ── 4. Normal click dispatch ───────────────────────────────────
@@ -693,6 +700,12 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                                 let consumed = unsafe { (*wm).handle_context_menu_click(mx64, my64) };
                                 if !consumed {
                                     unsafe { (*wm).handle_click(mx64, my64); }
+                                    // Clock pill click → toggle calendar dropdown
+                                    if unsafe { (*wm).take_clock_click() } {
+                                        calendar.toggle();
+                                        quick_settings.close();
+                                        start_menu.close();
+                                    }
                                     if let Some(closed_id) = unsafe { (*wm).take_closed_window() } {
                                         handle_window_close(closed_id, &mut terminals, &mut notepads,
                                                             terminal_window_id);
@@ -795,6 +808,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             // GNOME overlay layers — drawn last so they sit on top of everything.
             overview.draw(graphics, unsafe { &*wm }, screen_w, screen_h);
             quick_settings.draw(graphics, screen_w);
+            calendar.draw(graphics, screen_w);
             notifications.draw(graphics, screen_w);
             needs_redraw   = false;
             terminal_dirty = false;
@@ -816,6 +830,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             // Keep overlay layers visible during terminal partial redraws.
             overview.draw(graphics, unsafe { &*wm }, screen_w, screen_h);
             quick_settings.draw(graphics, screen_w);
+            calendar.draw(graphics, screen_w);
             notifications.draw(graphics, screen_w);
             terminal_dirty = false;
             clock_dirty    = false;
@@ -824,6 +839,7 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             // Only the taskbar clock changed — redraw just the taskbar.
             unsafe { (*wm).draw_taskbar(graphics); }
             start_menu.draw_button(graphics);
+            calendar.draw(graphics, screen_w);
             notifications.draw(graphics, screen_w);
             clock_dirty = false;
             did_draw    = true;

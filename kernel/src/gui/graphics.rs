@@ -20,17 +20,26 @@ unsafe impl Sync for PanicFb {}
 
 pub static mut PANIC_FB: Option<PanicFb> = None;
 
-/// Selects which procedural wallpaper to render on the desktop.
+/// Selects which wallpaper to render on the desktop.
 #[derive(Clone, Copy, PartialEq)]
 pub enum BackgroundStyle {
+    // ── Procedural ──────────────────────────────────────────────
     Default,
     Sunset,
     Space,
     Aurora,
     Geometric,
-    /// Uses the PNG embedded from `assets/wallpaper.png` at build time.
-    /// Falls back to Default if the file was absent when building.
+    // ── PNG images embedded from assets/ at build time ──────────
+    /// assets/wallpaper.png
     Image,
+    /// assets/oxide_os_dark.png
+    ImageDark,
+    /// assets/oxide_os_dark_blue_pandas.png
+    ImageBluePandas,
+    /// assets/oxide_os_dark_rabbit.png
+    ImageDarkRabbit,
+    /// assets/oxide_os_pandas_light.png
+    ImagePandasLight,
 }
 
 pub struct Graphics {
@@ -582,12 +591,16 @@ impl Graphics {
     /// Dispatch to the selected background style.
     pub fn draw_background(&self, style: BackgroundStyle) {
         match style {
-            BackgroundStyle::Default   => self.draw_desktop_background(),
-            BackgroundStyle::Sunset    => self.draw_background_sunset(),
-            BackgroundStyle::Space     => self.draw_background_space(),
-            BackgroundStyle::Aurora    => self.draw_background_aurora(),
-            BackgroundStyle::Geometric => self.draw_background_geometric(),
-            BackgroundStyle::Image     => self.draw_background_image(),
+            BackgroundStyle::Default        => self.draw_desktop_background(),
+            BackgroundStyle::Sunset         => self.draw_background_sunset(),
+            BackgroundStyle::Space          => self.draw_background_space(),
+            BackgroundStyle::Aurora         => self.draw_background_aurora(),
+            BackgroundStyle::Geometric      => self.draw_background_geometric(),
+            BackgroundStyle::Image          => self.draw_background_image(0),
+            BackgroundStyle::ImageDark      => self.draw_background_image(1),
+            BackgroundStyle::ImageBluePandas=> self.draw_background_image(2),
+            BackgroundStyle::ImageDarkRabbit=> self.draw_background_image(3),
+            BackgroundStyle::ImagePandasLight=>self.draw_background_image(4),
         }
     }
 
@@ -713,32 +726,42 @@ impl Graphics {
         }
     }
 
-    /// Blit the PNG embedded from `assets/wallpaper.png` (decoded to RGBA at
-    /// build time) onto the whole screen using nearest-neighbour scaling.
-    /// Falls back to the Default gradient when no image was embedded.
-    fn draw_background_image(&self) {
-        let w_img = crate::wallpaper::WALLPAPER_W as u64;
-        let h_img = crate::wallpaper::WALLPAPER_H as u64;
+    /// Blit PNG wallpaper `index` (decoded to RGBA at build time) onto the
+    /// whole screen using nearest-neighbour scaling.
+    /// Falls back to the Default gradient when the image was absent at build.
+    fn draw_background_image(&self, index: usize) {
+        let (w_img_u32, h_img_u32) = crate::wallpaper::WALLPAPER_DIMS
+            .get(index)
+            .copied()
+            .unwrap_or((0, 0));
+        let w_img = w_img_u32 as u64;
+        let h_img = h_img_u32 as u64;
+
         if w_img == 0 || h_img == 0 {
             self.draw_desktop_background();
             return;
         }
 
-        let pixels  = crate::wallpaper::PIXELS;
+        let pixels = crate::wallpaper::ALL_PIXELS
+            .get(index)
+            .copied()
+            .unwrap_or(&[]);
+
+        if pixels.is_empty() {
+            self.draw_desktop_background();
+            return;
+        }
+
         let sw      = self.width;
         let sh      = self.height;
         let w_total = self.width as usize;
 
         unsafe {
             for sy in 0..sh {
-                // Map screen row → source row
                 let py = (sy * h_img / sh) as usize;
                 for sx in 0..sw {
-                    // Map screen col → source col
                     let px  = (sx * w_img / sw) as usize;
                     let idx = (py * w_img as usize + px) * 4;
-                    // Bounds check — pixels.len() is known at compile time so
-                    // this branch is almost always eliminated by the optimizer.
                     if idx + 2 < pixels.len() {
                         let r = pixels[idx    ] as u32;
                         let g = pixels[idx + 1] as u32;

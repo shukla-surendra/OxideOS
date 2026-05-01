@@ -87,36 +87,52 @@ fn probe_optional_binaries() {
     }
 }
 
-/// Decode `assets/wallpaper.png` (if present) into a raw RGBA blob + a small
-/// Rust source file with the image dimensions.  Both land in `$OUT_DIR` so the
-/// kernel can `include_bytes!` / `include!` them without any runtime PNG library.
-///
-/// If the file is absent or unsupported, zero-sized stubs are written instead
-/// so the kernel still compiles and gracefully falls back to a gradient.
+/// Decode all PNG wallpapers from `assets/` into raw RGBA blobs at build time.
+/// Each image lands in `$OUT_DIR` as `wallpaper_<slug>.rgba`.
+/// A generated `wallpaper_dims.rs` holds a `WALLPAPER_DIMS` array with (w, h)
+/// per image so the kernel can index them without a runtime PNG library.
 fn encode_wallpaper() {
-    let out_dir  = std::env::var("OUT_DIR").unwrap();
-    let src_path = "assets/wallpaper.png";
-    println!("cargo:rerun-if-changed={src_path}");
+    let out_dir = std::env::var("OUT_DIR").unwrap();
 
-    let (width, height, pixels) = load_png(src_path).unwrap_or((0, 0, vec![]));
+    // (source path, slug used for the .rgba file and wallpaper index)
+    let wallpapers: &[(&str, &str)] = &[
+        ("assets/wallpaper.png",                "default"),
+        ("assets/oxide_os_dark.png",            "dark"),
+        ("assets/oxide_os_dark_blue_pandas.png","blue_pandas"),
+        ("assets/oxide_os_dark_rabbit.png",     "dark_rabbit"),
+        ("assets/oxide_os_pandas_light.png",    "pandas_light"),
+    ];
 
-    std::fs::write(format!("{out_dir}/wallpaper.rgba"), &pixels)
-        .expect("failed to write wallpaper.rgba");
+    let mut dims_entries = String::new();
+
+    for (src_path, slug) in wallpapers {
+        println!("cargo:rerun-if-changed={src_path}");
+        let (w, h, pixels) = load_png(src_path).unwrap_or((0, 0, vec![]));
+
+        std::fs::write(format!("{out_dir}/wallpaper_{slug}.rgba"), &pixels)
+            .expect("failed to write wallpaper rgba");
+
+        if w > 0 {
+            println!("cargo:warning=wallpaper [{slug}]: embedded {w}x{h} ({} KiB raw RGBA)",
+                     pixels.len() / 1024);
+        } else {
+            println!("cargo:warning=wallpaper [{slug}]: not found — will fall back to gradient");
+        }
+
+        dims_entries.push_str(&format!("    ({w}, {h}),\n"));
+    }
 
     std::fs::write(
         format!("{out_dir}/wallpaper_dims.rs"),
         format!(
-            "pub const WALLPAPER_W: u32 = {width};\npub const WALLPAPER_H: u32 = {height};\n"
+            "/// (width, height) for each embedded wallpaper in order:\n\
+             /// default, dark, blue_pandas, dark_rabbit, pandas_light\n\
+             pub const WALLPAPER_DIMS: [(u32, u32); {}] = [\n{}];\n",
+            wallpapers.len(),
+            dims_entries,
         ),
     )
     .expect("failed to write wallpaper_dims.rs");
-
-    if width > 0 {
-        println!("cargo:warning=wallpaper: embedded {width}x{height} ({} KiB raw RGBA)",
-                 pixels.len() / 1024);
-    } else {
-        println!("cargo:warning=wallpaper: assets/wallpaper.png not found — Image style will fall back to Default");
-    }
 }
 
 /// Returns `(width, height, rgba_bytes)` or an error string.

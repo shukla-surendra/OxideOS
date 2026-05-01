@@ -447,16 +447,7 @@ Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add
 
 Good first issues: [issues labeled `good first issue`](https://github.com/SurendraShuklaOfficial/OxideOS/issues?q=label%3A%22good+first+issue%22)
 
----
 
-## Similar Projects
-
-- [Redox OS](https://www.redox-os.org/) — production-grade OS in Rust
-- [Writing an OS in Rust](https://os.phil-opp.com/) — the definitive tutorial series
-- [xv6](https://github.com/mit-pdos/xv6-riscv) — MIT teaching OS (RISC-V, C)
-- [SerenityOS](https://serenityos.org/) — full desktop OS in C++
-
----
 
 ## License
 

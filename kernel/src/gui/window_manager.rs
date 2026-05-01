@@ -57,6 +57,8 @@ pub struct WindowManager {
     background_style: BackgroundStyle,
     // ID of the last window closed via the × button (cleared by take_closed_window).
     last_closed_window: Option<usize>,
+    // Set when user clicks the center clock pill (cleared by take_clock_click).
+    clock_was_clicked: bool,
 }
 
 impl WindowManager {
@@ -78,7 +80,15 @@ impl WindowManager {
             context_menu_y: 0,
             background_style: BackgroundStyle::Default,
             last_closed_window: None,
+            clock_was_clicked: false,
         }
+    }
+
+    /// Returns `true` once if the user clicked the taskbar clock, then resets.
+    pub fn take_clock_click(&mut self) -> bool {
+        let v = self.clock_was_clicked;
+        self.clock_was_clicked = false;
+        v
     }
 
     /// Returns the WM window id of the most recently × -closed window, then
@@ -370,25 +380,26 @@ impl WindowManager {
     }
 
     fn handle_taskbar_click(&mut self, mouse_x: u64) -> bool {
-        // Calculate which taskbar item was clicked
-        let start_x = 100u64; // Leave space for OS name
-        
+        // Clock pill is centered on screen; clicking it opens Time settings.
+        const CLOCK_PILL_W: u64 = 90 + 24;
+        let clock_pill_x = (self.screen_width.saturating_sub(CLOCK_PILL_W)) / 2;
+        if mouse_x >= clock_pill_x && mouse_x < clock_pill_x + CLOCK_PILL_W {
+            self.clock_was_clicked = true;
+            return true;
+        }
+
+        // Window taskbar items
+        let items_start = 158u64;
         for i in 0..self.window_count {
             let window_id = self.z_order[i];
-            let item_x = start_x + (i as u64) * (TASKBAR_ITEM_WIDTH + TASKBAR_ITEM_SPACING);
-            
+            let item_x = items_start + (i as u64) * (TASKBAR_ITEM_WIDTH + TASKBAR_ITEM_SPACING);
             if mouse_x >= item_x && mouse_x < item_x + TASKBAR_ITEM_WIDTH {
-                // Clicked this window's taskbar item
                 match self.window_states[window_id] {
-                    WindowState::Minimized => {
-                        self.restore_window(window_id);
-                    },
+                    WindowState::Minimized => { self.restore_window(window_id); },
                     _ => {
                         if self.focused_window == Some(window_id) {
-                            // Already focused, minimize it
                             self.minimize_window(window_id);
                         } else {
-                            // Bring to front
                             self.bring_to_front(window_id);
                         }
                     }
@@ -396,7 +407,7 @@ impl WindowManager {
                 return true;
             }
         }
-        
+
         false
     }
 
@@ -594,19 +605,31 @@ impl WindowManager {
         graphics.fill_rect(0, 0, self.screen_width, TASKBAR_HEIGHT, 0xFF2E2E2E);
         graphics.fill_rect(0, TASKBAR_HEIGHT - 1, self.screen_width, 1, 0xFF1A1A1A);
 
-        // ── Center clock — drawn first so we know its boundaries ──────────────
-        // "HH:MM:SS AM" = 11 chars × 9px = 99px; pill adds 20px → 119px total
-        const CLOCK_TEXT_W: u64 = 99;
-        const CLOCK_PILL_W: u64 = CLOCK_TEXT_W + 20; // 10px padding each side
+        // ── Center clock — two-line pill: "HH:MM AM" + "Ddd DD Mon" ─────────────
+        // "HH:MM AM"  = 8 chars × 9px = 72px
+        // "Thu 01 May"= 10 chars × 9px = 90px  ← widest line
+        const CLOCK_PILL_W: u64 = 90 + 24; // 12px padding each side
+        const CLOCK_PILL_H: u64 = 34;      // two text rows + top/bottom padding
         let clock_pill_x = (self.screen_width.saturating_sub(CLOCK_PILL_W)) / 2;
-        let clock_text_x = clock_pill_x + 10;
-        let clock_y      = (TASKBAR_HEIGHT - 8) / 2;
+        let clock_pill_y = (TASKBAR_HEIGHT - CLOCK_PILL_H) / 2;
+        // Center the narrower time row; date row is left-padded to match
+        let time_row_x = clock_pill_x + (CLOCK_PILL_W - 72) / 2;
+        let date_row_x = clock_pill_x + 12;
+        let time_row_y = clock_pill_y + 5;
+        let date_row_y = clock_pill_y + 18;
 
-        let mut time_buf = [0u8; 11];
-        crate::kernel::rtc::format_time_ampm(&mut time_buf);
-        let time_str = core::str::from_utf8(&time_buf).unwrap_or("--:--:-- --");
-        graphics.fill_rounded_rect(clock_pill_x, clock_y - 5, CLOCK_PILL_W, 18, 6, 0xFF3A3A3A);
-        fonts::draw_string(graphics, clock_text_x, clock_y, time_str, 0xFFEEEEEE);
+        let mut time_buf = [0u8; 8];
+        crate::kernel::rtc::format_time_hhmm(&mut time_buf);
+        let time_str = core::str::from_utf8(&time_buf).unwrap_or("--:-- --");
+
+        let mut date_buf = [0u8; 10];
+        crate::kernel::rtc::format_date(&mut date_buf);
+        let date_str = core::str::from_utf8(&date_buf).unwrap_or("--- -- ---");
+
+        graphics.fill_rounded_rect(clock_pill_x, clock_pill_y, CLOCK_PILL_W, CLOCK_PILL_H, 8, 0xFF323232);
+        graphics.draw_rounded_rect(clock_pill_x, clock_pill_y, CLOCK_PILL_W, CLOCK_PILL_H, 8, 0xFF484848, 1);
+        fonts::draw_string(graphics, time_row_x, time_row_y, time_str, 0xFFEEEEEE);
+        fonts::draw_string(graphics, date_row_x, date_row_y, date_str, 0xFF8899BB);
 
         // ── Right-side system tray ─────────────────────────────────────────────
         // TRAY_W: brightness icon + network dot + margin — no IP text.
@@ -709,8 +732,9 @@ impl WindowManager {
             }
         }
 
-        const MENU_W: u64 = 170;
-        const MENU_H: u64 = 22 + 6 * 22;
+        // Match the layout constants from handle_context_menu_click / draw_context_menu
+        const MENU_W: u64 = 210;
+        const MENU_H: u64 = 26 + 18 + 5 * 24 + 18 + 5 * 24; // header + 2 sections + 10 items
         let mx = if mouse_x + MENU_W > self.screen_width {
             self.screen_width.saturating_sub(MENU_W)
         } else {
@@ -731,15 +755,15 @@ impl WindowManager {
     pub fn handle_context_menu_click(&mut self, mouse_x: u64, mouse_y: u64) -> bool {
         if !self.context_menu_visible { return false; }
 
-        const MENU_W:   u64   = 170;
-        const ITEM_H:   u64   = 22;
-        const HEADER_H: u64   = 22;
-        const N:        usize = 6;
-        let menu_h = HEADER_H + N as u64 * ITEM_H;
+        const MENU_W:    u64   = 210;
+        const ITEM_H:    u64   = 24;
+        const HEADER_H:  u64   = 26;
+        const SECTION_H: u64   = 18;
+        // Layout: header | section_a | 5 items | section_b | 5 items
+        let menu_h = HEADER_H + SECTION_H + 5 * ITEM_H + SECTION_H + 5 * ITEM_H;
         let mx = self.context_menu_x;
         let my = self.context_menu_y;
 
-        // Click outside → dismiss
         if mouse_x < mx || mouse_x >= mx + MENU_W
             || mouse_y < my || mouse_y >= my + menu_h
         {
@@ -747,20 +771,42 @@ impl WindowManager {
             return false;
         }
 
-        self.context_menu_visible = false; // always close on any click inside
+        self.context_menu_visible = false;
 
-        if mouse_y >= my + HEADER_H {
-            let idx = ((mouse_y - my - HEADER_H) / ITEM_H) as usize;
-            let styles = [
-                BackgroundStyle::Default,
-                BackgroundStyle::Sunset,
-                BackgroundStyle::Space,
-                BackgroundStyle::Aurora,
-                BackgroundStyle::Geometric,
-                BackgroundStyle::Image,
-            ];
-            if idx < styles.len() {
-                self.background_style = styles[idx];
+        // Map click → item index (skipping section headers)
+        let rel_y = mouse_y.saturating_sub(my + HEADER_H);
+
+        // Section A: procedural (5 items after SECTION_H)
+        let sec_a_start = SECTION_H;
+        let sec_a_end   = SECTION_H + 5 * ITEM_H;
+        // Section B: images (5 items after another SECTION_H)
+        let sec_b_start = sec_a_end + SECTION_H;
+        let sec_b_end   = sec_b_start + 5 * ITEM_H;
+
+        let procedural = [
+            BackgroundStyle::Default,
+            BackgroundStyle::Sunset,
+            BackgroundStyle::Space,
+            BackgroundStyle::Aurora,
+            BackgroundStyle::Geometric,
+        ];
+        let images = [
+            BackgroundStyle::Image,
+            BackgroundStyle::ImageDark,
+            BackgroundStyle::ImageBluePandas,
+            BackgroundStyle::ImageDarkRabbit,
+            BackgroundStyle::ImagePandasLight,
+        ];
+
+        if rel_y >= sec_a_start && rel_y < sec_a_end {
+            let idx = ((rel_y - sec_a_start) / ITEM_H) as usize;
+            if idx < procedural.len() {
+                self.background_style = procedural[idx];
+            }
+        } else if rel_y >= sec_b_start && rel_y < sec_b_end {
+            let idx = ((rel_y - sec_b_start) / ITEM_H) as usize;
+            if idx < images.len() {
+                self.background_style = images[idx];
             }
         }
         true
@@ -770,59 +816,96 @@ impl WindowManager {
     pub fn draw_context_menu(&self, graphics: &Graphics) {
         if !self.context_menu_visible { return; }
 
-        const MENU_W:   u64   = 170;
-        const ITEM_H:   u64   = 22;
-        const HEADER_H: u64   = 22;
-        const N:        usize = 6;
-        let menu_h = HEADER_H + N as u64 * ITEM_H;
+        const MENU_W:    u64 = 210;
+        const ITEM_H:    u64 = 24;
+        const HEADER_H:  u64 = 26;
+        const SECTION_H: u64 = 18;
+        let menu_h = HEADER_H + SECTION_H + 5 * ITEM_H + SECTION_H + 5 * ITEM_H;
         let mx = self.context_menu_x;
         let my = self.context_menu_y;
 
         // Drop shadow
-        graphics.fill_rect(mx + 3, my + 3, MENU_W, menu_h, 0xFF060810);
+        graphics.fill_rect(mx + 4, my + 4, MENU_W, menu_h, 0xAA020408);
 
-        // Background
-        graphics.fill_rect(mx, my, MENU_W, menu_h, 0xFF14192A);
+        // Background panel
+        graphics.fill_rect(mx, my, MENU_W, menu_h, 0xFF111828);
 
-        // Header gradient + accent line
-        graphics.fill_rect_gradient_h(mx, my, MENU_W, HEADER_H, 0xFF0D5FA0, 0xFF072C50);
-        graphics.fill_rect(mx, my + HEADER_H - 1, MENU_W, 1, 0xFF00AAFF);
-        fonts::draw_string(graphics, mx + 8, my + 7, "Wallpaper", 0xFFE8F0FE);
+        // Header
+        graphics.fill_rect_gradient_h(mx, my, MENU_W, HEADER_H, 0xFF0B5CB8, 0xFF063070);
+        graphics.fill_rect(mx, my + HEADER_H - 2, MENU_W, 2, 0xFF1EA8FF);
+        fonts::draw_string(graphics, mx + 10, my + 8, "Change Wallpaper", 0xFFEEF4FF);
 
-        // Border
-        graphics.draw_rect(mx, my, MENU_W, menu_h, 0xFF1A5F9A, 1);
+        // Outer border
+        graphics.draw_rect(mx, my, MENU_W, menu_h, 0xFF1A60A8, 1);
 
-        let names  = ["Default", "Sunset", "Space", "Aurora", "Geometric", "Image"];
-        let styles = [
+        let procedural_names = ["Default", "Sunset", "Space", "Aurora", "Geometric"];
+        let procedural_styles = [
             BackgroundStyle::Default,
             BackgroundStyle::Sunset,
             BackgroundStyle::Space,
             BackgroundStyle::Aurora,
             BackgroundStyle::Geometric,
+        ];
+        let image_names = ["OxideOS Classic", "Dark", "Blue Pandas", "Dark Rabbit", "Light Pandas"];
+        let image_styles = [
             BackgroundStyle::Image,
+            BackgroundStyle::ImageDark,
+            BackgroundStyle::ImageBluePandas,
+            BackgroundStyle::ImageDarkRabbit,
+            BackgroundStyle::ImagePandasLight,
         ];
 
-        for i in 0..N {
-            let iy = my + HEADER_H + i as u64 * ITEM_H;
-            let selected = self.background_style == styles[i];
+        // ── Section A: Procedural ─────────────────────────────────────────────
+        let sec_a_y = my + HEADER_H;
+        graphics.fill_rect(mx, sec_a_y, MENU_W, SECTION_H, 0xFF0A1020);
+        graphics.fill_rect(mx + 8, sec_a_y + SECTION_H - 1, MENU_W - 16, 1, 0xFF1E3050);
+        fonts::draw_string(graphics, mx + 10, sec_a_y + 5, "Procedural", 0xFF6080A0);
 
-            // Row background
-            if selected {
-                graphics.fill_rect(mx + 1, iy, MENU_W - 2, ITEM_H, 0xFF0D3A5A);
-            } else if i % 2 == 1 {
-                graphics.fill_rect(mx + 1, iy, MENU_W - 2, ITEM_H, 0xFF0E1220);
-            }
-
-            // Thin separator (skip first)
-            if i > 0 {
-                graphics.fill_rect(mx + 8, iy, MENU_W - 16, 1, 0xFF202840);
-            }
-
-            let text_col = if selected { 0xFF00D4FF } else { 0xFFB0C8E8 };
-            let marker   = if selected { "*" } else { " " };
-            fonts::draw_string(graphics, mx + 8,  iy + 7, marker,   text_col);
-            fonts::draw_string(graphics, mx + 22, iy + 7, names[i], text_col);
+        for i in 0..5usize {
+            let iy = sec_a_y + SECTION_H + i as u64 * ITEM_H;
+            let selected = self.background_style == procedural_styles[i];
+            self.draw_menu_item(graphics, mx, iy, MENU_W, ITEM_H, procedural_names[i], selected, i);
         }
+
+        // ── Section B: Images ─────────────────────────────────────────────────
+        let sec_b_y = sec_a_y + SECTION_H + 5 * ITEM_H;
+        graphics.fill_rect(mx, sec_b_y, MENU_W, SECTION_H, 0xFF0A1020);
+        graphics.fill_rect(mx + 8, sec_b_y + SECTION_H - 1, MENU_W - 16, 1, 0xFF1E3050);
+        fonts::draw_string(graphics, mx + 10, sec_b_y + 5, "Images", 0xFF6080A0);
+
+        for i in 0..5usize {
+            let iy = sec_b_y + SECTION_H + i as u64 * ITEM_H;
+            let selected = self.background_style == image_styles[i];
+            self.draw_menu_item(graphics, mx, iy, MENU_W, ITEM_H, image_names[i], selected, i);
+        }
+    }
+
+    fn draw_menu_item(
+        &self,
+        graphics: &Graphics,
+        mx: u64, iy: u64,
+        menu_w: u64, item_h: u64,
+        label: &str,
+        selected: bool,
+        row: usize,
+    ) {
+        if selected {
+            graphics.fill_rect_gradient_h(mx + 1, iy, menu_w - 2, item_h, 0xFF0C3D6A, 0xFF082850);
+            // Left accent bar
+            graphics.fill_rect(mx + 1, iy, 3, item_h, 0xFF1EA8FF);
+        } else if row % 2 == 1 {
+            graphics.fill_rect(mx + 1, iy, menu_w - 2, item_h, 0xFF0D1525);
+        }
+
+        // Separator line
+        graphics.fill_rect(mx + 12, iy, menu_w - 24, 1, 0xFF182030);
+
+        let text_col = if selected { 0xFF00D4FF } else { 0xFFBBCCE4 };
+        // Checkmark or indent
+        if selected {
+            fonts::draw_string(graphics, mx + 8, iy + 8, ">", 0xFF1EA8FF);
+        }
+        fonts::draw_string(graphics, mx + 22, iy + 8, label, text_col);
     }
 
     /// Return the currently selected background style.

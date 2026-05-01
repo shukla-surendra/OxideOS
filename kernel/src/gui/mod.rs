@@ -15,3 +15,4 @@ pub mod notepad;
 pub mod overview;
 pub mod notifications;
 pub mod quick_settings;
+pub mod calendar;
