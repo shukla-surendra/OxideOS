@@ -835,10 +835,19 @@ pub fn recvfrom(sfd: i64, buf: &mut [u8], src: Option<&mut SockAddrIn>) -> i64 {
 /// Returns `Some([a,b,c,d])` on success.
 /// Also accepts dotted-decimal strings like "10.0.2.15".
 pub fn dns_resolve(hostname: &[u8]) -> Option<[u8; 4]> {
-    let r = unsafe { raw::syscall2(sys::DNS_RESOLVE, hostname.as_ptr() as u64, hostname.len() as u64) };
-    if r < 0 { return None; }
-    let v = r as u32;
-    Some([v as u8, (v >> 8) as u8, (v >> 16) as u8, (v >> 24) as u8])
+    // The kernel does ONE smoltcp poll per call and returns EAGAIN (-6) when
+    // the response hasn't arrived yet.  We sleep between retries so the
+    // scheduler can run other processes (e.g. the GUI) between each poll.
+    loop {
+        let r = unsafe { raw::syscall2(sys::DNS_RESOLVE, hostname.as_ptr() as u64, hostname.len() as u64) };
+        if r == -6 {
+            sleep_ms(10); // yield for one scheduler tick; GUI stays responsive
+            continue;
+        }
+        if r < 0 { return None; }
+        let v = r as u32;
+        return Some([v as u8, (v >> 8) as u8, (v >> 16) as u8, (v >> 24) as u8]);
+    }
 }
 
 // ── Formatted printing ───────────────────────────────────────────────────────

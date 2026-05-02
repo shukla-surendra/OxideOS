@@ -56,8 +56,8 @@ pub fn nic_name() -> &'static str {
     "None"
 }
 
-/// Resolve a hostname to an IPv4 address using the configured DNS server.
-pub fn dns_resolve(hostname: &[u8]) -> Option<[u8; 4]> {
+/// Poll DNS resolution once.  Returns packed IPv4 (i64 > 0), -6 (EAGAIN), or -105 (failed).
+pub fn dns_resolve(hostname: &[u8]) -> i64 {
     dns::resolve(hostname)
 }
 

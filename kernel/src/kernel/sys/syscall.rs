@@ -1565,15 +1565,10 @@ impl SyscallRuntime for KernelRuntime {
     }
 
     fn dns_resolve_impl(&mut self, hostname: &[u8]) -> i64 {
-        match crate::kernel::net::dns_resolve(hostname) {
-            Some(ip) => {
-                (ip[0] as i64)
-                | ((ip[1] as i64) << 8)
-                | ((ip[2] as i64) << 16)
-                | ((ip[3] as i64) << 24)
-            }
-            None => -105, // ENONET
-        }
+        // Returns packed IPv4 > 0, -6 (EAGAIN), or -105 (ENONET).
+        // Userspace loops with sleep_ms between EAGAIN retries so the
+        // scheduler can run other tasks between each poll.
+        crate::kernel::net::dns_resolve(hostname)
     }
 }
 
