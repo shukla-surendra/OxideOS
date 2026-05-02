@@ -62,7 +62,7 @@ bash-rebuild:
 
 # ── Rust programs ─────────────────────────────────────────────────────────────
 rust-programs: $(BINDIR)
-	$(CARGO) +nightly build --release -p hello-rust -p sh -p terminal -p coreutils -p wget -p edit -p nc -p filemanager -p install -p sysmon -p ping 2>&1
+	$(CARGO) +nightly build --release -p hello-rust -p sh -p terminal -p coreutils -p wget -p edit -p nc -p filemanager -p install -p sysmon -p ping -p browser 2>&1
 	cp target/x86_64-unknown-none/release/hello_rust   $(BINDIR)/hello_rust.elf
 	cp target/x86_64-unknown-none/release/sh           $(BINDIR)/sh.elf
 	cp target/x86_64-unknown-none/release/terminal     $(BINDIR)/terminal.elf
@@ -92,6 +92,7 @@ rust-programs: $(BINDIR)
 	cp target/x86_64-unknown-none/release/install      $(BINDIR)/install.elf
 	cp target/x86_64-unknown-none/release/sysmon       $(BINDIR)/sysmon.elf
 	cp target/x86_64-unknown-none/release/ping         $(BINDIR)/ping.elf
+	cp target/x86_64-unknown-none/release/browser      $(BINDIR)/browser.elf
 
 clean:
 	rm -rf $(BINDIR)

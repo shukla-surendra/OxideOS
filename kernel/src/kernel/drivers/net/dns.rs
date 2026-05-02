@@ -33,7 +33,6 @@ pub fn resolve(hostname: &[u8]) -> Option<[u8; 4]> {
 // ── Internal ────────────────────────────────────────────────────────────────
 
 const DNS_PORT:  u16 = 53;
-const LOCAL_PORT: u16 = 5353;
 const QUERY_ID:  u16 = 0xABCD;
 
 unsafe fn do_query(hostname: &[u8], dns_ip: [u8; 4]) -> Option<[u8; 4]> {
@@ -51,7 +50,9 @@ unsafe fn do_query(hostname: &[u8], dns_ip: [u8; 4]) -> Option<[u8; 4]> {
             alloc::vec![0u8; 512],
         );
         let mut sock = UdpSocket::new(rx, tx);
-        let local_ep = IpEndpoint::new(IpAddress::Ipv4(Ipv4Address::UNSPECIFIED), LOCAL_PORT);
+        // Use a random ephemeral source port (49152–65535) to avoid rebind conflicts.
+        let local_port = 49152 + (stack::timestamp().millis() as u16 & 0x3FFF);
+        let local_ep = IpEndpoint::new(IpAddress::Ipv4(Ipv4Address::UNSPECIFIED), local_port);
         if sock.bind(local_ep).is_err() { return None; }
         let handle = state.sockets.add(sock);
 
@@ -67,9 +68,10 @@ unsafe fn do_query(hostname: &[u8], dns_ip: [u8; 4]) -> Option<[u8; 4]> {
             return None;
         }
 
-        // Poll until we receive a response (up to ~2 seconds).
+        // Poll until we receive a response (up to ~5 seconds).
+        // First few polls: smoltcp sends ARP, gets reply, then sends the DNS packet.
         let mut result = None;
-        for _ in 0..200u32 {
+        for _ in 0..500u32 {
             let now = stack::timestamp();
             let mut nic = stack::NicDevice;
             state.iface.poll(now, &mut nic, &mut state.sockets);

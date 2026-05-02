@@ -73,6 +73,7 @@ const PROGRAMS: &[(&str, &str)] = &[
     ("cat",        "Print file contents"),
     ("ps",         "Show running processes"),
     ("wget",       "Minimal HTTP GET client"),
+    ("browser",    "HTTP web browser with GUI and link navigation"),
 ];
 
 // ── Tiny heap-free string ─────────────────────────────────────────────────────

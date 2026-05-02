@@ -183,6 +183,10 @@ pub static BASH: &[u8] =
 pub static SYSMON: &[u8] =
     include_bytes!("../../../../userspace/bin/sysmon.elf");
 
+/// browser — lightweight HTTP text browser with link navigation.
+pub static BROWSER: &[u8] =
+    include_bytes!("../../../../userspace/bin/browser.elf");
+
 /// Look up a built-in program by name.
 pub fn find(name: &str) -> Option<&'static [u8]> {
     match name {
@@ -232,6 +236,7 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
         #[cfg(has_bash)]
         "bash"       => Some(BASH),
         "sysmon"     => Some(SYSMON),
+        "browser"    => Some(BROWSER),
         _            => None,
     }
 }
@@ -253,4 +258,5 @@ pub const NAMES: &[&str] = &[
     "busybox",
     "bash",
     "sysmon",
+    "browser",
 ];

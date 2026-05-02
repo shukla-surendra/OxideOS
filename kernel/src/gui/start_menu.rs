@@ -52,6 +52,7 @@ const ENTRIES: &[ProgramEntry] = &[
     ProgramEntry { name: "terminal",  desc: "Command Console",     accent: 0xFF4EC9B0, section: 0 },
     ProgramEntry { name: "sh",        desc: "Bourne Shell",        accent: 0xFF569CD6, section: 0 },
     ProgramEntry { name: "filemanager", desc: "Browse Files",      accent: 0xFFC586C0, section: 0 },
+    ProgramEntry { name: "browser",   desc: "HTTP Web Browser",    accent: 0xFF2196F3, section: 0 },
     ProgramEntry { name: "edit",      desc: "Text Editor",         accent: 0xFFCE9178, section: 0 },
     ProgramEntry { name: "hello_rust",desc: "Rust Demo",          accent: 0xFFD7BA7D, section: 1 },
     ProgramEntry { name: "sysinfo",   desc: "Kernel Monitor",      accent: 0xFF4EC9B0, section: 1 },
@@ -174,8 +175,8 @@ impl StartMenu {
         (None, 0, false)
     }
 
-    fn item_positions() -> [(u64, usize); 11] {
-        let mut result = [(0u64, 0usize); 11];
+    fn item_positions() -> [(u64, usize); ENTRIES.len()] {
+        let mut result = [(0u64, 0usize); ENTRIES.len()];
         let mut y = HDR_H;
         let mut last_sec: Option<u8> = None;
         for (i, e) in ENTRIES.iter().enumerate() {

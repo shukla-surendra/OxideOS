@@ -41,6 +41,7 @@ const ENTRIES: &[Entry] = &[
     Entry { name: "terminal",    desc: "GUI Terminal",          accent: 0xFF007ACC, section: 0 },
     Entry { name: "notepad",     desc: "GUI Text Editor",       accent: 0xFFE5A50A, section: 0 },
     Entry { name: "filemanager", desc: "GUI File Manager",      accent: 0xFF8844CC, section: 0 },
+    Entry { name: "browser",     desc: "HTTP Web Browser",      accent: 0xFF2196F3, section: 0 },
     Entry { name: "sh",          desc: "Minimal Shell",         accent: 0xFF1A9A50, section: 0 },
     // Programs
     Entry { name: "hello_rust",  desc: "Hello from Rust",       accent: 0xFFCC6633, section: 1 },

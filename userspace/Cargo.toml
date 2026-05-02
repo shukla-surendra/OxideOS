@@ -13,5 +13,6 @@ members = [
     "install",
     "ping",
     "sysmon",
+    "browser",
 ]
 resolver = "2"
