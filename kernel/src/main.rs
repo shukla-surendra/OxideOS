@@ -805,6 +805,10 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
             start_menu.draw_menu(graphics);
             // Composite GUI-proc window content on top of all kernel draws.
             unsafe { kernel::gui_proc::composite_all(graphics); }
+            // Draw notepad dropdowns after all windows so they are never covered.
+            for np in notepads.iter() {
+                np.draw_dropdown_overlay(graphics, unsafe { &*wm });
+            }
             // GNOME overlay layers — drawn last so they sit on top of everything.
             overview.draw(graphics, unsafe { &*wm }, screen_w, screen_h);
             quick_settings.draw(graphics, screen_w);
@@ -827,6 +831,9 @@ unsafe fn run_gui_with_mouse(graphics: &Graphics, terminal_window_id: usize, sys
                 np.draw(graphics, unsafe { &*wm });
             }
             unsafe { kernel::gui_proc::composite_all(graphics); }
+            for np in notepads.iter() {
+                np.draw_dropdown_overlay(graphics, unsafe { &*wm });
+            }
             // Keep overlay layers visible during terminal partial redraws.
             overview.draw(graphics, unsafe { &*wm }, screen_w, screen_h);
             quick_settings.draw(graphics, screen_w);

@@ -51,6 +51,8 @@ const CHECK_COL:   u32 = 0xFF89D185;
 #[derive(Copy, Clone, PartialEq)]
 pub enum MenuAction {
     None,
+    /// Click was handled (e.g. dismissed an open menu) but no action to propagate.
+    Consumed,
     // File
     FileNew,
     FileSave,
@@ -208,7 +210,8 @@ impl MenuBar {
         }
     }
 
-    /// Draw the bar and, if a menu is open, its dropdown.
+    /// Draw the bar tabs only (no dropdown).  Call `draw_overlay` afterward to
+    /// paint the open dropdown on top of all other windows.
     pub fn draw(&self, graphics: &Graphics, bar_x: u64, bar_y: u64, bar_w: u64) {
         // ── Bar background ────────────────────────────────────────────────────
         graphics.fill_rect(bar_x, bar_y, bar_w, MENUBAR_H, BAR_BG);
@@ -228,10 +231,14 @@ impl MenuBar {
             let text_x = menu.tab_x + TAB_PAD_X;
             let text_y = bar_y + (MENUBAR_H - 8) / 2;
             fonts::draw_string(graphics, text_x, text_y, menu.label, TAB_TEXT);
+        }
+    }
 
-            if is_open {
-                self.draw_dropdown(graphics, i, menu.tab_x, bar_y + MENUBAR_H);
-            }
+    /// Draw the open dropdown as a screen overlay (call after all windows are drawn).
+    pub fn draw_overlay(&self, graphics: &Graphics, bar_y: u64) {
+        if let Some(mi) = self.open_menu {
+            let menu = &self.menus[mi];
+            self.draw_dropdown(graphics, mi, menu.tab_x, bar_y + MENUBAR_H);
         }
     }
 
@@ -297,11 +304,10 @@ impl MenuBar {
                     let new_hov = Some(i);
                     let changed = self.hov_menu != new_hov;
                     self.hov_menu = new_hov;
-                    // If a different menu is already open, auto-switch to this one
-                    if self.open_menu.is_some() && self.open_menu != new_hov {
-                        self.open_menu = new_hov;
-                    }
-                    return changed || self.open_menu.is_some();
+                    // If a different menu is already open, auto-switch to this one.
+                    let switched = self.open_menu.is_some() && self.open_menu != new_hov;
+                    if switched { self.open_menu = new_hov; }
+                    return changed || switched;
                 }
             }
             let changed = self.hov_menu.is_some();

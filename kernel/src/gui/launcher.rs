@@ -114,9 +114,9 @@ impl LauncherApp {
     }
 
     /// y-coordinate of a row inside the content (before clipping/scroll).
-    /// Returns (row_y, is_section_label).
-    fn row_positions() -> [(u64, bool, usize); /* ENTRIES.len() + sections */ 32] {
-        let mut out = [(0u64, false, 0usize); 32];
+    /// The array is terminated with a sentinel entry (u64::MAX, false, 0).
+    fn row_positions() -> [(u64, bool, usize); /* ENTRIES.len() + sections + 1 */ 32] {
+        let mut out = [(u64::MAX, false, 0usize); 32]; // sentinel fills unused slots
         let mut idx = 0usize;
         let mut y   = 0u64;
         let mut prev_sec: Option<u8> = None;
@@ -131,6 +131,7 @@ impl LauncherApp {
             idx += 1;
             y += ROW_H;
         }
+        // sentinel already placed by array initialiser
         out
     }
 
@@ -222,10 +223,10 @@ impl LauncherApp {
         let rel_y = my - py + self.scroll_offset;
         let rows = Self::row_positions();
         for &(ry, is_sec, idx) in rows.iter() {
-            if ry == 0 && is_sec == false && idx == 0 && ry + ROW_H == 0 { break; }
+            if ry == u64::MAX { break; } // end of real data
             if is_sec { continue; }
             if rel_y >= ry && rel_y < ry + ROW_H {
-                if idx < ENTRIES.len() { return Some(idx); }
+                return Some(idx);
             }
         }
         None
@@ -265,8 +266,7 @@ impl LauncherApp {
 
         let mut prev_sec: Option<u8> = None;
         for &(ry, is_sec, idx) in rows.iter() {
-            // Stop iterating at the end of the array sentinel
-            if ry == 0 && !is_sec && idx == 0 && prev_sec.is_some() { break; }
+            if ry == u64::MAX { break; } // end of real data
 
             let abs_y = py + ry - self.scroll_offset;
 

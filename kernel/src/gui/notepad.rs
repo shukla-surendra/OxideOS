@@ -200,11 +200,13 @@ impl NotepadApp {
     /// Forward a click to the menu bar.  Applies any resulting action internally
     /// (except FileExit) and returns the action so the caller can handle exit.
     /// Returns `MenuAction::None` if the click was not in the menu bar area.
+    /// Returns `MenuAction::Consumed` if the click dismissed an open menu with no action.
     pub fn handle_click(&mut self, mx: u64, my: u64, wm: &WindowManager) -> MenuAction {
         let Some((bx, by, bw)) = self.menu_bar_coords(wm) else { return MenuAction::None; };
 
-        // Only intercept if hit-testing within bar or an open dropdown
-        if !self.menu.hit_test(mx, my, bx, by, bw) && !self.menu.is_open() {
+        // Only intercept if hit-testing within bar or a dropdown is currently open.
+        let was_open = self.menu.is_open();
+        if !self.menu.hit_test(mx, my, bx, by, bw) && !was_open {
             return MenuAction::None;
         }
 
@@ -212,13 +214,28 @@ impl NotepadApp {
         if action != MenuAction::FileExit {
             self.apply_action(action);
         }
+        // If the menu was open before this click and no real action resulted
+        // (e.g. user dismissed the dropdown), consume the click so it doesn't
+        // also propagate to the window manager.
+        if action == MenuAction::None && was_open {
+            return MenuAction::Consumed;
+        }
         action
+    }
+
+    /// Draw the open dropdown as a full-screen overlay (call after all windows).
+    pub fn draw_dropdown_overlay(&self, graphics: &Graphics, wm: &WindowManager) {
+        if !self.menu.is_open() { return; }
+        if !wm.is_window_visible(self.window_id) { return; }
+        let Some(win) = wm.get_window(self.window_id) else { return; };
+        let cy = win.y + 31;
+        self.menu.draw_overlay(graphics, cy);
     }
 
 
     fn apply_action(&mut self, action: MenuAction) {
         match action {
-            MenuAction::None          => {}
+            MenuAction::None | MenuAction::Consumed => {}
             MenuAction::FileNew       => self.new_file(),
             MenuAction::FileSave      => self.save(),
             MenuAction::FileSaveAs    => self.save(), // No dialog yet — save in place

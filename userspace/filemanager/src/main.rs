@@ -668,13 +668,11 @@ pub extern "C" fn oxide_main() {
         None    => exit(1),
     };
 
-    let mut app       = App::new(win);
-    let mut size_tick = 0u32;
+    let mut app = App::new(win);
 
     loop {
-        // Check for window resize every ~0.5 s
-        size_tick += 1;
-        if size_tick >= 30 { size_tick = 0; app.sync_size(); }
+        // Check for window resize every frame so layout is never stale.
+        app.sync_size();
 
         let mut updated = false;
         loop {
