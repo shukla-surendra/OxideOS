@@ -22,7 +22,7 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y \
             nasm xorriso mtools dosfstools \
-            gcc-x86-64-linux-gnu qemu-utils
+            gcc-x86-64-linux-gnu musl-tools qemu-utils
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
@@ -45,13 +45,36 @@ jobs:
       - name: Download Limine bootloader
         run: make limine/limine
 
-      - name: Build userspace (Rust programs only)
+      - name: Build userspace
         run: |
           cd userspace
+          mkdir -p bin
+
+          # NASM flat binaries
+          nasm -f bin -o bin/hello.bin     hello.asm
+          nasm -f bin -o bin/counter.bin   counter.asm
+          nasm -f bin -o bin/sysinfo.bin   sysinfo.asm
+          nasm -f bin -o bin/input.bin     input.asm
+          nasm -f bin -o bin/fib.bin       fib.asm
+          nasm -f bin -o bin/primes.bin    primes.asm
+          nasm -f bin -o bin/countdown.bin countdown.asm
+          nasm -f bin -o bin/spinner.bin   spinner.asm
+          nasm -f bin -o bin/filetest.bin  filetest.asm
+
+          # C programs (gcc, no stdlib, Linux syscall ABI)
+          x86_64-linux-gnu-gcc -static -nostdlib -nostartfiles \
+            -O2 -fno-stack-protector -fno-asynchronous-unwind-tables \
+            -o bin/hello_c.elf hello_c/hello_c.c
+
+          # musl-libc C programs
+          musl-gcc -static -O2 -o bin/hello_musl.elf hello_musl/hello_musl.c
+          musl-gcc -static -O2 -o bin/musl_test.elf  hello_musl/musl_test.c
+
+          # Rust programs
           cargo +nightly build --release \
             -p hello-rust -p sh -p terminal -p coreutils \
-            -p wget -p edit -p nc -p filemanager -p install 2>&1
-          mkdir -p bin
+            -p wget -p edit -p nc -p filemanager -p install \
+            -p sysmon -p ping -p browser 2>&1
           cp target/x86_64-unknown-none/release/sh           bin/sh.elf
           cp target/x86_64-unknown-none/release/terminal     bin/terminal.elf
           cp target/x86_64-unknown-none/release/ls           bin/ls.elf
@@ -79,6 +102,9 @@ jobs:
           cp "target/x86_64-unknown-none/release/false"      bin/false.elf
           cp target/x86_64-unknown-none/release/install      bin/install.elf
           cp target/x86_64-unknown-none/release/hello_rust   bin/hello_rust.elf
+          cp target/x86_64-unknown-none/release/sysmon       bin/sysmon.elf
+          cp target/x86_64-unknown-none/release/ping         bin/ping.elf
+          cp target/x86_64-unknown-none/release/browser      bin/browser.elf
 
       - name: Build kernel
         run: |
