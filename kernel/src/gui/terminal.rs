@@ -35,6 +35,11 @@ const EVENT_ARROW_LEFT:  u16 = 0x102;
 const EVENT_ARROW_RIGHT: u16 = 0x103;
 const EVENT_PAGE_UP:     u16 = 0x104;
 const EVENT_PAGE_DOWN:   u16 = 0x105;
+// Shift+arrow variants (used by notepad for selection)
+pub const EVENT_SHIFT_UP:    u16 = 0x108;
+pub const EVENT_SHIFT_DOWN:  u16 = 0x109;
+pub const EVENT_SHIFT_LEFT:  u16 = 0x10A;
+pub const EVENT_SHIFT_RIGHT: u16 = 0x10B;
 
 const SCROLL_AMOUNT: usize = 5;
 
@@ -120,11 +125,12 @@ fn line_color(line: &str) -> u32 {
 unsafe fn terminal_key_callback(ch: u8) { unsafe { queue_event(ch as u16); } }
 
 unsafe fn terminal_arrow_callback(key: keyboard::ArrowKey) {
+    let shift = unsafe { keyboard::is_shift_pressed() };
     let event = match key {
-        keyboard::ArrowKey::Up       => EVENT_ARROW_UP,
-        keyboard::ArrowKey::Down     => EVENT_ARROW_DOWN,
-        keyboard::ArrowKey::Left     => EVENT_ARROW_LEFT,
-        keyboard::ArrowKey::Right    => EVENT_ARROW_RIGHT,
+        keyboard::ArrowKey::Up    => if shift { EVENT_SHIFT_UP    } else { EVENT_ARROW_UP    },
+        keyboard::ArrowKey::Down  => if shift { EVENT_SHIFT_DOWN  } else { EVENT_ARROW_DOWN  },
+        keyboard::ArrowKey::Left  => if shift { EVENT_SHIFT_LEFT  } else { EVENT_ARROW_LEFT  },
+        keyboard::ArrowKey::Right => if shift { EVENT_SHIFT_RIGHT } else { EVENT_ARROW_RIGHT },
         keyboard::ArrowKey::PageUp   => EVENT_PAGE_UP,
         keyboard::ArrowKey::PageDown => EVENT_PAGE_DOWN,
     };

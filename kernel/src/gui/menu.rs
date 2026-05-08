@@ -54,6 +54,7 @@ pub enum MenuAction {
     /// Click was handled (e.g. dismissed an open menu) but no action to propagate.
     Consumed,
     // File
+    FileOpen,
     FileNew,
     FileSave,
     FileSaveAs,
@@ -61,7 +62,11 @@ pub enum MenuAction {
     // Edit
     EditUndo,
     EditRedo,
+    EditCut,
+    EditCopy,
+    EditPaste,
     EditSelectAll,
+    EditFind,
     // Format
     FormatWordWrap,
     // View
