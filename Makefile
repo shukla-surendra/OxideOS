@@ -202,6 +202,36 @@ run-gui-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NA
 		$(NETFLAGS) \
 		$(QEMUFLAGS)
 
+# run-gui-disk / run-disk: like run-gui but ensures oxide_disk.img exists first.
+# Use this when the kernel reports "no disk" — the disk image was not present.
+.PHONY: run-gui-disk
+run-gui-disk: disk ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
+	qemu-system-$(KARCH) \
+		-M q35 \
+		-serial stdio \
+		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
+		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
+		-cdrom $(IMAGE_NAME).iso \
+		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
+		-display sdl \
+		$(NETFLAGS) \
+		$(QEMUFLAGS)
+
+.PHONY: run-disk
+run-disk: run-gui-disk
+
+# run-bios-disk: BIOS variant with disk image always present.
+.PHONY: run-bios-disk
+run-bios-disk: disk $(IMAGE_NAME).iso
+	qemu-system-$(KARCH) \
+		-M pc \
+		-serial stdio \
+		-cdrom $(IMAGE_NAME).iso \
+		-boot d \
+		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
+		$(NETFLAGS) \
+		$(QEMUFLAGS)
+
 # KVM-accelerated run (much faster; requires nested virtualisation enabled in WSL2).
 # Enable with: echo "[wsl2]" >> ~/.wslconfig && echo "nestedVirtualization=true" >> ~/.wslconfig
 .PHONY: run-kvm-x86_64
