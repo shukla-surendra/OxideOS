@@ -1,5 +1,6 @@
 // src/gui/mod.rs - GUI system for OxideOS
 
+pub mod oxide_backend;
 pub mod mouse;
 pub mod graphics;
 pub mod colors;
