@@ -4,7 +4,7 @@
 //! updates its phase each GUI frame.  The sysinfo panel reads `phase` to show
 //! the animated status and button.
 
-use gui::window_manager::WindowManager;
+use crate::gui::window_manager::WindowManager;
 
 const PROBE_IP:            [u8; 4] = [93, 184, 216, 34]; // example.com
 const PROBE_PORT:          u16      = 80;

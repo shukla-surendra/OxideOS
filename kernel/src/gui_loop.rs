@@ -14,16 +14,16 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::ptr;
 
-use gui::graphics::{Graphics, BackgroundStyle};
-use gui::window_manager::WindowManager;
-use gui::{colors, terminal, notepad, widgets, mouse};
-use gui::launcher::LauncherApp;
-use gui::start_menu::StartMenu;
-use gui::overview::Overview;
-use gui::quick_settings::{QuickSettings, QsAction};
-use gui::notifications::NotificationManager;
-use gui::calendar::CalendarPanel;
-use gui::menu::MenuAction;
+use crate::gui::graphics::{Graphics, BackgroundStyle};
+use crate::gui::window_manager::WindowManager;
+use crate::gui::{colors, terminal, notepad, widgets, mouse};
+use crate::gui::launcher::LauncherApp;
+use crate::gui::start_menu::StartMenu;
+use crate::gui::overview::Overview;
+use crate::gui::quick_settings::{QuickSettings, QsAction};
+use crate::gui::notifications::NotificationManager;
+use crate::gui::calendar::CalendarPanel;
+use crate::gui::menu::MenuAction;
 
 use crate::kernel::{compositor, gui_proc, scheduler, timer, keyboard, programs, shutdown, interrupts};
 use crate::net_probe::{NetProbe, NetProbePhase};

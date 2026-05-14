@@ -4,7 +4,7 @@
 //! task count, NIC info, IP address, and the "Test Internet Connection" button.
 //! It is drawn from the main GUI loop every time `needs_redraw` is true.
 
-use gui::{fonts, graphics::Graphics, window_manager::WindowManager};
+use crate::gui::{fonts, graphics::Graphics, window_manager::WindowManager};
 use crate::kernel::{ata, net, scheduler, timer, rtc};
 use crate::net_probe::{NetProbe, NetProbePhase, ProbeFailReason};
 
