@@ -8,6 +8,17 @@ override USER_VARIABLE = $(if $(filter $(origin $(1)),default undefined),$(eval 
 # Target architecture to build for. Default to x86_64.
 $(call USER_VARIABLE,KARCH,x86_64)
 
+# Rust target triple (mirrors kernel/Makefile) — used to locate rustdoc output.
+ifeq ($(RUST_TARGET),)
+    override RUST_TARGET := $(KARCH)-unknown-none
+    ifeq ($(KARCH),riscv64)
+        override RUST_TARGET := riscv64gc-unknown-none-elf
+    endif
+endif
+
+# Port `make docs` serves the documentation site on.
+$(call USER_VARIABLE,DOCS_PORT,8000)
+
 # Default user QEMU flags. These are appended to the QEMU command calls.
 # -cpu max: expose all available CPU features so LLVM-vectorised code (fill_rect, etc.) can use SSE/AVX.
 # -device qemu-xhci,id=xhci: USB 3.0 host controller
@@ -480,4 +491,39 @@ clean-ext2:
 .PHONY: distclean
 distclean: clean clean-install
 	$(MAKE) -C kernel distclean
+
+# ── Documentation ───────────────────────────────────────────────────────────
+# `make docs` converts every docs/**/*.md (plus README.md / CONTRIBUTING.md) to
+# HTML, builds rustdoc for the kernel and userspace crates, and serves the
+# result at http://localhost:$(DOCS_PORT)/.
+override DOCGEN := cargo run --quiet --manifest-path tools/docgen/Cargo.toml --release --
+
+.PHONY: docs
+docs: docs-build
+	$(DOCGEN) serve $(DOCS_PORT)
+
+.PHONY: docs-build
+docs-build: docs-manual docs-code
+	$(DOCGEN) index
+
+.PHONY: docs-manual
+docs-manual:
+	$(DOCGEN) build
+
+.PHONY: docs-code
+docs-code:
+	$(MAKE) -C kernel doc
+	$(MAKE) -C userspace doc
+	rm -rf docs_html/code
+	mkdir -p docs_html/code
+	cp -r kernel/target/$(RUST_TARGET)/doc docs_html/code/kernel
+	cp -r userspace/target/x86_64-unknown-none/doc docs_html/code/userspace
+
+.PHONY: docs-serve
+docs-serve:
+	$(DOCGEN) serve $(DOCS_PORT)
+
+.PHONY: clean-docs
+clean-docs:
+	rm -rf docs_html
 	rm -rf limine ovmf

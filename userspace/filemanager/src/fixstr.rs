@@ -24,6 +24,17 @@ impl<const N: usize> FixStr<N> {
 
     pub fn clear(&mut self) { self.len = 0; }
 
+    pub fn is_empty(&self) -> bool { self.len == 0 }
+
+    /// Remove and return the last byte, if any.
+    pub fn pop(&mut self) -> Option<u8> {
+        if self.len == 0 { return None; }
+        self.len -= 1;
+        let b = self.buf[self.len];
+        self.buf[self.len] = 0;
+        Some(b)
+    }
+
     /// Append a `u64` as decimal digits.
     pub fn push_u64(&mut self, mut v: u64) {
         let mut tmp = [0u8; 20];

@@ -11,7 +11,7 @@ use oxide_rt::{gui_fill_rect, gui_draw_text, gui_present};
 use crate::app::App;
 use crate::constants::*;
 use crate::fixstr::FixStr;
-use crate::types::{Layout, SidebarHit, SIDEBAR_ITEMS};
+use crate::types::{BarMode, Layout, SidebarHit, SIDEBAR_ITEMS};
 
 impl App {
     pub fn draw(&self) {
@@ -26,6 +26,7 @@ impl App {
         draw_column_headers(win, &lay);
         draw_file_list(self, win, &lay);
         draw_scrollbar(self, win, &lay);
+        draw_action_bar(self, win, &lay);
         draw_status_bar(self, win, &lay);
 
         gui_present(win);
@@ -221,6 +222,45 @@ fn draw_scrollbar(app: &App, win: oxide_rt::GuiWindow, lay: &Layout) {
     }
 }
 
+// ── Action bar (new file / new folder / rename / delete confirm) ──────────────
+
+fn draw_action_bar(app: &App, win: oxide_rt::GuiWindow, lay: &Layout) {
+    if app.bar_mode == BarMode::None { return; }
+
+    let bar_y = lay.status_y.saturating_sub(ACTION_BAR_H);
+    gui_fill_rect(win, 0, bar_y, lay.w, ACTION_BAR_H, COL_BAR_BG);
+    gui_fill_rect(win, 0, bar_y, lay.w, 1, COL_DIVIDER);
+
+    if app.bar_mode == BarMode::DeleteConfirm {
+        let mut msg = FixStr::<160>::new();
+        msg.push_str("Delete '");
+        if app.selected < app.entry_count {
+            msg.push_str(app.entries[app.selected].name.as_str());
+        }
+        msg.push_str("'?  (y = yes, any other key = cancel)");
+        gui_draw_text(win, PAD, bar_y + 8, COL_DANGER, msg.as_str());
+        return;
+    }
+
+    let label = match app.bar_mode {
+        BarMode::NewFile   => "New file: ",
+        BarMode::NewFolder => "New folder: ",
+        BarMode::Rename    => "Rename to: ",
+        _ => "",
+    };
+    let label_w = label.len() as u32 * CHAR_W;
+    gui_draw_text(win, PAD, bar_y + 8, COL_TEXT_DIM, label);
+
+    let input_x = PAD + label_w;
+    let input_w = lay.w.saturating_sub(input_x + PAD + 8);
+    gui_fill_rect(win, input_x - 2, bar_y + 4, input_w, ACTION_BAR_H - 8, COL_BAR_INPUT_BG);
+    gui_draw_text(win, input_x, bar_y + 8, COL_TEXT, app.bar_text.as_str());
+
+    // Input cursor
+    let bcx = input_x + app.bar_text.as_str().len() as u32 * CHAR_W;
+    gui_fill_rect(win, bcx, bar_y + 6, 2, ACTION_BAR_H - 10, COL_ACCENT);
+}
+
 // ── Status bar ────────────────────────────────────────────────────────────────
 
 fn draw_status_bar(app: &App, win: oxide_rt::GuiWindow, lay: &Layout) {
@@ -240,7 +280,14 @@ fn draw_status_bar(app: &App, win: oxide_rt::GuiWindow, lay: &Layout) {
     }
     gui_draw_text(win, 0, lay.status_y + 3, COL_STATUS_TXT, st.as_str());
 
-    let hint   = "  jk/arrows  enter  bksp=up  r=refresh  q=quit  ";
+    if !app.status_msg.is_empty() {
+        let msg    = app.status_msg.as_str();
+        let msg_x  = lay.w.saturating_sub(msg.len() as u32 * CHAR_W + PAD);
+        gui_draw_text(win, msg_x, lay.status_y + 3, COL_DANGER, msg);
+        return;
+    }
+
+    let hint   = "  jk/arrows  enter  bksp=up  n=new N=folder d=del m=rename  q=quit  ";
     let hint_x = lay.w.saturating_sub(hint.len() as u32 * CHAR_W);
     gui_draw_text(win, hint_x, lay.status_y + 3, 0xFFD0E8F8, hint);
 }

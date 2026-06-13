@@ -81,7 +81,9 @@ pub unsafe fn vfs_open(path: &str, flags: u32) -> i64 {
             }
             let raw_fd = unsafe { crate::kernel::ext2::open(ext2_path) };
             if raw_fd < 0 { return raw_fd; }
-            (*fdt).open_ext2(raw_fd as i32)
+            let writable = (flags & crate::kernel::fs::O_WRONLY != 0)
+                        || (flags & crate::kernel::fs::O_RDWR   != 0);
+            (*fdt).open_ext2(raw_fd as i32, writable)
         }
 
         Resolved::RamFS { path } => {

@@ -3,13 +3,18 @@
 //! Drawing is in `render.rs` (a separate `impl App` block).
 //! Each method group has a section comment so the file stays easy to scan.
 
-use oxide_rt::{exit, chdir, getcwd, readdir, stat, FileStat, gui_get_size, GuiEvent, GuiWindow};
+use oxide_rt::{exit, chdir, getcwd, readdir, stat, FileStat, gui_get_size, GuiEvent, GuiWindow,
+               open, close, mkdir, unlink, rename};
 use crate::constants::*;
 use crate::fixstr::FixStr;
-use crate::types::{EscState, Layout, DirEntry, SidebarHit, SIDEBAR_ITEMS};
+use crate::types::{BarMode, EscState, Layout, DirEntry, SidebarHit, SIDEBAR_ITEMS};
 
 pub const MAX_ENTRIES: usize = 128;
 pub const MAX_SEGS:    usize = 14;
+
+const O_WRONLY: u32 = 1;
+const O_CREAT:  u32 = 0x40;
+const O_TRUNC:  u32 = 0x200;
 
 // ── App struct ────────────────────────────────────────────────────────────────
 
@@ -27,6 +32,9 @@ pub struct App {
     pub(crate) sidebar_hover:  Option<SidebarHit>,
     pub(crate) dirty:          bool,
     pub(crate) esc:            EscState,
+    pub(crate) bar_mode:       BarMode,
+    pub(crate) bar_text:       FixStr<128>,
+    pub(crate) status_msg:     FixStr<160>,
 }
 
 impl App {
@@ -44,6 +52,9 @@ impl App {
             sidebar_hover:  None,
             dirty:          true,
             esc:            EscState::None,
+            bar_mode:       BarMode::None,
+            bar_text:       FixStr::new(),
+            status_msg:     FixStr::new(),
         };
         a.refresh_cwd();
         a.load_entries();
@@ -184,6 +195,168 @@ impl App {
     }
 }
 
+// ── File operations (new / delete / rename) ─────────────────────────────────────
+
+impl App {
+    /// Build the absolute path of `name` inside the current directory.
+    fn child_path(&self, name: &str) -> FixStr<384> {
+        let mut p = FixStr::<384>::new();
+        p.push_str(self.cwd.as_str());
+        if !self.cwd.as_str().ends_with('/') { p.push(b'/'); }
+        p.push_str(name);
+        p
+    }
+
+    fn set_status(&mut self, msg: &str) {
+        self.status_msg.clear();
+        self.status_msg.push_str(msg);
+    }
+
+    fn set_status_err(&mut self, msg: &str, code: i64) {
+        self.status_msg.clear();
+        self.status_msg.push_str(msg);
+        self.status_msg.push_str(" (");
+        if code < 0 {
+            self.status_msg.push(b'-');
+            self.status_msg.push_u64((-code) as u64);
+        } else {
+            self.status_msg.push_u64(code as u64);
+        }
+        self.status_msg.push(b')');
+    }
+
+    pub(crate) fn start_new_file(&mut self) {
+        self.bar_mode = BarMode::NewFile;
+        self.bar_text.clear();
+        self.status_msg.clear();
+        self.dirty = true;
+    }
+
+    pub(crate) fn start_new_folder(&mut self) {
+        self.bar_mode = BarMode::NewFolder;
+        self.bar_text.clear();
+        self.status_msg.clear();
+        self.dirty = true;
+    }
+
+    pub(crate) fn start_rename(&mut self) {
+        if self.selected >= self.entry_count { return; }
+        if self.entries[self.selected].name.as_str() == ".." { return; }
+        self.bar_mode = BarMode::Rename;
+        self.bar_text.clear();
+        self.bar_text.push_str(self.entries[self.selected].name.as_str());
+        self.status_msg.clear();
+        self.dirty = true;
+    }
+
+    pub(crate) fn start_delete(&mut self) {
+        if self.selected >= self.entry_count { return; }
+        if self.entries[self.selected].name.as_str() == ".." { return; }
+        self.bar_mode = BarMode::DeleteConfirm;
+        self.status_msg.clear();
+        self.dirty = true;
+    }
+
+    pub(crate) fn cancel_bar(&mut self) {
+        self.bar_mode = BarMode::None;
+        self.bar_text.clear();
+        self.dirty = true;
+    }
+
+    /// Apply the action for the currently active text-entry bar
+    /// (`NewFile`, `NewFolder`, or `Rename`).
+    pub(crate) fn confirm_bar(&mut self) {
+        match self.bar_mode {
+            BarMode::NewFile   => self.do_new_file(),
+            BarMode::NewFolder => self.do_new_folder(),
+            BarMode::Rename    => self.do_rename(),
+            BarMode::DeleteConfirm | BarMode::None => {}
+        }
+    }
+
+    fn do_new_file(&mut self) {
+        let name = self.bar_text.as_str();
+        if name.is_empty() || name.contains('/') || name == "." || name == ".." {
+            self.set_status("Invalid name");
+        } else {
+            let path = self.child_path(name);
+            let mut st = FileStat::zeroed();
+            if stat(path.as_str(), &mut st) == 0 {
+                self.set_status("Already exists");
+            } else {
+                let fd = open(path.as_str(), O_WRONLY | O_CREAT | O_TRUNC);
+                if fd >= 0 {
+                    close(fd);
+                    self.load_entries();
+                } else {
+                    self.set_status_err("Create failed", fd as i64);
+                }
+            }
+        }
+        self.bar_mode = BarMode::None;
+        self.bar_text.clear();
+        self.dirty = true;
+    }
+
+    fn do_new_folder(&mut self) {
+        let name = self.bar_text.as_str();
+        if name.is_empty() || name.contains('/') || name == "." || name == ".." {
+            self.set_status("Invalid name");
+        } else {
+            let path = self.child_path(name);
+            let r = mkdir(path.as_str());
+            if r == 0 {
+                self.load_entries();
+            } else {
+                self.set_status_err("Create folder failed", r);
+            }
+        }
+        self.bar_mode = BarMode::None;
+        self.bar_text.clear();
+        self.dirty = true;
+    }
+
+    fn do_rename(&mut self) {
+        if self.selected < self.entry_count {
+            let new_name = self.bar_text.as_str();
+            if new_name.is_empty() || new_name.contains('/') || new_name == "." || new_name == ".." {
+                self.set_status("Invalid name");
+            } else {
+                let old_path = self.child_path(self.entries[self.selected].name.as_str());
+                let new_path = self.child_path(new_name);
+                if old_path.as_str() != new_path.as_str() {
+                    let r = rename(old_path.as_str(), new_path.as_str());
+                    if r == 0 {
+                        self.load_entries();
+                    } else {
+                        self.set_status_err("Rename failed", r);
+                    }
+                }
+            }
+        }
+        self.bar_mode = BarMode::None;
+        self.bar_text.clear();
+        self.dirty = true;
+    }
+
+    pub(crate) fn do_delete(&mut self) {
+        if self.selected < self.entry_count {
+            let name = self.entries[self.selected].name;
+            if name.as_str() != ".." {
+                let path = self.child_path(name.as_str());
+                let r = unlink(path.as_str());
+                if r == 0 {
+                    self.load_entries();
+                } else {
+                    self.set_status_err("Delete failed", r);
+                }
+            }
+        }
+        self.bar_mode = BarMode::None;
+        self.dirty = true;
+    }
+}
+
 // ── Scroll & selection ────────────────────────────────────────────────────────
 
 impl App {
@@ -236,6 +409,28 @@ impl App {
 
         // ── Keyboard ──────────────────────────────────────────────────────
         if let Some(key) = ev.as_key() {
+            // ── Action bar (new/rename/delete) captures all input ──────────
+            if self.bar_mode != BarMode::None {
+                if self.bar_mode == BarMode::DeleteConfirm {
+                    match key {
+                        b'y' | b'Y' | b'\n' | b'\r' => self.do_delete(),
+                        _ => self.cancel_bar(),
+                    }
+                } else {
+                    match key {
+                        0x1B        => self.cancel_bar(),
+                        b'\n'|b'\r' => self.confirm_bar(),
+                        8 | 127     => { self.bar_text.pop(); self.dirty = true; }
+                        ev if ev >= 0x20 && ev < 0x7F && ev != b'/' => {
+                            self.bar_text.push(ev);
+                            self.dirty = true;
+                        }
+                        _ => {}
+                    }
+                }
+                return;
+            }
+
             match self.esc {
                 EscState::GotBracket => {
                     self.esc = EscState::None;
@@ -278,6 +473,10 @@ impl App {
                         b'j'        => self.sel_down(),
                         b'k'        => self.sel_up(),
                         b'r'|b'R'   => self.load_entries(),
+                        b'n'        => self.start_new_file(),
+                        b'N'        => self.start_new_folder(),
+                        b'm'|b'M'   => self.start_rename(),
+                        b'd'        => self.start_delete(),
                         b'g'        => { self.selected = 0; self.scroll = 0; self.dirty = true; }
                         b'G'        => {
                             if self.entry_count > 0 {

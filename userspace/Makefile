@@ -10,9 +10,12 @@ BINS := $(SRCS:%.asm=$(BINDIR)/%.bin)
 # Rust programs (output = bin/<name>.elf)
 RUST_BINS := $(BINDIR)/hello_rust.elf
 
-.PHONY: all clean rust-programs c-programs musl-programs
+.PHONY: all clean rust-programs c-programs musl-programs doc
 
 all: $(BINDIR) $(BINS) c-programs musl-programs rust-programs
+
+doc:
+	$(CARGO) doc --no-deps --workspace
 
 $(BINDIR):
 	mkdir -p $(BINDIR)

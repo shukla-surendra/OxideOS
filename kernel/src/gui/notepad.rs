@@ -25,6 +25,7 @@
 
 extern crate alloc;
 use alloc::string::String;
+use alloc::vec::Vec;
 use alloc::format;
 
 use crate::gui::fonts;
@@ -33,6 +34,48 @@ use crate::gui::menu::{MenuBar, MenuAction, Menu, MenuItem, MENUBAR_H};
 use crate::gui::window_manager::WindowManager;
 use crate::gui::terminal::{EVENT_SHIFT_UP, EVENT_SHIFT_DOWN, EVENT_SHIFT_LEFT, EVENT_SHIFT_RIGHT};
 use crate::kernel::fs::ramfs::RAMFS;
+
+// ── Persistent disk helpers ──────────────────────────────────────────────────
+
+/// True for paths under the persistent FAT16 mount (`/disk` or `/disk/...`).
+fn is_disk_path(path: &str) -> bool {
+    path == "/disk" || path.starts_with("/disk/")
+}
+
+/// Write `data` to `path` on the FAT16 disk, creating/truncating as needed.
+/// Returns `true` on success.
+unsafe fn save_to_disk(path: &[u8], data: &[u8]) -> bool {
+    if !crate::kernel::ata::is_present() { return false; }
+    use crate::kernel::fs::{O_WRONLY, O_CREAT, O_TRUNC};
+    let fd = unsafe { crate::kernel::fat::open(path, O_WRONLY | O_CREAT | O_TRUNC) };
+    if fd < 0 { return false; }
+    let mut off = 0usize;
+    while off < data.len() {
+        let n = unsafe { crate::kernel::fat::write_fd(fd as i32, &data[off..]) };
+        if n <= 0 { break; }
+        off += n as usize;
+    }
+    unsafe { crate::kernel::fat::close(fd as i32); }
+    off == data.len()
+}
+
+/// Read the full contents of `path` from the FAT16 disk.
+/// Returns `None` if the disk is absent or the file cannot be opened.
+unsafe fn load_from_disk(path: &[u8]) -> Option<Vec<u8>> {
+    if !crate::kernel::ata::is_present() { return None; }
+    use crate::kernel::fs::O_RDONLY;
+    let fd = unsafe { crate::kernel::fat::open(path, O_RDONLY) };
+    if fd < 0 { return None; }
+    let mut data = Vec::new();
+    let mut chunk = [0u8; 512];
+    loop {
+        let n = unsafe { crate::kernel::fat::read_fd(fd as i32, &mut chunk) };
+        if n <= 0 { break; }
+        data.extend_from_slice(&chunk[..n as usize]);
+    }
+    unsafe { crate::kernel::fat::close(fd as i32); }
+    Some(data)
+}
 
 // ── Layout ─────────────────────────────────────────────────────────────────────
 const CHAR_W:      u64 = 9;
@@ -439,6 +482,13 @@ impl NotepadApp {
             }
         }
 
+        if is_disk_path(path_str) {
+            if unsafe { save_to_disk(path_bytes, &buf[..pos]) } {
+                self.dirty = false;
+            }
+            return;
+        }
+
         unsafe {
             if let Some(fs) = RAMFS.get() {
                 let _ = fs.create_file(path_str);
@@ -464,45 +514,50 @@ impl NotepadApp {
             Err(_) => { self.bar_mode = BarMode::None; return; }
         };
 
-        unsafe {
-            if let Some(fs) = RAMFS.get() {
-                if let Some(idx) = fs.resolve(path_str) {
-                    // Clear current buffer
-                    for i in 0..MAX_LINES { self.line_lens[i] = 0; }
-                    self.num_lines  = 1;
-                    self.cursor_row = 0;
-                    self.cursor_col = 0;
-                    self.scroll_top = 0;
-                    self.sel_active = false;
-                    self.undo_len   = 0;
-                    self.undo_head  = 0;
-                    self.redo_len   = 0;
+        let data: Option<Vec<u8>> = if is_disk_path(path_str) {
+            unsafe { load_from_disk(path_str.as_bytes()) }
+        } else {
+            unsafe { RAMFS.get() }
+                .and_then(|fs| fs.resolve(path_str))
+                .map(|idx| unsafe { RAMFS.get().unwrap().inodes[idx].data.clone() })
+        };
 
-                    // Parse file data into lines
-                    let mut row = 0usize;
-                    let mut col = 0usize;
-                    for &byte in fs.inodes[idx].data.iter() {
-                        if row >= MAX_LINES { break; }
-                        if byte == b'\n' {
-                            row += 1;
-                            col  = 0;
-                            if row < MAX_LINES { self.line_lens[row] = 0; }
-                        } else if col < MAX_LINE_LEN {
-                            self.lines[row][col] = byte;
-                            col += 1;
-                            self.line_lens[row] = col;
-                        }
-                    }
-                    self.num_lines = (row + 1).max(1);
+        if let Some(data) = data {
+            // Clear current buffer
+            for i in 0..MAX_LINES { self.line_lens[i] = 0; }
+            self.num_lines  = 1;
+            self.cursor_row = 0;
+            self.cursor_col = 0;
+            self.scroll_top = 0;
+            self.sel_active = false;
+            self.undo_len   = 0;
+            self.undo_head  = 0;
+            self.redo_len   = 0;
 
-                    // Store filename
-                    let flen = self.bar_len.min(63);
-                    self.filename[..flen].copy_from_slice(&self.bar_text[..flen]);
-                    self.filename_len = flen;
-                    self.dirty = false;
+            // Parse file data into lines
+            let mut row = 0usize;
+            let mut col = 0usize;
+            for &byte in data.iter() {
+                if row >= MAX_LINES { break; }
+                if byte == b'\n' {
+                    row += 1;
+                    col  = 0;
+                    if row < MAX_LINES { self.line_lens[row] = 0; }
+                } else if col < MAX_LINE_LEN {
+                    self.lines[row][col] = byte;
+                    col += 1;
+                    self.line_lens[row] = col;
                 }
             }
+            self.num_lines = (row + 1).max(1);
+
+            // Store filename
+            let flen = self.bar_len.min(63);
+            self.filename[..flen].copy_from_slice(&self.bar_text[..flen]);
+            self.filename_len = flen;
+            self.dirty = false;
         }
+
         self.bar_mode = BarMode::None;
         self.bar_len  = 0;
     }

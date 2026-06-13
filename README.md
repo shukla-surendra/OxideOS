@@ -4,7 +4,7 @@
 
 **A hobby operating system written in Rust**
 
-x86-64 · Limine bootloader · BIOS + UEFI · Ring 3 userspace · GUI · TCP/IP · musl libc · Lua 5.4 · BusyBox 1.36
+x86-64 · Limine bootloader · BIOS + UEFI · Ring 3 userspace · GUI desktop · TCP/IP · musl libc · Bash · Python 3 · Lua 5.4 · BusyBox 1.36
 
 [![Build](https://github.com/SurendraShuklaOfficial/OxideOS/actions/workflows/build.yml/badge.svg)](https://github.com/SurendraShuklaOfficial/OxideOS/actions/workflows/build.yml)
 [![License](https://img.shields.io/badge/license-Custom%20Open%20Source-blue)](#license)
@@ -18,7 +18,7 @@ x86-64 · Limine bootloader · BIOS + UEFI · Ring 3 userspace · GUI · TCP/IP 
 
 ---
 
-OxideOS is a fully preemptive, multi-process operating system written from scratch in Rust (`no_std`). It boots on real hardware and in QEMU, runs a composited GUI with a window manager, has a TCP/IP network stack, and can execute programs compiled with **musl libc** — including the **Lua 5.4 interpreter** and **BusyBox 1.36**.
+OxideOS is a fully preemptive, multi-process operating system written from scratch in Rust (`no_std`). It boots on real hardware and in QEMU, runs a composited desktop GUI (window manager, taskbar, start menu, Activities overview, Notepad, Terminal, Calendar, notifications and quick settings), has a TCP/IP network stack, and can execute programs compiled with **musl libc** — including a full **Bash** shell, the **CPython 3** interpreter, the **Lua 5.4 interpreter**, and **BusyBox 1.36**.
 
 ## Highlights
 
@@ -26,10 +26,12 @@ OxideOS is a fully preemptive, multi-process operating system written from scrat
 |---|---|
 | **Boots on real hardware** | BIOS and UEFI via Limine v9 |
 | **Preemptive multitasking** | Round-robin scheduler, Ring 3, fork/exec/waitpid |
-| **GUI** | Composited window manager, start menu, PS/2 mouse |
-| **Full TCP/IP stack** | RTL8139 NIC + smoltcp (TCP, UDP, ICMP, DHCP, ARP, DNS) |
+| **GUI desktop** | Compositor, window manager, taskbar, start menu/launcher, Activities overview, PS/2 mouse |
+| **Desktop apps** | Notepad (text editor), Terminal, File Manager, System Monitor, Browser, Calendar, notifications, quick settings |
+| **Full TCP/IP stack** | RTL8139 / Intel e1000 / AMD PCnet NIC (auto-detected) + smoltcp — TCP, UDP, ICMP, DHCP (auto), ARP, DNS |
 | **Linux syscall ABI** | 80+ syscalls at Linux x86-64 numbers — musl programs just work |
 | **musl libc** | Compile any C program with `musl-gcc -static` and run it |
+| **Bash & Python 3** | Full Bash shell and a CPython 3 interpreter, both embedded in the kernel |
 | **Lua 5.4.7** | Full REPL and script execution, embedded in the kernel |
 | **BusyBox 1.36.1** | 300+ Unix applets — ash, awk, sed, find, gzip, tar, … |
 | **Installable** | `/bin/install` writes OxideOS to a blank disk from inside the OS |
@@ -87,21 +89,36 @@ make run-gui-x86_64    # UEFI boot, SDL window with mouse and GUI
 | RamFS | Read/write | `/bin`, `/tmp`, `/` |
 | FAT16 | Read/write | `/disk` |
 | ext2 | Read-only | `/ext2` |
+| procfs | Read-only | `/proc` (`version`, `cpuinfo`, `meminfo`, `uptime`, `mounts`) |
+| diskfs | Read-only | `/store` (live view of on-disk records), `/diskinfo` |
 | VFS devices | — | `/dev/null`, `/dev/tty` |
 
 ### Userspace Programs
 
 ```
-Shell:        sh (pipes, $VAR, export, redirection)
+Shells:       sh (pipes, $VAR, export, redirection), bash
 Coreutils:    ls cat ps cp mv rm mkdir pwd echo grep wc
               head tail sort sleep kill touch true false
-Network:      wget nc (netcat — TCP/UDP)
+Network:      wget nc (netcat — TCP/UDP), ping
 Editor:       edit (nano-like)
-GUI:          terminal filemanager
+GUI apps:     terminal filemanager notepad sysmon browser
 System:       install (live disk installer)
 musl/C:       hello_musl musl_test
-Interpreters: lua busybox
+Interpreters: lua busybox python3
 ```
+
+### Desktop GUI
+
+A composited desktop environment built on the `oxide-gui-core` widget framework:
+
+- **Window manager** — draggable/resizable windows, taskbar, PS/2 mouse cursor
+- **Start menu / launcher** and **Activities overview** — app launching and window switching
+- **Notepad** — text editor with a menu bar (open/save, find, word wrap, etc.)
+- **Terminal** — runs `sh`, `bash`, coreutils, BusyBox, Lua and Python 3
+- **File Manager** — browse RamFS, `/disk` (FAT16) and `/ext2`
+- **System Monitor** (`sysmon`) — live memory, uptime and process stats
+- **Browser** (`browser`) — lightweight HTTP text browser
+- **Calendar, notifications and quick settings** — taskbar clock/calendar panel, toast notifications, settings panel
 
 ### Linux-Compatible Syscalls (80+)
 
@@ -159,24 +176,33 @@ musl-gcc -static -O2 -o myprogram myprogram.c
 
 ```
 OxideOS/
-├── kernel/                  # no_std Rust kernel
-│   └── src/kernel/
-│       ├── main.rs          # entry point, subsystem init
-│       ├── scheduler.rs     # preemptive scheduler, Task struct
-│       ├── syscall_core.rs  # Linux x86-64 syscall dispatch
-│       ├── syscall.rs       # KernelRuntime — real syscall bodies
-│       ├── vfs.rs           # VFS layer
-│       ├── fat.rs           # FAT16 r/w driver
-│       ├── ext2.rs          # ext2 read-only driver
-│       ├── paging_allocator.rs
-│       ├── programs.rs      # embedded ELF binaries
-│       └── net/             # RTL8139 + smoltcp
-├── userspace/               # Rust userspace crates
-│   ├── oxide-rt/            # no_std syscall wrappers
-│   ├── sh/                  # /bin/sh
-│   ├── coreutils/           # ls cat grep wc head tail sort …
-│   ├── terminal/            # GUI terminal
-│   └── hello_musl/          # musl libc reference programs
+├── kernel/                      # no_std Rust kernel
+│   └── src/
+│       ├── main.rs              # entry point, subsystem init
+│       ├── gui_loop.rs          # desktop GUI main loop
+│       ├── gui/                 # desktop environment
+│       │   ├── window_manager.rs, compositor, taskbar
+│       │   ├── notepad.rs, terminal.rs, text_editor.rs
+│       │   ├── start_menu.rs, launcher.rs, overview.rs
+│       │   ├── calendar.rs, notifications.rs, quick_settings.rs
+│       │   └── menu.rs, widgets.rs, fonts.rs, colors.rs
+│       └── kernel/
+│           ├── proc/            # scheduler, ELF loader, programs, tty
+│           ├── sys/             # syscall dispatch (syscall_core, syscall)
+│           ├── mem/             # paging frame allocator
+│           ├── fs/              # vfs, ramfs, fat, ext2, procfs, diskfs, mbr
+│           ├── drivers/         # ata, pic, timer, keyboard, serial
+│           │   └── net/         # rtl8139, e1000, pcnet, smoltcp glue, dns
+│           ├── ipc/             # pipes, shared memory
+│           └── arch/            # gdt, idt, interrupts
+├── userspace/                   # Rust userspace crates (workspace)
+│   ├── oxide-rt/                # no_std syscall wrappers
+│   ├── oxide-widgets/           # GUI widget toolkit
+│   ├── sh/, bash                # shells
+│   ├── coreutils/               # ls cat grep wc head tail sort …
+│   ├── terminal/, filemanager/, sysmon/, browser/  # GUI apps
+│   ├── ping/, wget/, nc/, edit/, install/
+│   └── hello_musl/              # musl libc reference programs
 └── docs/
     ├── plan.md              # full feature roadmap
     ├── installation.md
@@ -432,11 +458,13 @@ oxide_install.img  (192 MB)
 ## Roadmap
 
 See [docs/plan.md](docs/plan.md) for the full feature roadmap. Key upcoming milestones:
-- [ ] DHCP auto-activation (DNS resolver already implemented)
+- [x] DHCP auto-activation (DNS resolver and `dhcpv4::Socket` wired into the net stack)
+- [x] Basic procfs (`/proc/version`, `/proc/cpuinfo`, `/proc/meminfo`, `/proc/uptime`, `/proc/mounts`)
+- [ ] Per-process procfs (`/proc/PID/maps`, `/proc/PID/status`)
 - [ ] ext2 write support
 - [ ] Copy-on-write fork
 - [ ] Job control (`bg`, `fg`, `Ctrl+Z`)
-- [ ] procfs (`/proc/PID/maps`, `/proc/meminfo`)
+- [ ] Shared memory (`shm`) syscalls
 - [ ] SMP (multi-core)
 
 ---

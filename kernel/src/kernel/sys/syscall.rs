@@ -1125,6 +1125,12 @@ impl SyscallRuntime for KernelRuntime {
 
     fn unlink_impl(&mut self, path: &[u8]) -> i64 {
         let path_str = match core::str::from_utf8(path) { Ok(s) => s, Err(_) => return -22 };
+
+        if matches!(crate::kernel::vfs::resolve(path_str), crate::kernel::vfs::Resolved::Fat16 { .. }) {
+            if !crate::kernel::ata::is_present() { return -19; } // ENODEV
+            return unsafe { crate::kernel::fat::unlink(path) };
+        }
+
         match unsafe { crate::kernel::fs::ramfs::RAMFS.get() } {
             None => -2,
             Some(fs) => {
@@ -1148,6 +1154,16 @@ impl SyscallRuntime for KernelRuntime {
     fn rename_impl(&mut self, old_path: &[u8], new_path: &[u8]) -> i64 {
         let old = match core::str::from_utf8(old_path) { Ok(s) => s, Err(_) => return -22 };
         let new = match core::str::from_utf8(new_path) { Ok(s) => s, Err(_) => return -22 };
+
+        let old_fat = matches!(crate::kernel::vfs::resolve(old), crate::kernel::vfs::Resolved::Fat16 { .. });
+        let new_fat = matches!(crate::kernel::vfs::resolve(new), crate::kernel::vfs::Resolved::Fat16 { .. });
+
+        if old_fat && new_fat {
+            if !crate::kernel::ata::is_present() { return -19; } // ENODEV
+            return unsafe { crate::kernel::fat::rename(old_path, new_path) };
+        }
+        if old_fat != new_fat { return -22; } // EINVAL: can't move across filesystem types
+
         match unsafe { crate::kernel::fs::ramfs::RAMFS.get() } {
             None => -2,
             Some(fs) => match fs.rename(old, new) { Ok(()) => 0, Err(e) => e },

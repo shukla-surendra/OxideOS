@@ -166,6 +166,27 @@ unsafe fn read_block_into_scratch(state: &Ext2State, block_no: u32) -> bool {
     ok
 }
 
+/// Write `SCRATCH` back to block `block_no` (block_size bytes).
+/// Returns false on I/O error.
+unsafe fn write_block_from_scratch(state: &Ext2State, block_no: u32) -> bool {
+    let lba = state.lba_offset + block_no * state.sects_per_block;
+    let scratch = &raw const SCRATCH;
+    for s in 0..state.sects_per_block {
+        let sector_buf = unsafe {
+            core::slice::from_raw_parts(
+                (scratch as *const u8).add((s * 512) as usize),
+                512,
+            )
+        };
+        let mut buf512 = [0u8; 512];
+        buf512.copy_from_slice(sector_buf);
+        if !unsafe { ata::write_sector_sec(lba + s, &buf512) } {
+            return false;
+        }
+    }
+    true
+}
+
 /// Read a u32 from `SCRATCH` at byte `offset` (little-endian).
 unsafe fn scratch_u32(offset: usize) -> u32 {
     let s = &raw const SCRATCH;
@@ -218,6 +239,31 @@ unsafe fn read_inode(state: &Ext2State, ino: u32, out: &mut Inode) -> bool {
     }
     out.size_hi = u32::from_le_bytes([(*s)[base+108], (*s)[base+109], (*s)[base+110], (*s)[base+111]]);
     true
+}
+
+/// Patch the on-disk `size_lo` field of inode `ino` in place.
+/// Returns false on I/O error.
+unsafe fn update_inode_size(state: &Ext2State, ino: u32, new_size: u32) -> bool {
+    if ino == 0 { return false; }
+    let idx       = ino - 1;
+    let group     = (idx / state.inodes_per_group) as usize;
+    let local_idx = idx % state.inodes_per_group;
+    if group >= state.groups_count as usize { return false; }
+
+    let inode_table_block    = state.bgdt[group].inode_table;
+    let byte_offset          = local_idx * state.inode_size;
+    let block_offset_in_table = byte_offset / state.block_size;
+    let byte_in_block        = (byte_offset % state.block_size) as usize;
+    let block_no = inode_table_block + block_offset_in_table;
+
+    if !unsafe { read_block_into_scratch(state, block_no) } { return false; }
+
+    let scratch = &raw mut SCRATCH;
+    let base = byte_in_block;
+    let bytes = new_size.to_le_bytes();
+    unsafe { (&mut *scratch)[base+4..base+8].copy_from_slice(&bytes); }
+
+    unsafe { write_block_from_scratch(state, block_no) }
 }
 
 // ── Directory walking ───────────────────────────────────────────────────────
@@ -473,6 +519,59 @@ pub unsafe fn read_fd(fd: i32, buf: &mut [u8]) -> i64 {
     }
 
     (*slot).file_offset += done as u32;
+    done as i64
+}
+
+/// Write up to `buf.len()` bytes to an open ext2 FD at the current file offset.
+///
+/// Only overwrites within already-allocated direct blocks (the first 12
+/// blocks of the file). Writes that would require allocating new blocks
+/// (file_offset / block_size >= 12, or the target direct block is 0) stop
+/// early; if nothing could be written, returns `ENOSPC`.
+pub unsafe fn write_fd(fd: i32, buf: &[u8]) -> i64 {
+    let state = &raw mut EXT2;
+    if !(*state).ready || !is_ext2_fd(fd) { return -5; }
+    let idx = (fd - EXT2_FD_BASE) as usize;
+    let fds = &raw mut (*state).fds;
+    let slot = &raw mut (*fds)[idx];
+    if !(*slot).active { return -5; }
+
+    let block_size = (*state).block_size as usize;
+    let mut done = 0usize;
+
+    while done < buf.len() {
+        let file_offset = (*slot).file_offset as usize + done;
+        let block_idx   = file_offset / block_size;
+        let byte_in_blk = file_offset % block_size;
+
+        if block_idx >= 12 { break; } // no indirect block support yet
+        let blk = (*slot).direct_blocks[block_idx];
+        if blk == 0 { break; } // block not allocated; growth unsupported
+
+        if !unsafe { read_block_into_scratch(&*state, blk) } { break; }
+
+        let avail = (block_size - byte_in_blk).min(buf.len() - done);
+        let scratch = &raw mut SCRATCH;
+        unsafe {
+            (&mut *scratch)[byte_in_blk..byte_in_blk + avail]
+                .copy_from_slice(&buf[done..done + avail]);
+        }
+
+        if !unsafe { write_block_from_scratch(&*state, blk) } { break; }
+
+        done += avail;
+    }
+
+    if done == 0 {
+        return if buf.is_empty() { 0 } else { -28 }; // ENOSPC
+    }
+
+    (*slot).file_offset += done as u32;
+    if (*slot).file_offset > (*slot).file_size {
+        (*slot).file_size = (*slot).file_offset;
+        unsafe { update_inode_size(&*state, (*slot).inode_no, (*slot).file_size); }
+    }
+
     done as i64
 }
 

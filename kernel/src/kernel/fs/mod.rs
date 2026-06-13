@@ -33,3 +33,4 @@ pub const EINVAL:  i64 = -22;
 pub const ENOSPC:  i64 = -28;
 pub const EMFILE:  i64 = -24;
 pub const EACCES:  i64 = -13;
+pub const ENOTEMPTY: i64 = -39;

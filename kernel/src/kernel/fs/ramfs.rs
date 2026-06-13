@@ -184,15 +184,17 @@ impl FdTable {
         }
     }
 
-    /// Allocate one FD slot backed by an ext2 raw fd (read-only).
-    pub fn open_ext2(&mut self, ext2_raw_fd: i32) -> i64 {
+    /// Allocate one FD slot backed by an ext2 raw fd.
+    /// `writable` permits overwriting existing data via `ext2::write_fd`
+    /// (bounded to the file's already-allocated direct blocks).
+    pub fn open_ext2(&mut self, ext2_raw_fd: i32, writable: bool) -> i64 {
         match self.alloc_fd() {
             None     => -24, // EMFILE
             Some(fd) => {
                 self.entries[fd] = Some(FdEntry {
                     backend: FdBackend::Ext2,
                     inode_idx: 0, raw_fd: ext2_raw_fd, offset: 0,
-                    writable: false, append: false,
+                    writable, append: false,
                     dir_path: [0u8; 64], dir_path_len: 0,
                 });
                 fd as i64
@@ -309,7 +311,8 @@ impl FdTable {
                 return unsafe { crate::kernel::fat::write_fd(entry.raw_fd, buf) };
             }
             FdBackend::Ext2 => {
-                return EACCES; // ext2 is read-only
+                if !entry.writable { return EACCES; }
+                return unsafe { crate::kernel::ext2::write_fd(entry.raw_fd, buf) };
             }
             FdBackend::DevNull | FdBackend::DevTty => {
                 // DevNull discards; DevTty mirrors to the output capture path

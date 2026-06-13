@@ -17,6 +17,12 @@ use crate::fixstr::FixStr;
 #[derive(Clone, Copy, PartialEq)]
 pub enum EscState { None, GotEsc, GotBracket }
 
+// ── Action-bar state machine ──────────────────────────────────────────────────
+
+/// Which (if any) modal input bar is currently capturing keyboard input.
+#[derive(Clone, Copy, PartialEq)]
+pub enum BarMode { None, NewFile, NewFolder, Rename, DeleteConfirm }
+
 // ── Responsive layout ─────────────────────────────────────────────────────────
 
 /// Pixel positions for the current window size.

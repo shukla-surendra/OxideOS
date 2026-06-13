@@ -348,6 +348,18 @@ unsafe fn fat_next(bpb: &Bpb, cluster: u16) -> u16 {
     if val >= 0xFFF8 { 0xFFFF } else { val }
 }
 
+/// Free every cluster in the chain starting at `first_cluster` by writing
+/// 0x0000 (free) to each FAT entry.
+unsafe fn free_cluster_chain(bpb: &Bpb, first_cluster: u16) {
+    let mut cl = first_cluster;
+    while cl >= 2 && cl < 0xFFF8 {
+        let next = unsafe { fat_next(bpb, cl) };
+        let _ = unsafe { fat_write_entry(bpb, cl, 0x0000) };
+        if next == 0 || next == 0xFFFF { break; }
+        cl = next;
+    }
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /// Initialise the FAT16 driver.
@@ -708,6 +720,164 @@ pub unsafe fn mkdir(raw_path: &[u8]) -> i64 {
                                    new_cluster, 0, &mut ent_sector, &mut ent_off) } {
         return -28;
     }
+    0
+}
+
+/// Remove a file or empty subdirectory at `raw_path`.
+/// Frees its cluster chain and marks the directory entry as deleted (0xE5).
+/// Returns 0 on success, `ENOENT` if the path doesn't exist, or `ENOTEMPTY`
+/// if it names a non-empty directory.
+pub unsafe fn unlink(raw_path: &[u8]) -> i64 {
+    let fs = &raw mut FAT_FS;
+    if !(*fs).ready { return -2; }
+
+    let (parent_dir, name83) = match unsafe { resolve_parent(&(*fs).bpb, raw_path) } {
+        Some(r) => r,
+        None    => return -22, // EINVAL
+    };
+
+    let mut found_sector: u32 = 0;
+    let mut found_off:    u32 = 0;
+    let mut found_fc:     u16 = 0;
+    let mut is_dir = false;
+    let mut found  = false;
+
+    unsafe {
+        for_each_fat_entry(&(*fs).bpb, parent_dir, |e| {
+            if e.name83 == name83 {
+                found_sector = e.entry_sector;
+                found_off    = e.entry_offset;
+                found_fc     = e.first_cluster;
+                is_dir       = e.is_dir;
+                found        = true;
+                return false;
+            }
+            true
+        });
+    }
+
+    if !found { return crate::kernel::fs::ENOENT; }
+
+    if is_dir {
+        // Refuse to remove a non-empty directory.
+        let mut has_children = false;
+        unsafe {
+            for_each_fat_entry(&(*fs).bpb, DirLoc::Subdir(found_fc), |e| {
+                let name = fat83_to_string(&e.name83[..8], &e.name83[8..11]);
+                if name != "." && name != ".." {
+                    has_children = true;
+                    return false;
+                }
+                true
+            });
+        }
+        if has_children { return crate::kernel::fs::ENOTEMPTY; }
+    }
+
+    if found_fc >= 2 {
+        unsafe { free_cluster_chain(&(*fs).bpb, found_fc); }
+    }
+
+    let mut buf = [0u8; 512];
+    if !unsafe { read_sector_buf(found_sector, &mut buf) } { return -5; } // EIO
+    buf[found_off as usize] = 0xE5;
+    if !unsafe { write_sector_buf(found_sector, &buf) } { return -5; }
+
+    0
+}
+
+/// Rename/move a file or directory from `old_path` to `new_path`.
+/// Both paths must resolve within the FAT16 volume. The destination must
+/// not already exist. Returns 0 on success, `ENOENT`/`EEXIST`/`EINVAL`/`ENOSPC`
+/// on error.
+pub unsafe fn rename(old_path: &[u8], new_path: &[u8]) -> i64 {
+    let fs = &raw mut FAT_FS;
+    if !(*fs).ready { return -2; }
+
+    let (old_parent, old_name83) = match unsafe { resolve_parent(&(*fs).bpb, old_path) } {
+        Some(r) => r,
+        None    => return -22,
+    };
+    let (new_parent, new_name83) = match unsafe { resolve_parent(&(*fs).bpb, new_path) } {
+        Some(r) => r,
+        None    => return -22,
+    };
+
+    let mut found_sector: u32 = 0;
+    let mut found_off:    u32 = 0;
+    let mut fc:    u16 = 0;
+    let mut size:  u32 = 0;
+    let mut is_dir = false;
+    let mut found  = false;
+
+    unsafe {
+        for_each_fat_entry(&(*fs).bpb, old_parent, |e| {
+            if e.name83 == old_name83 {
+                found_sector = e.entry_sector;
+                found_off    = e.entry_offset;
+                fc           = e.first_cluster;
+                size         = e.size;
+                is_dir       = e.is_dir;
+                found        = true;
+                return false;
+            }
+            true
+        });
+    }
+    if !found { return crate::kernel::fs::ENOENT; }
+
+    // Destination must not already exist.
+    let mut dest_exists = false;
+    unsafe {
+        for_each_fat_entry(&(*fs).bpb, new_parent, |e| {
+            if e.name83 == new_name83 { dest_exists = true; return false; }
+            true
+        });
+    }
+    if dest_exists { return crate::kernel::fs::EEXIST; }
+
+    let same_dir = match (old_parent, new_parent) {
+        (DirLoc::Root, DirLoc::Root)             => true,
+        (DirLoc::Subdir(a), DirLoc::Subdir(b))   => a == b,
+        _                                        => false,
+    };
+
+    if same_dir {
+        // Same directory: just rewrite the 11-byte name in place.
+        let mut buf = [0u8; 512];
+        if !unsafe { read_sector_buf(found_sector, &mut buf) } { return -5; }
+        let off = found_off as usize;
+        buf[off..off + 11].copy_from_slice(&new_name83);
+        if !unsafe { write_sector_buf(found_sector, &buf) } { return -5; }
+        return 0;
+    }
+
+    // Cross-directory move: create a new entry in `new_parent`, then delete the old one.
+    let attr = if is_dir { 0x10 } else { 0x20 };
+    let mut new_sector: u32 = 0;
+    let mut new_off:    u32 = 0;
+    if !unsafe { create_dir_entry(&(*fs).bpb, new_parent, &new_name83, attr, fc, size, &mut new_sector, &mut new_off) } {
+        return crate::kernel::fs::ENOSPC;
+    }
+
+    // If a directory was moved, fix up its `..` entry to point at the new parent.
+    if is_dir {
+        let parent_cluster: u16 = match new_parent { DirLoc::Subdir(cl) => cl, DirLoc::Root => 0 };
+        let dir_lba = cluster_to_lba(&(*fs).bpb, fc);
+        let mut buf = [0u8; 512];
+        if unsafe { read_sector_buf(dir_lba, &mut buf) } {
+            buf[58] = (parent_cluster & 0xFF) as u8;
+            buf[59] = (parent_cluster >> 8)   as u8;
+            let _ = unsafe { write_sector_buf(dir_lba, &buf) };
+        }
+    }
+
+    let mut buf = [0u8; 512];
+    if unsafe { read_sector_buf(found_sector, &mut buf) } {
+        buf[found_off as usize] = 0xE5;
+        let _ = unsafe { write_sector_buf(found_sector, &buf) };
+    }
+
     0
 }
 
