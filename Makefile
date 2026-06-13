@@ -8,6 +8,17 @@ override USER_VARIABLE = $(if $(filter $(origin $(1)),default undefined),$(eval 
 # Target architecture to build for. Default to x86_64.
 $(call USER_VARIABLE,KARCH,x86_64)
 
+# Rust target triple (mirrors kernel/Makefile) — used to locate rustdoc output.
+ifeq ($(RUST_TARGET),)
+    override RUST_TARGET := $(KARCH)-unknown-none
+    ifeq ($(KARCH),riscv64)
+        override RUST_TARGET := riscv64gc-unknown-none-elf
+    endif
+endif
+
+# Port `make docs` serves the documentation site on.
+$(call USER_VARIABLE,DOCS_PORT,8000)
+
 # Default user QEMU flags. These are appended to the QEMU command calls.
 # -cpu max: expose all available CPU features so LLVM-vectorised code (fill_rect, etc.) can use SSE/AVX.
 # -device qemu-xhci,id=xhci: USB 3.0 host controller
@@ -199,6 +210,36 @@ run-gui-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NA
 		$(DISK_FLAG) \
 		$(EXT2_FLAG) \
 		-display sdl \
+		$(NETFLAGS) \
+		$(QEMUFLAGS)
+
+# run-gui-disk / run-disk: like run-gui but ensures oxide_disk.img exists first.
+# Use this when the kernel reports "no disk" — the disk image was not present.
+.PHONY: run-gui-disk
+run-gui-disk: disk ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
+	qemu-system-$(KARCH) \
+		-M q35 \
+		-serial stdio \
+		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
+		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
+		-cdrom $(IMAGE_NAME).iso \
+		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
+		-display sdl \
+		$(NETFLAGS) \
+		$(QEMUFLAGS)
+
+.PHONY: run-disk
+run-disk: run-gui-disk
+
+# run-bios-disk: BIOS variant with disk image always present.
+.PHONY: run-bios-disk
+run-bios-disk: disk $(IMAGE_NAME).iso
+	qemu-system-$(KARCH) \
+		-M pc \
+		-serial stdio \
+		-cdrom $(IMAGE_NAME).iso \
+		-boot d \
+		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
 		$(NETFLAGS) \
 		$(QEMUFLAGS)
 
@@ -450,4 +491,39 @@ clean-ext2:
 .PHONY: distclean
 distclean: clean clean-install
 	$(MAKE) -C kernel distclean
+
+# ── Documentation ───────────────────────────────────────────────────────────
+# `make docs` converts every docs/**/*.md (plus README.md / CONTRIBUTING.md) to
+# HTML, builds rustdoc for the kernel and userspace crates, and serves the
+# result at http://localhost:$(DOCS_PORT)/.
+override DOCGEN := cargo run --quiet --manifest-path tools/docgen/Cargo.toml --release --
+
+.PHONY: docs
+docs: docs-build
+	$(DOCGEN) serve $(DOCS_PORT)
+
+.PHONY: docs-build
+docs-build: docs-manual docs-code
+	$(DOCGEN) index
+
+.PHONY: docs-manual
+docs-manual:
+	$(DOCGEN) build
+
+.PHONY: docs-code
+docs-code:
+	$(MAKE) -C kernel doc
+	$(MAKE) -C userspace doc
+	rm -rf docs_html/code
+	mkdir -p docs_html/code
+	cp -r kernel/target/$(RUST_TARGET)/doc docs_html/code/kernel
+	cp -r userspace/target/x86_64-unknown-none/doc docs_html/code/userspace
+
+.PHONY: docs-serve
+docs-serve:
+	$(DOCGEN) serve $(DOCS_PORT)
+
+.PHONY: clean-docs
+clean-docs:
+	rm -rf docs_html
 	rm -rf limine ovmf

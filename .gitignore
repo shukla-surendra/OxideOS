@@ -11,6 +11,8 @@ userspace/bin/
 userspace/target/
 kernel/target/
 iso_root/
+docs_html/
+tools/docgen/target/
 
 # Keep pre-built binaries that are checked in
 !userspace/bin/lua.elf

@@ -126,6 +126,7 @@ version = "0.1.0"
 dependencies = [
  "lazy_static",
  "limine",
+ "oxide-gui-core",
  "pc-keyboard",
  "png",
  "smoltcp",
@@ -164,6 +165,12 @@ dependencies = [
  "adler2",
  "simd-adler32",
 ]
+
+[[package]]
+name = "oxide-gui-core"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1103d2af1499787a50ff8d38388b52c605ddefdc8db34d459804bee962917daf"
 
 [[package]]
 name = "pc-keyboard"

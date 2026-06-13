@@ -5,10 +5,13 @@ use super::colors;
 use super::fonts;
 use crate::kernel::serial::SERIAL_PORT;
 
-const MAX_WINDOWS: usize = 16;
+const MAX_WINDOWS:   usize = 16;
 const TASKBAR_HEIGHT: u64 = 48;
 const TITLEBAR_H:    u64 = 34;
-const C_CLOSE_ICON:  u32 = 0xFF7A1015; // X icon color on close button
+const C_CLOSE_ICON:  u32 = 0xFF7A1015;
+const RESIZE_ZONE:   u64 = 8;   // px from window edge that activates resize
+const MIN_WIN_W:     u64 = 200;
+const MIN_WIN_H:     u64 = 100;
 
 /// Format timer ticks as "HH:MM:SS" into `buf` (exactly 8 bytes).
 /// The timer runs at 100 Hz, so ticks / 100 = seconds since boot.
@@ -59,6 +62,13 @@ pub struct WindowManager {
     last_closed_window: Option<usize>,
     // Set when user clicks the center clock pill (cleared by take_clock_click).
     clock_was_clicked: bool,
+    // Window resize state
+    resizing_window:   Option<usize>,
+    resize_edge:       u8,           // 1=right, 2=bottom, 3=corner
+    resize_start_mx:   i64,
+    resize_start_my:   i64,
+    resize_start_w:    u64,
+    resize_start_h:    u64,
 }
 
 impl WindowManager {
@@ -81,6 +91,12 @@ impl WindowManager {
             background_style: BackgroundStyle::Default,
             last_closed_window: None,
             clock_was_clicked: false,
+            resizing_window: None,
+            resize_edge: 0,
+            resize_start_mx: 0,
+            resize_start_my: 0,
+            resize_start_w: 0,
+            resize_start_h: 0,
         }
     }
 
@@ -287,6 +303,23 @@ impl WindowManager {
         }
     }
 
+    /// Returns 0=none, 1=right edge, 2=bottom edge, 3=bottom-right corner.
+    fn detect_resize_edge(&self, window: &super::widgets::Window, mx: u64, my: u64) -> u8 {
+        let right  = mx >= window.x + window.width.saturating_sub(RESIZE_ZONE) &&
+                     mx <  window.x + window.width + RESIZE_ZONE;
+        let bottom = my >= window.y + window.height.saturating_sub(RESIZE_ZONE) &&
+                     my <  window.y + window.height + RESIZE_ZONE;
+        // Must be at least roughly inside the window horizontally/vertically
+        if mx < window.x { return 0; }
+        if my < window.y + TITLEBAR_H { return 0; } // don't conflict with titlebar
+        match (right, bottom) {
+            (true,  true)  => 3,
+            (true,  false) => 1,
+            (false, true)  => 2,
+            _              => 0,
+        }
+    }
+
     pub fn handle_click(&mut self, mouse_x: u64, mouse_y: u64) -> bool {
         // Check taskbar first
         if mouse_y < TASKBAR_HEIGHT {
@@ -299,16 +332,17 @@ impl WindowManager {
         let mut clicked_minimize_button = false;
         let mut clicked_maximize_button = false;
         let mut clicked_titlebar = false;
+        let mut clicked_resize_edge: u8 = 0;
         let mut drag_offset_x = 0i64;
         let mut drag_offset_y = 0i64;
 
         for i in (0..self.window_count).rev() {
             let window_id = self.z_order[i];
-            
+
             if self.window_states[window_id] == WindowState::Minimized {
                 continue;
             }
-            
+
             if let Some(ref window) = self.windows[window_id] {
                 if !window.visible {
                     continue;
@@ -331,6 +365,16 @@ impl WindowManager {
                     clicked_window = Some(window_id);
                     clicked_minimize_button = true;
                     break;
+                }
+
+                // Check resize edges (only Normal windows)
+                if self.window_states[window_id] == WindowState::Normal {
+                    let edge = self.detect_resize_edge(window, mouse_x, mouse_y);
+                    if edge > 0 {
+                        clicked_window = Some(window_id);
+                        clicked_resize_edge = edge;
+                        break;
+                    }
                 }
 
                 if window.is_titlebar_clicked(mouse_x, mouse_y) {
@@ -357,6 +401,16 @@ impl WindowManager {
                 self.maximize_window(window_id);
             } else if clicked_minimize_button {
                 self.minimize_window(window_id);
+            } else if clicked_resize_edge > 0 {
+                self.bring_to_front(window_id);
+                if let Some(ref w) = self.windows[window_id] {
+                    self.resizing_window  = Some(window_id);
+                    self.resize_edge      = clicked_resize_edge;
+                    self.resize_start_mx  = mouse_x as i64;
+                    self.resize_start_my  = mouse_y as i64;
+                    self.resize_start_w   = w.width;
+                    self.resize_start_h   = w.height;
+                }
             } else if clicked_titlebar {
                 self.bring_to_front(window_id);
                 let state = self.window_states[window_id];
@@ -372,10 +426,10 @@ impl WindowManager {
             } else {
                 self.bring_to_front(window_id);
             }
-            
+
             return true;
         }
-        
+
         false
     }
 
@@ -433,6 +487,21 @@ impl WindowManager {
     }
 
     pub fn handle_drag(&mut self, mouse_x: u64, mouse_y: u64) {
+        // Resize takes priority over move
+        if let Some(window_id) = self.resizing_window {
+            let dx = mouse_x as i64 - self.resize_start_mx;
+            let dy = mouse_y as i64 - self.resize_start_my;
+            let edge = self.resize_edge;
+            if let Some(ref mut win) = self.windows[window_id] {
+                if edge == 1 || edge == 3 {
+                    win.width = ((self.resize_start_w as i64 + dx).max(MIN_WIN_W as i64)) as u64;
+                }
+                if edge == 2 || edge == 3 {
+                    win.height = ((self.resize_start_h as i64 + dy).max(MIN_WIN_H as i64)) as u64;
+                }
+            }
+            return;
+        }
         if let Some(window_id) = self.dragging_window {
             if let Some(ref mut window) = self.windows[window_id] {
                 window.x = (mouse_x as i64 - self.drag_offset_x).max(0) as u64;
@@ -442,6 +511,10 @@ impl WindowManager {
     }
 
     pub fn release_drag(&mut self) {
+        if self.resizing_window.is_some() {
+            self.resizing_window = None;
+            return;
+        }
         if let Some(window_id) = self.dragging_window {
             // Edge snapping (only for Normal windows; already excluded Maximized from dragging)
             if self.window_states[window_id] == WindowState::Normal {
@@ -945,7 +1018,9 @@ impl WindowManager {
             .unwrap_or(false)
     }
 
-    pub fn is_dragging(&self) -> bool { self.dragging_window.is_some() }
+    pub fn is_dragging(&self) -> bool {
+        self.dragging_window.is_some() || self.resizing_window.is_some()
+    }
 
     pub fn get_screen_dimensions(&self) -> (u64, u64) {
         (self.screen_width, self.screen_height)
