@@ -60,6 +60,34 @@ bash-rebuild:
 	cd /tmp/bash-5.2 && make LDFLAGS="-static -Wl,--allow-multiple-definition" -j$(shell nproc)
 	cp /tmp/bash-5.2/bash $(BINDIR)/bash.elf
 
+# ── CPython 3.12 (pre-built, copy from build dir) ────────────────────────────
+python3: $(BINDIR)
+	cp /tmp/Python-3.12.9/python $(BINDIR)/python3.elf
+
+# ── Rebuild CPython 3.12 from source ─────────────────────────────────────────
+# Produces a static musl binary with only the core interpreter and stdlib
+# modules that compile cleanly without extra system libraries.
+# Run once: make python3-rebuild
+# Then include in the OS image: make python3  (just copies the result)
+python3-rebuild:
+	test -f /tmp/Python-3.12.9/Makefile || ( \
+	    cd /tmp && wget -q https://www.python.org/ftp/python/3.12.9/Python-3.12.9.tar.xz && \
+	    tar xJf Python-3.12.9.tar.xz && \
+	    cd /tmp/Python-3.12.9 && \
+	    CC=$(MUSL_GCC) \
+	    CFLAGS="-static -Os -fno-stack-protector" \
+	    LDFLAGS="-static" \
+	    ./configure \
+	        --prefix=/tmp/Python-3.12.9-install \
+	        --disable-shared \
+	        --with-ensurepip=no \
+	        --without-readline \
+	        --without-curses \
+	        --disable-test-modules \
+	        --without-decimal-c-context-module )
+	cd /tmp/Python-3.12.9 && make LDFLAGS="-static -Wl,--allow-multiple-definition" -j$(shell nproc) python
+	cp /tmp/Python-3.12.9/python $(BINDIR)/python3.elf
+
 # ── Rust programs ─────────────────────────────────────────────────────────────
 rust-programs: $(BINDIR)
 	$(CARGO) +nightly build --release -p hello-rust -p sh -p terminal -p coreutils -p wget -p edit -p nc -p filemanager -p install -p sysmon -p ping -p browser 2>&1

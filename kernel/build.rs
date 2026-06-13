@@ -78,7 +78,7 @@ fn current_date() -> String {
 fn is_leap(y: u32) -> bool { y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) }
 
 fn probe_optional_binaries() {
-    for name in &["lua", "busybox", "bash"] {
+    for name in &["lua", "busybox", "bash", "python3"] {
         let path = format!("../userspace/bin/{}.elf", name);
         println!("cargo:rerun-if-changed={path}");
         if std::path::Path::new(&path).exists() {
