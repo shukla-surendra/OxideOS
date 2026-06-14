@@ -54,20 +54,21 @@ qemu-system-x86_64 \
 ### Build from source
 
 ```bash
-# 1. Install dependencies (Ubuntu/Debian)
-sudo apt install build-essential qemu-system-x86 xorriso mtools \
-                 dosfstools e2fsprogs nasm gcc-x86-64-linux-gnu
-
-# 2. Install Rust nightly
-curl https://sh.rustup.rs -sSf | sh
-rustup override set nightly
-
-# 3. Build and run
+# 1. Clone the repo
 git clone https://github.com/SurendraShuklaOfficial/OxideOS
 cd OxideOS
+
+# 2. Install all dependencies (Ubuntu/Debian) — Rust nightly, QEMU, cross
+#    toolchains, ISO/disk tools, LLD, etc. Safe to re-run on an existing system.
+make setup
+source "$HOME/.cargo/env"
+
+# 3. Build and run
 make run-bios          # BIOS boot, serial output — best for development
 make run-gui-x86_64    # UEFI boot, SDL window with mouse and GUI
 ```
+
+Prefer to install manually? See `install_dep.sh` or the [dependency table](#dependencies) below.
 
 ---
 

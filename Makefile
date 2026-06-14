@@ -55,6 +55,12 @@ override INSTALL_DATA_SECTORS := 131072
 override INSTALL_EFI_OFFSET  := 1M
 override INSTALL_DATA_OFFSET := 65M
 
+# Install all build/run dependencies (Rust nightly, QEMU, cross toolchains, ...)
+# on a fresh Ubuntu/Debian system. Run this once before the first `make`.
+.PHONY: setup
+setup:
+	bash install_dep.sh
+
 .PHONY: all
 all: $(IMAGE_NAME).iso
 

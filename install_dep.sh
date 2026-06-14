@@ -56,6 +56,7 @@ sudo apt-get install -y \
     qemu-system-x86 \
     qemu-system-arm \
     qemu-system-misc \
+    qemu-system-gui \
     qemu-utils
 success "QEMU installed: $(qemu-system-x86_64 --version | head -1)"
 
