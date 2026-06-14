@@ -1680,6 +1680,21 @@ impl KernelRuntime {
             return self.exec_fat(path, extra_args);
         }
 
+        // 4. PATH fallback: bare names (e.g. "python3") are looked up on the
+        // FAT disk as `/disk/<name>` and `/disk/<name>.elf`. This lets large
+        // optional interpreters (CPython, etc.) ship as plain files on the
+        // disk image instead of being baked into the kernel binary.
+        if !path_str.contains('/') {
+            use alloc::format;
+            let plain = format!("/disk/{path_str}");
+            let r = self.exec_fat(plain.as_bytes(), extra_args);
+            if r != -2 { return r; }
+
+            let with_elf = format!("/disk/{path_str}.elf");
+            let r = self.exec_fat(with_elf.as_bytes(), extra_args);
+            if r != -2 { return r; }
+        }
+
         -2 // ENOENT
     }
 
