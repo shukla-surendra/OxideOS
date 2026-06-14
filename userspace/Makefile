@@ -63,15 +63,21 @@ bash-rebuild:
 	cd /tmp/bash-5.2 && make LDFLAGS="-static -Wl,--allow-multiple-definition" -j$(shell nproc)
 	cp /tmp/bash-5.2/bash $(BINDIR)/bash.elf
 
-# ── CPython 3.12 (pre-built, copy from build dir) ────────────────────────────
-python3: $(BINDIR)
-	cp /tmp/Python-3.12.9/python $(BINDIR)/python3.elf
+# ── CPython 3.12 (pre-built, copy onto the FAT disk image) ───────────────────
+# python3.elf is NOT embedded in the kernel binary — it is copied onto the
+# secondary FAT disk image (../oxide_disk.img) and loaded at runtime via the
+# kernel's PATH fallback (run `python3` from the shell).
+../oxide_disk.img:
+	$(MAKE) -C .. disk
+
+python3: ../oxide_disk.img
+	mcopy -o -i ../oxide_disk.img /tmp/Python-3.12.9/python ::/python3.elf
 
 # ── Rebuild CPython 3.12 from source ─────────────────────────────────────────
 # Produces a static musl binary with only the core interpreter and stdlib
 # modules that compile cleanly without extra system libraries.
 # Run once: make python3-rebuild
-# Then include in the OS image: make python3  (just copies the result)
+# Then put it on the disk image: make python3
 python3-rebuild:
 	test -f /tmp/Python-3.12.9/Makefile || ( \
 	    cd /tmp && wget -q https://www.python.org/ftp/python/3.12.9/Python-3.12.9.tar.xz && \
@@ -89,7 +95,6 @@ python3-rebuild:
 	        --disable-test-modules \
 	        --without-decimal-c-context-module )
 	cd /tmp/Python-3.12.9 && make LDFLAGS="-static -Wl,--allow-multiple-definition" -j$(shell nproc) python
-	cp /tmp/Python-3.12.9/python $(BINDIR)/python3.elf
 
 # ── Rust programs ─────────────────────────────────────────────────────────────
 rust-programs: $(BINDIR)
@@ -120,6 +125,7 @@ rust-programs: $(BINDIR)
 	cp target/x86_64-unknown-none/release/touch        $(BINDIR)/touch.elf
 	cp "target/x86_64-unknown-none/release/true"       $(BINDIR)/true.elf
 	cp "target/x86_64-unknown-none/release/false"      $(BINDIR)/false.elf
+	cp target/x86_64-unknown-none/release/forktest     $(BINDIR)/forktest.elf
 	cp target/x86_64-unknown-none/release/install      $(BINDIR)/install.elf
 	cp target/x86_64-unknown-none/release/sysmon       $(BINDIR)/sysmon.elf
 	cp target/x86_64-unknown-none/release/ping         $(BINDIR)/ping.elf

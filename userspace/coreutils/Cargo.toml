@@ -79,6 +79,10 @@ path = "src/true_.rs"
 name = "false"
 path = "src/false_.rs"
 
+[[bin]]
+name = "forktest"
+path = "src/forktest.rs"
+
 [dependencies]
 oxide-rt = { path = "../oxide-rt" }
 

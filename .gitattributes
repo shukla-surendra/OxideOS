@@ -1,0 +1,4 @@
+# Ensure shell scripts always use LF line endings, even on Windows checkouts.
+*.sh text eol=lf
+Makefile text eol=lf
+*.mk text eol=lf

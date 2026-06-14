@@ -148,6 +148,10 @@ pub static TRUE: &[u8] =
 pub static FALSE: &[u8] =
     include_bytes!("../../../../userspace/bin/false.elf");
 
+/// forktest — exercises fork() copy-on-write semantics.
+pub static FORKTEST: &[u8] =
+    include_bytes!("../../../../userspace/bin/forktest.elf");
+
 /// hello_c — "Hello from C on OxideOS!" compiled from C with gcc (Linux syscall ABI).
 pub static HELLO_C: &[u8] =
     include_bytes!("../../../../userspace/bin/hello_c.elf");
@@ -178,11 +182,6 @@ pub static BUSYBOX: &[u8] =
 #[cfg(has_bash)]
 pub static BASH: &[u8] =
     include_bytes!("../../../../userspace/bin/bash.elf");
-
-/// python3 — CPython 3.12 interpreter compiled with musl-gcc -static (optional).
-#[cfg(has_python3)]
-pub static PYTHON3: &[u8] =
-    include_bytes!("../../../../userspace/bin/python3.elf");
 
 /// sysmon — GUI system monitor showing memory, uptime, and process count.
 pub static SYSMON: &[u8] =
@@ -230,6 +229,7 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
         "touch" => Some(TOUCH),
         "true"    => Some(TRUE),
         "false"   => Some(FALSE),
+        "forktest" => Some(FORKTEST),
         "hello_c" => Some(HELLO_C),
         "install"    => Some(INSTALL),
         "hello_musl" => Some(HELLO_MUSL),
@@ -240,8 +240,6 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
         "busybox"    => Some(BUSYBOX),
         #[cfg(has_bash)]
         "bash"       => Some(BASH),
-        #[cfg(has_python3)]
-        "python3"    => Some(PYTHON3),
         "sysmon"     => Some(SYSMON),
         "browser"    => Some(BROWSER),
         _            => None,
@@ -256,7 +254,7 @@ pub const NAMES: &[&str] = &[
     "ls", "cat", "ps", "cp", "mkdir", "pwd", "wget", "edit", "nc", "rm", "mv",
     "filemanager",
     "echo", "grep", "wc", "head", "tail", "sort", "sleep", "kill", "touch",
-    "true", "false",
+    "true", "false", "forktest",
     "hello_c",
     "install",
     "hello_musl",
@@ -264,7 +262,6 @@ pub const NAMES: &[&str] = &[
     "lua",
     "busybox",
     "bash",
-    "python3",
     "sysmon",
     "browser",
 ];
