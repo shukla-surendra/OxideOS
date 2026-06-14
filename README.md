@@ -18,7 +18,7 @@ x86-64 · Limine bootloader · BIOS + UEFI · Ring 3 userspace · GUI desktop ·
 
 ---
 
-OxideOS is a fully preemptive, multi-process operating system written from scratch in Rust (`no_std`). It boots on real hardware and in QEMU, runs a composited desktop GUI (window manager, taskbar, start menu, Activities overview, Notepad, Terminal, Calendar, notifications and quick settings), has a TCP/IP network stack, and can execute programs compiled with **musl libc** — including a full **Bash** shell, the **CPython 3** interpreter, the **Lua 5.4 interpreter**, and **BusyBox 1.36**.
+OxideOS is a fully preemptive, multi-process operating system written from scratch in Rust (`no_std`). It boots on real hardware and in QEMU, runs a composited desktop GUI (window manager, taskbar, start menu, Activities overview, Notepad, Terminal, Calendar, notifications and quick settings), has a TCP/IP network stack, and can execute programs compiled with **musl libc** — including a full **Bash** shell, the **Lua 5.4 interpreter**, **BusyBox 1.36**, and (loaded from the FAT disk at runtime) the **CPython 3** interpreter.
 
 ## Highlights
 
@@ -26,12 +26,14 @@ OxideOS is a fully preemptive, multi-process operating system written from scrat
 |---|---|
 | **Boots on real hardware** | BIOS and UEFI via Limine v9 |
 | **Preemptive multitasking** | Round-robin scheduler, Ring 3, fork/exec/waitpid |
+| **Copy-on-write fork** | Parent/child share refcounted physical frames; private copy made lazily on first write |
 | **GUI desktop** | Compositor, window manager, taskbar, start menu/launcher, Activities overview, PS/2 mouse |
 | **Desktop apps** | Notepad (text editor), Terminal, File Manager, System Monitor, Browser, Calendar, notifications, quick settings |
 | **Full TCP/IP stack** | RTL8139 / Intel e1000 / AMD PCnet NIC (auto-detected) + smoltcp — TCP, UDP, ICMP, DHCP (auto), ARP, DNS |
 | **Linux syscall ABI** | 80+ syscalls at Linux x86-64 numbers — musl programs just work |
 | **musl libc** | Compile any C program with `musl-gcc -static` and run it |
-| **Bash & Python 3** | Full Bash shell and a CPython 3 interpreter, both embedded in the kernel |
+| **Bash** | Full Bash shell, embedded in the kernel |
+| **Python 3** | CPython 3 interpreter, loaded from the FAT disk at runtime via PATH fallback (not embedded) |
 | **Lua 5.4.7** | Full REPL and script execution, embedded in the kernel |
 | **BusyBox 1.36.1** | 300+ Unix applets — ash, awk, sed, find, gzip, tar, … |
 | **Installable** | `/bin/install` writes OxideOS to a blank disk from inside the OS |
@@ -79,7 +81,7 @@ Prefer to install manually? See `install_dep.sh` or the [dependency table](#depe
 - **Boot**: Limine v9 (BIOS + UEFI), GDT/TSS, IDT, PIC, PIT at 100 Hz
 - **CPU**: `int 0x80` legacy gate + `SYSCALL/SYSRET` fast path, Ring 3
 - **Scheduler**: Preemptive round-robin, up to 8 tasks, per-process CR3
-- **Processes**: `fork` / `exec` / `waitpid` / `exit`, ELF64 loader, argv/envp (SysV ABI)
+- **Processes**: copy-on-write `fork` / `exec` / `waitpid` / `exit`, ELF64 loader, argv/envp (SysV ABI)
 - **Memory**: Physical frame allocator, `mmap(MAP_ANONYMOUS)`, real `munmap`, `brk/sbrk`
 - **Signals**: `sigaction`, `sigreturn`, trampoline page
 
@@ -105,7 +107,7 @@ Editor:       edit (nano-like)
 GUI apps:     terminal filemanager notepad sysmon browser
 System:       install (live disk installer)
 musl/C:       hello_musl musl_test
-Interpreters: lua busybox python3
+Interpreters: lua busybox (embedded), python3 (loaded from /disk at runtime)
 ```
 
 ### Desktop GUI
@@ -115,7 +117,7 @@ A composited desktop environment built on the `oxide-gui-core` widget framework:
 - **Window manager** — draggable/resizable windows, taskbar, PS/2 mouse cursor
 - **Start menu / launcher** and **Activities overview** — app launching and window switching
 - **Notepad** — text editor with a menu bar (open/save, find, word wrap, etc.)
-- **Terminal** — runs `sh`, `bash`, coreutils, BusyBox, Lua and Python 3
+- **Terminal** — runs `sh`, `bash`, coreutils, BusyBox, Lua, and Python 3 (from disk)
 - **File Manager** — browse RamFS, `/disk` (FAT16) and `/ext2`
 - **System Monitor** (`sysmon`) — live memory, uptime and process stats
 - **Browser** (`browser`) — lightweight HTTP text browser
@@ -270,6 +272,27 @@ Files placed in `oxide_disk.img` are visible as `/disk/<name>`. To populate from
 sudo mount -o loop oxide_disk.img /mnt
 sudo cp myfile.txt /mnt/
 sudo umount /mnt
+```
+
+#### Running CPython 3 from disk
+
+Python 3 is not embedded in the kernel — it ships as a plain ELF on the FAT
+disk and is found via a PATH-style fallback (bare command names are looked
+up as `/disk/<name>` and `/disk/<name>.elf`):
+
+```bash
+cd userspace
+make python3-rebuild   # builds a static musl CPython 3.12 (run once, slow)
+make python3           # copies python onto ../oxide_disk.img as /python3.elf
+cd ..
+make run-bios
+```
+
+```
+$ python3
+Python 3.12.9 (main, ...) on oxide
+>>> print("Hello from CPython on OxideOS!")
+Hello from CPython on OxideOS!
 ```
 
 ### Secondary ext2 Disk (optional)
@@ -462,8 +485,8 @@ See [docs/plan.md](docs/plan.md) for the full feature roadmap. Key upcoming mile
 - [x] DHCP auto-activation (DNS resolver and `dhcpv4::Socket` wired into the net stack)
 - [x] Basic procfs (`/proc/version`, `/proc/cpuinfo`, `/proc/meminfo`, `/proc/uptime`, `/proc/mounts`)
 - [ ] Per-process procfs (`/proc/PID/maps`, `/proc/PID/status`)
+- [x] Copy-on-write fork
 - [ ] ext2 write support
-- [ ] Copy-on-write fork
 - [ ] Job control (`bg`, `fg`, `Ctrl+Z`)
 - [ ] Shared memory (`shm`) syscalls
 - [ ] SMP (multi-core)
