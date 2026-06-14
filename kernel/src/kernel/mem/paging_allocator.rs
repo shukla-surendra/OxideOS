@@ -26,6 +26,10 @@ impl PageTableFlags {
     const PRESENT:      u64 = 1 << 0;
     const WRITABLE:     u64 = 1 << 1;
     const USER:         u64 = 1 << 2;
+    /// Software-defined "copy-on-write" marker. Bit 9 is one of the AVL bits
+    /// (9-11), architecturally ignored by the MMU for all paging-structure
+    /// entries, so it is safe to repurpose for OS bookkeeping.
+    const COW:          u64 = 1 << 9;
     const NO_EXECUTE:   u64 = 1 << 63;
 
     fn kernel_flags() -> Self { Self(Self::PRESENT | Self::WRITABLE) }
@@ -44,6 +48,17 @@ impl PageTableFlags {
     }
 
     fn merge(&mut self, other: Self) { self.0 |= other.0; }
+
+    fn is_writable(&self) -> bool { self.0 & Self::WRITABLE != 0 }
+    fn is_cow(&self) -> bool { self.0 & Self::COW != 0 }
+
+    /// Clear WRITABLE and set the COW marker (used when sharing a previously
+    /// writable page between parent and child on fork).
+    fn as_cow(&self) -> Self { Self((self.0 & !Self::WRITABLE) | Self::COW) }
+
+    /// Clear the COW marker and set WRITABLE (used when resolving a COW
+    /// fault by granting the faulting task its own private copy).
+    fn as_writable_no_cow(&self) -> Self { Self((self.0 | Self::WRITABLE) & !Self::COW) }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -75,6 +90,9 @@ impl PageTable {
 
 struct PhysicalFrameAllocator {
     bitmap:           [u64; 1024],   // 1024×64 = 65536 frames = 256 MB
+    /// Reference count per frame. 0 = free, 1 = normally owned, >1 = shared
+    /// (e.g. COW pages shared between a forked parent and child).
+    refcount:         [u16; 65536],
     next_frame:       AtomicUsize,
     total_frames:     usize,
     allocated_frames: AtomicUsize,
@@ -84,6 +102,7 @@ impl PhysicalFrameAllocator {
     const fn new() -> Self {
         Self {
             bitmap:           [0; 1024],
+            refcount:         [0; 65536],
             next_frame:       AtomicUsize::new(0),
             total_frames:     0,
             allocated_frames: AtomicUsize::new(0),
@@ -200,6 +219,7 @@ impl PhysicalFrameAllocator {
             let frame = (start + off) % 65536;
             if self.is_free(frame) {
                 self.mark_used(frame);
+                self.refcount[frame] = 1;
                 self.next_frame.store((frame + 1) % 65536, Ordering::Relaxed);
                 self.allocated_frames.fetch_add(1, Ordering::Relaxed);
                 return Some((frame * 4096) as u64);
@@ -208,12 +228,32 @@ impl PhysicalFrameAllocator {
         None
     }
 
+    /// Drop one reference to `addr`'s frame. Only when the refcount reaches
+    /// zero is the frame actually marked free and the allocation count
+    /// decremented — shared (COW) frames stay alive for their other owners.
     fn free_frame(&mut self, addr: u64) {
         let frame = (addr / 4096) as usize;
         if frame < 65536 {
-            self.mark_free(frame);
-            self.allocated_frames.fetch_sub(1, Ordering::Relaxed);
+            self.refcount[frame] = self.refcount[frame].saturating_sub(1);
+            if self.refcount[frame] == 0 {
+                self.mark_free(frame);
+                self.allocated_frames.fetch_sub(1, Ordering::Relaxed);
+            }
         }
+    }
+
+    /// Add one more reference to `addr`'s frame (used when a fork shares a
+    /// page between parent and child).
+    fn inc_refcount(&mut self, addr: u64) {
+        let frame = (addr / 4096) as usize;
+        if frame < 65536 {
+            self.refcount[frame] = self.refcount[frame].saturating_add(1);
+        }
+    }
+
+    fn get_refcount(&self, addr: u64) -> u16 {
+        let frame = (addr / 4096) as usize;
+        if frame < 65536 { self.refcount[frame] } else { 0 }
     }
 }
 
@@ -741,13 +781,30 @@ pub unsafe fn free_user_page_table(cr3_phys: u64) {
     fa.free_frame(cr3_phys); // free the L4 frame
 }
 
-/// Make a full physical copy of the user-space half (L4 indices 0–255) of the
-/// page table at `src_cr3`.  Every mapped leaf frame is duplicated into a
-/// freshly-allocated frame; new L3/L2/L1 table frames are allocated as well.
-/// The kernel half (indices 256–511) is copied as shared pointers (same as
-/// `create_user_page_table`).  Returns the new L4 physical address, or `None`
-/// if physical memory is exhausted.
-pub unsafe fn copy_user_page_table(src_cr3: u64) -> Option<u64> {
+/// Build a child page table for `fork()` using copy-on-write semantics.
+///
+/// L3/L2/L1 *table* frames are always freshly allocated and copied so parent
+/// and child can diverge independently. Leaf *data* frames, however, are
+/// classified by virtual address:
+///
+/// - Inside `shm_ranges`: shared verbatim (same frame, same flags, no
+///   refcount change) — preserves shared-memory semantics across fork.
+/// - Inside `stack_range`: deep-copied into a fresh frame, exactly as
+///   `copy_user_page_table` does. This keeps the user stack always privately
+///   writable so kernel-side writes (e.g. signal-frame delivery via
+///   `copy_to_region_in`) never hit a read-only COW page.
+/// - Everything else: shared with the child via `inc_refcount`. If the page
+///   was writable, both the parent's and child's PTE are rewritten to be
+///   read-only with the COW bit set (the parent's live mapping is flushed
+///   with `invlpg`); read-only pages (e.g. `.text`) are shared unchanged.
+///
+/// Returns the new L4 physical address, or `None` if physical memory is
+/// exhausted.
+pub unsafe fn cow_fork_user_page_table(
+    src_cr3:     u64,
+    stack_range: (u64, u64),
+    shm_ranges:  &[(u64, u64)],
+) -> Option<u64> {
     let inner = unsafe { &mut *ALLOCATOR.inner.get() };
     if !inner.initialized.load(Ordering::Relaxed) { return None; }
     let hho        = inner.page_table_manager.as_ref()?.higher_half_offset;
@@ -763,6 +820,8 @@ pub unsafe fn copy_user_page_table(src_cr3: u64) -> Option<u64> {
         for i in 0..256usize  { *dst_l4.add(i) = 0; }
         for i in 256..512usize { *dst_l4.add(i) = *kern_l4.add(i); }
     }
+
+    let in_range = |virt: u64, r: (u64, u64)| virt >= r.0 && virt < r.1;
 
     for l4i in 0..256usize {
         let l4e = unsafe { *src_l4.add(l4i) };
@@ -789,7 +848,7 @@ pub unsafe fn copy_user_page_table(src_cr3: u64) -> Option<u64> {
             for l2i in 0..512usize {
                 let l2e = unsafe { *src_l2.add(l2i) };
                 if l2e & 1 == 0 { continue; }
-                let src_l1 = ((l2e & 0x000F_FFFF_FFFF_F000) + hho) as *const u64;
+                let src_l1 = ((l2e & 0x000F_FFFF_FFFF_F000) + hho) as *mut u64;
                 let dst_l1_pa = fa.allocate_frame()?;
                 let dst_l1    = (dst_l1_pa + hho) as *mut u64;
                 unsafe {
@@ -800,15 +859,43 @@ pub unsafe fn copy_user_page_table(src_cr3: u64) -> Option<u64> {
                 for l1i in 0..512usize {
                     let l1e = unsafe { *src_l1.add(l1i) };
                     if l1e & 1 == 0 { continue; }
-                    let src_frame = (l1e & 0x000F_FFFF_FFFF_F000) + hho;
-                    let dst_frame_pa = fa.allocate_frame()?;
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(
-                            src_frame as *const u8,
-                            (dst_frame_pa + hho) as *mut u8,
-                            4096,
-                        );
-                        *dst_l1.add(l1i) = dst_frame_pa | (l1e & 0xFFF);
+
+                    let virt = ((l4i as u64) << 39)
+                             | ((l3i as u64) << 30)
+                             | ((l2i as u64) << 21)
+                             | ((l1i as u64) << 12);
+                    let src_frame = l1e & 0x000F_FFFF_FFFF_F000;
+                    let flags     = PageTableFlags(l1e & 0xFFF);
+
+                    if shm_ranges.iter().any(|&r| in_range(virt, r)) {
+                        // Shared memory: share the frame verbatim, untouched
+                        // by COW refcounting.
+                        unsafe { *dst_l1.add(l1i) = l1e; }
+                    } else if in_range(virt, stack_range) {
+                        // Stack: deep-copy so kernel-side writes (signal
+                        // frames) never land on a read-only COW page.
+                        let dst_frame_pa = fa.allocate_frame()?;
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                (src_frame + hho) as *const u8,
+                                (dst_frame_pa + hho) as *mut u8,
+                                4096,
+                            );
+                            *dst_l1.add(l1i) = dst_frame_pa | (l1e & 0xFFF);
+                        }
+                    } else {
+                        // Private page: share with COW.
+                        fa.inc_refcount(src_frame);
+                        let new_flags = if flags.is_writable() { flags.as_cow() } else { flags };
+                        unsafe { *dst_l1.add(l1i) = src_frame | (new_flags.0 & 0xFFF); }
+                        if new_flags.0 != flags.0 {
+                            // Downgrade the parent's live mapping to match and
+                            // flush it — the parent is the running CR3 here.
+                            unsafe {
+                                *src_l1.add(l1i) = src_frame | (new_flags.0 & 0xFFF);
+                                core::arch::asm!("invlpg [{}]", in(reg) virt);
+                            }
+                        }
                     }
                 }
             }
@@ -985,4 +1072,71 @@ pub unsafe fn is_page_mapped_current(virt: u64) -> bool {
         let l1e = *l1.add(l1i);
         l1e & 1 != 0
     }
+}
+
+/// Attempt to resolve a write fault on a copy-on-write page in the *current*
+/// CR3 (the faulting task's page table, already live).
+///
+/// Returns `true` if `fault_addr` mapped to a COW page and the fault was
+/// resolved — the faulting instruction can be safely retried. Returns
+/// `false` if the page is not a COW page (not present, huge, or not marked
+/// COW), in which case the caller should treat this as a genuine fault
+/// (SIGSEGV).
+pub unsafe fn try_resolve_cow_fault(fault_addr: u64) -> bool {
+    const HHO: u64 = 0xFFFF_8000_0000_0000;
+    let cr3: u64;
+    unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3); }
+    let l4_phys = cr3 & 0x000F_FFFF_FFFF_F000;
+
+    let l4i = ((fault_addr >> 39) & 0x1FF) as usize;
+    let l3i = ((fault_addr >> 30) & 0x1FF) as usize;
+    let l2i = ((fault_addr >> 21) & 0x1FF) as usize;
+    let l1i = ((fault_addr >> 12) & 0x1FF) as usize;
+    let page_addr = fault_addr & !0xFFF;
+
+    unsafe {
+        let l4 = (l4_phys + HHO) as *const u64;
+        let l4e = *l4.add(l4i);
+        if l4e & 1 == 0 { return false; }
+
+        let l3 = ((l4e & 0x000F_FFFF_FFFF_F000) + HHO) as *const u64;
+        let l3e = *l3.add(l3i);
+        if l3e & 1 == 0 || l3e & (1 << 7) != 0 { return false; } // not present / 1 GB huge
+
+        let l2 = ((l3e & 0x000F_FFFF_FFFF_F000) + HHO) as *const u64;
+        let l2e = *l2.add(l2i);
+        if l2e & 1 == 0 || l2e & (1 << 7) != 0 { return false; } // not present / 2 MB huge
+
+        let l1 = ((l2e & 0x000F_FFFF_FFFF_F000) + HHO) as *mut u64;
+        let l1e = *l1.add(l1i);
+        if l1e & 1 == 0 { return false; }
+
+        let flags = PageTableFlags(l1e & 0xFFF);
+        if !flags.is_cow() { return false; }
+
+        let frame     = l1e & 0x000F_FFFF_FFFF_F000;
+        let new_flags = flags.as_writable_no_cow();
+
+        let inner = &mut *ALLOCATOR.inner.get();
+        let fa    = &mut inner.frame_allocator;
+
+        if fa.get_refcount(frame) <= 1 {
+            // Sole remaining owner — just reclaim write access in place.
+            *l1.add(l1i) = frame | (new_flags.0 & 0xFFF);
+        } else {
+            let new_frame = match fa.allocate_frame() {
+                Some(f) => f,
+                None    => return false, // OOM — surface as SIGSEGV
+            };
+            core::ptr::copy_nonoverlapping(
+                page_addr as *const u8,
+                (new_frame + HHO) as *mut u8,
+                4096,
+            );
+            *l1.add(l1i) = new_frame | (new_flags.0 & 0xFFF);
+            fa.free_frame(frame);
+        }
+        core::arch::asm!("invlpg [{}]", in(reg) fault_addr);
+    }
+    true
 }

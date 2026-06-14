@@ -3,6 +3,7 @@ use core::arch::asm;
 use crate::kernel::serial::SERIAL_PORT;
 use crate::kernel::pic;
 use crate::kernel::syscall;
+use crate::kernel::paging_allocator;
 use crate::gui::mouse::{PS2Mouse, MouseCursor};
 use crate::kernel::keyboard::handle_keyboard_interrupt;
 use crate::kernel::user_mode::TaskContext;
@@ -94,6 +95,16 @@ pub extern "C" fn isr_common_handler(frame: *mut InterruptFrame) {
         // Dispatch to specific handlers
         match int_no {
             0..=31 => {
+                // Page fault (#PF) on a user-mode write to a present page may
+                // be a copy-on-write fault from fork(). Resolve it and retry
+                // the faulting instruction instead of killing the task.
+                if int_no == 14 && (*frame).cs & 3 == 3 && err_code & 0x3 == 0x3 {
+                    let cr2: u64;
+                    asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags));
+                    if paging_allocator::try_resolve_cow_fault(cr2) {
+                        return; // retry the faulting instruction
+                    }
+                }
                 // CPU exceptions
                 handle_cpu_exception_64(int_no, err_code, frame);
             },

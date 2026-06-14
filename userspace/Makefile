@@ -120,6 +120,7 @@ rust-programs: $(BINDIR)
 	cp target/x86_64-unknown-none/release/touch        $(BINDIR)/touch.elf
 	cp "target/x86_64-unknown-none/release/true"       $(BINDIR)/true.elf
 	cp "target/x86_64-unknown-none/release/false"      $(BINDIR)/false.elf
+	cp target/x86_64-unknown-none/release/forktest     $(BINDIR)/forktest.elf
 	cp target/x86_64-unknown-none/release/install      $(BINDIR)/install.elf
 	cp target/x86_64-unknown-none/release/sysmon       $(BINDIR)/sysmon.elf
 	cp target/x86_64-unknown-none/release/ping         $(BINDIR)/ping.elf

@@ -148,6 +148,10 @@ pub static TRUE: &[u8] =
 pub static FALSE: &[u8] =
     include_bytes!("../../../../userspace/bin/false.elf");
 
+/// forktest — exercises fork() copy-on-write semantics.
+pub static FORKTEST: &[u8] =
+    include_bytes!("../../../../userspace/bin/forktest.elf");
+
 /// hello_c — "Hello from C on OxideOS!" compiled from C with gcc (Linux syscall ABI).
 pub static HELLO_C: &[u8] =
     include_bytes!("../../../../userspace/bin/hello_c.elf");
@@ -230,6 +234,7 @@ pub fn find(name: &str) -> Option<&'static [u8]> {
         "touch" => Some(TOUCH),
         "true"    => Some(TRUE),
         "false"   => Some(FALSE),
+        "forktest" => Some(FORKTEST),
         "hello_c" => Some(HELLO_C),
         "install"    => Some(INSTALL),
         "hello_musl" => Some(HELLO_MUSL),
@@ -256,7 +261,7 @@ pub const NAMES: &[&str] = &[
     "ls", "cat", "ps", "cp", "mkdir", "pwd", "wget", "edit", "nc", "rm", "mv",
     "filemanager",
     "echo", "grep", "wc", "head", "tail", "sort", "sleep", "kill", "touch",
-    "true", "false",
+    "true", "false", "forktest",
     "hello_c",
     "install",
     "hello_musl",

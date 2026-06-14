@@ -153,6 +153,17 @@ pub fn seg_phys_base(shmid: usize) -> u64 {
     }
 }
 
+/// Return the number of pages mapped for segment `shmid`, or 0 if not valid.
+/// Used by `fork()` to compute the virtual range to exclude from COW sharing.
+pub fn segment_pages(shmid: u32) -> usize {
+    let id = shmid as usize;
+    if id >= MAX_SEGMENTS { return 0; }
+    unsafe {
+        let segtab = &raw const SEGTAB;
+        if (*segtab)[id].active { (*segtab)[id].pages } else { 0 }
+    }
+}
+
 /// Detach the shared segment previously attached at `addr`.
 pub unsafe fn shmdt(addr: u64, attaches: &mut [ShmAttach; MAX_ATTACH]) -> i64 {
     let segtab = &raw mut SEGTAB;

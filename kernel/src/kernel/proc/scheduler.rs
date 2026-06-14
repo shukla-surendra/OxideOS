@@ -805,9 +805,24 @@ pub unsafe fn fork_task(
 
     let parent_cr3 = (*sched).tasks[parent_idx].cr3;
 
-    // Deep-copy the parent's address space.
-    let child_cr3 = unsafe { paging_allocator::copy_user_page_table(parent_cr3) }
-        .ok_or("OOM: fork page table")?;
+    // Build the shm exclude ranges (shared memory must remain truly shared
+    // across fork, not become COW-private) and the stack range (always
+    // deep-copied so kernel-side writes never hit a read-only COW page).
+    let mut shm_ranges = [(0u64, 0u64); crate::kernel::shm::MAX_ATTACH];
+    let mut shm_count  = 0;
+    for attach in &(*sched).tasks[parent_idx].shm_attaches {
+        if !attach.active { continue; }
+        let pages = crate::kernel::shm::segment_pages(attach.shmid);
+        if pages == 0 { continue; }
+        shm_ranges[shm_count] = (attach.vaddr, attach.vaddr + (pages * PAGE_SIZE) as u64);
+        shm_count += 1;
+    }
+    let stack_range = (USER_STACK_TOP - (USER_STACK_PAGES * PAGE_SIZE) as u64, USER_STACK_TOP);
+
+    // Build the child's page table with copy-on-write sharing.
+    let child_cr3 = unsafe {
+        paging_allocator::cow_fork_user_page_table(parent_cr3, stack_range, &shm_ranges[..shm_count])
+    }.ok_or("OOM: fork page table")?;
 
     let child_pid  = (child_slot + 1) as u8;
     let parent_pid = (*sched).tasks[parent_idx].pid;
