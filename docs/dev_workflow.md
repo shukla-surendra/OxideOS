@@ -64,15 +64,15 @@ make distclean && make run-bios
 
 ### Adding a Syscall
 
-1. Add a new variant to the `Syscall` enum in `kernel/src/kernel/syscall_core.rs`
+1. Add a new variant to the `Syscall` enum in `kernel/src/kernel/sys/syscall_core.rs`
 2. Add the name to `Syscall::name()`
 3. Add the number mapping in `impl From<u64> for Syscall`
 4. Add a default implementation to the `SyscallRuntime` trait (returns `ENOSYS`)
-5. Implement it in `KernelRuntime` in `kernel/src/kernel/syscall.rs`
+5. Implement it in `KernelRuntime` in `kernel/src/kernel/sys/syscall.rs`
 6. Add the dispatch arm in `dispatch()` in `syscall_core.rs`
 7. Add a wrapper in `userspace/oxide-rt/src/lib.rs`
 
-OxideOS-specific syscalls use numbers ≥ 400. Current highest: `434` (InstallBegin).
+OxideOS-specific syscalls use numbers ≥ 400. Current highest: `435` (DnsResolve).
 
 ### Adding a Userspace Program
 
@@ -200,14 +200,14 @@ The ATA disk requires legacy IDE mode (`-M pc`). On q35 + UEFI, the IDE controll
 ### Kernel panic / BSOD
 
 Check the serial output (the terminal running QEMU). The panic handler prints a register dump and the fault address. Common causes:
-- Stack overflow: bump the task stack size in `scheduler.rs`
+- Stack overflow: bump the task stack size in `proc/scheduler.rs`
 - Page fault in ring-3: the user ELF might access unmapped memory
 
 ### Userspace program not found
 
 Ensure the binary was:
 1. Built by the userspace Makefile and copied to `userspace/bin/<name>.elf`
-2. Added to `programs.rs` with `include_bytes!`
+2. Added to `proc/programs.rs` with `include_bytes!`
 3. Registered in `programs::find()` and `programs::NAMES`
 
 Run `make userspace` before `make kernel` — the kernel embeds binaries at compile time.
@@ -225,15 +225,15 @@ OxideOS/
 ├── kernel/src/
 │   ├── main.rs                  ← kernel entry point, boot sequence, GUI loop
 │   ├── kernel/
-│   │   ├── ata.rs               ← ATA PIO driver (primary + secondary bus)
-│   │   ├── fat.rs               ← FAT16 r/w filesystem
-│   │   ├── ext2.rs              ← ext2 read-only filesystem
-│   │   ├── mbr.rs               ← MBR partition table parser
 │   │   ├── installer.rs         ← disk installer (FAT32 writer, MBR writer)
-│   │   ├── scheduler.rs         ← preemptive round-robin scheduler
-│   │   ├── syscall_core.rs      ← syscall numbers, dispatch, trait
-│   │   ├── syscall.rs           ← KernelRuntime: wires syscalls to kernel services
-│   │   ├── programs.rs          ← embedded userspace binaries
+│   │   ├── drivers/ata.rs       ← ATA PIO driver (primary + secondary bus)
+│   │   ├── fs/fat.rs            ← FAT16 r/w filesystem
+│   │   ├── fs/ext2.rs           ← ext2 read-only filesystem
+│   │   ├── fs/mbr.rs            ← MBR partition table parser
+│   │   ├── proc/scheduler.rs    ← preemptive round-robin scheduler
+│   │   ├── sys/syscall_core.rs  ← syscall numbers, dispatch, trait
+│   │   ├── sys/syscall.rs       ← KernelRuntime: wires syscalls to kernel services
+│   │   ├── proc/programs.rs     ← embedded userspace binaries
 │   │   └── ...
 │   └── gui/                     ← window manager, compositor, terminal, fonts
 ├── userspace/

@@ -42,7 +42,7 @@ designed so the OS remains bootable and usable after every milestone.
 | PS/2 keyboard (pc-keyboard crate) + mouse | ✅ |
 | Framebuffer + double-buffered compositor | ✅ |
 | GUI — window manager: drag, resize (edge/corner), snap-to-half, z-order, start menu, taskbar, Activities overview | ✅ |
-| **Multi-window per-process GUI** — `gui_proc`, syscalls 125–132 (GuiCreate/Destroy/FillRect/DrawText/Present/PollEvent/GetSize/BlitShm) | ✅ |
+| **Multi-window per-process GUI** — `gui_proc`, syscalls 425–432 (GuiCreate/Destroy/FillRect/DrawText/Present/PollEvent/GetSize/BlitShm) | ✅ |
 | Desktop apps — Notepad (menu bar, find, word wrap, clipboard), Terminal, File Manager, System Monitor (`sysmon`), Browser, Calendar, Notifications, Quick Settings | ✅ |
 | IPC — message queues (compositor protocol), shared memory (shmget/shmat/shmdt/shmctl) | ✅ |
 | RTL8139 + Intel e1000 + AMD PCnet NIC drivers (auto-detected) + smoltcp (TCP/UDP/ICMP/DHCP/ARP) | ✅ |
@@ -63,14 +63,13 @@ designed so the OS remains bootable and usable after every milestone.
 | **GNU Bash 5.2** (embedded) | ✅ |
 | **CPython 3.12** (userspace, loaded from `/disk` at runtime via PATH fallback) | ✅ |
 | Installable OS — `/bin/install`, `make install-image`, MBR + FAT32(EFI)/FAT16(data) layout | ✅ |
-| Kernel heap allocator — **bump allocator, never frees** | ⚠️ |
+| Kernel heap allocator — `linked_list_allocator` (frees memory) | ✅ |
 
 ### Remaining gaps (priority order)
 
 | Gap | Blocks |
 |-----|--------|
 | **ext2 write completion** — block/inode allocation, directory-entry insert/delete, file create/truncate/append, write-back | Real persistence, Phase 22 prerequisite |
-| **Kernel heap allocator** — replace bump allocator with `linked_list_allocator` (frees memory) | Long-running stability |
 | **Physical frame free list** — O(1) alloc/free instead of bitmap scan | Memory efficiency at scale |
 | **procfs per-process** — `/proc/PID/status`, `/proc/PID/maps`, `/proc/PID/fd/` | Accurate `ps`/`top`, debugging |
 | **Block cache (page cache)** | Disk I/O performance |
@@ -101,7 +100,7 @@ designed so the OS remains bootable and usable after every milestone.
 | `acpi` | not yet used | Parse MADT for SMP AP discovery (Phase 17) |
 | `virtio-drivers` | not yet used | VirtIO-net/blk for QEMU (Phase 19.6) |
 | `x86_64` | not yet used | Safe CR3/VirtAddr/PageTable wrappers |
-| `linked_list_allocator` | not yet used | Replace kernel bump allocator (Phase 11.5) |
+| `linked_list_allocator` | ✅ in use | Kernel heap allocator (replaced bump allocator, Phase 11.5) |
 | `heapless` | not yet used | Fixed-capacity Vec/String in kernel data structures |
 | `noto-sans-mono-bitmap` | not yet used | High-quality Unicode font for GUI (Phase 16.3) |
 | `libm` | not yet used | Float math (sin/cos/sqrt) for GUI effects |
@@ -139,7 +138,7 @@ RTL8139 driver, smoltcp integration, socket syscalls (TCP+UDP), /bin/wget, /bin/
 Window manager, compositor IPC, shared memory, MSG_BLIT_SHM, start menu, userspace terminal
 
 ### ✅ Phase 8.4 — Userspace GUI API
-Per-process window syscalls (GuiCreate/Destroy/FillRect/DrawText/Present/PollEvent/GetSize/BlitShm, syscalls 125–132), keyboard/mouse event routing to focused window, `gui_proc` kernel module, `oxide-rt` GUI bindings, `/bin/filemanager` GUI file manager
+Per-process window syscalls (GuiCreate/Destroy/FillRect/DrawText/Present/PollEvent/GetSize/BlitShm, syscalls 425–432), keyboard/mouse event routing to focused window, `gui_proc` kernel module, `oxide-rt` GUI bindings, `/bin/filemanager` GUI file manager
 
 ### ✅ Phase 9 — Stability & Security
 SYSCALL/SYSRET, SMEP, ACPI proper shutdown, BSoD crash dump, ATA alignment fix
@@ -196,7 +195,7 @@ implemented; used by Bash for interactive job control.
 sigprocmask, sigsuspend, SIGCHLD delivery on child exit (enables Bash job control).
 
 ### ⚠️ Phase 16.1 (partial) — Multi-Window GUI
-Each userspace process gets its own window via `gui_proc` (syscalls 125–132). The window
+Each userspace process gets its own window via `gui_proc` (syscalls 425–432). The window
 manager supports drag, edge/corner resize, snap-to-half, and z-order. **Not yet done**:
 formal client/server protocol messages (Exposed, FocusChange, CloseRequest), cross-window
 clipboard, drag-and-drop — see Phase 16.1b below.
@@ -229,17 +228,11 @@ on Phase 12.1).
 - Reduces memory pressure for programs (e.g. Python, Bash) that allocate large buffers but
   use them sparsely.
 
-### 11.5 Linked-list kernel heap allocator  ← HIGH PRIORITY
-The kernel currently uses a bump allocator (`kernel/src/kernel/mem/allocator.rs`) that
-**never frees** memory. Every kernel-side `Vec`/`String`/`Box` allocation (sockets, IPC
-queues, GUI window state, ext2 metadata) permanently consumes heap. Replace with:
-```toml
-linked_list_allocator = { version = "0.10", default-features = false }
-```
-- Enables the kernel to free heap memory.
-- Critical for long-running systems (desktop sessions, servers) where the kernel
-  allocates/frees many short-lived data structures (per-process state, GUI buffers,
-  socket entries).
+### ✅ 11.5 Linked-list kernel heap allocator
+The kernel previously used a bump allocator (`kernel/src/kernel/mem/allocator.rs`) that
+never freed memory. Replaced with `linked_list_allocator` (`kernel/Cargo.toml`), so
+kernel-side `Vec`/`String`/`Box` allocations (sockets, IPC queues, GUI window state, ext2
+metadata) can now be freed.
 
 ### 11.6 Physical frame free list
 - `alloc_frame()` scans the 256 MB bitmap linearly — O(N) worst case.
@@ -417,7 +410,7 @@ sigprocmask, sigpending, sigsuspend, SIGCHLD all implemented (Phase 14.1 ✅).
 becomes a proper display server rather than a single-window renderer.
 
 ### ⚠️ 16.1 Window server protocol (WayOxide) — PARTIALLY DONE
-**Done:** per-process windows via `gui_proc` (syscalls 125–132: GuiCreate, GuiDestroy,
+**Done:** per-process windows via `gui_proc` (syscalls 425–432: GuiCreate, GuiDestroy,
 GuiFillRect, GuiDrawText, GuiPresent, GuiPollEvent, GuiGetSize, GuiBlitShm). Window
 manager supports drag, resize, snap, z-order (`kernel/src/gui/window_manager.rs`).
 
@@ -475,6 +468,13 @@ noto-sans-mono-bitmap = { version = "0.3", default-features = false }
 ### 16.5 Drag-and-drop
 - Mouse button press on a window decorates the drag operation.
 - Compositor tracks drag target; sends `DropEvent(data)` to target window.
+
+### 16.6 Icon assets
+GUI icons are currently hand-drawn vector shapes (e.g. `draw_sun_icon`, `C_CLOSE_ICON`).
+For raster icon assets: draw in a pixel editor (Aseprite, GIMP, Krita) → export as 16×16
+or 24×24 PNG → convert to raw bytes with `ffmpeg -i icon.png -f rawvideo -pix_fmt gray
+icon.raw` → `include_bytes!()` in Rust. SVG is not viable in the kernel — it needs a
+renderer (resvg, librsvg) that depends on std/libc; that's only an option in userspace.
 
 ---
 
@@ -738,6 +738,7 @@ Replace kernel-launched GUI/terminal with a proper init:
 ✅ DONE  Phases 1–9, 10.1–10.6 (argv, env vars, pipes, job control, coreutils,
                                  Linux ABI, musl, Lua, BusyBox, Bash, Python3)
 ✅ DONE  Phase 11.1–11.2 (COW fork, real munmap)
+✅ DONE  Phase 11.5 (linked-list kernel heap allocator)
 ✅ DONE  Phase 12.3 (procfs, system-wide)
 ✅ DONE  Phase 13.1–13.3, 13.7 (DHCP, DNS, select/poll, ping)
 ✅ DONE  Phase 14.1 (sigprocmask, sigsuspend, SIGCHLD)
@@ -747,7 +748,6 @@ Replace kernel-launched GUI/terminal with a proper init:
 ── NEXT: Correctness & Persistence ─────────────────────────────────
 
 🔥 Phase 12.1   ext2 write completion (block/inode alloc, dir entries, create) ← unblocks Phase 22 ext2-root variant
-🔥 Phase 11.5   Linked-list kernel heap allocator ← long-running stability
 🔥 Phase 12.3b  Per-process procfs (/proc/PID/status, maps, fd)
 📌 Phase 11.6   Physical frame free list (O(1) alloc/free)
 📌 Phase 12.2   Block cache (LRU, page cache)
@@ -883,11 +883,11 @@ The milestones that cross the line from hobby OS to real OS:
 | DNS + wget by hostname | 13.2 | ✅ |
 | Copy-on-write fork | 11.1 | ✅ |
 | Real munmap | 11.2 | ✅ |
+| Kernel heap that frees memory | 11.5 | ✅ |
 | select/poll | 13.3 | ✅ |
 | procfs (system-wide) | 12.3 | ✅ |
 | Bootable USB image + installer | 22.1/22.3 | ✅ |
 | Multiple per-process GUI windows | 16.1 | ⚠️ partial |
-| Kernel heap that frees memory | 11.5 | ⬡ |
 | ext2 writable | 12.1 | ⬡ |
 | procfs per-process | 12.3b | ⬡ |
 | Symbolic/hard links | 12.4/12.5 | ⬡ |
@@ -931,7 +931,7 @@ kernel/src/
 │   │   ├── diskfs.rs    ✅
 │   │   └── block_cache.rs ← Phase 12.2
 │   ├── mem/
-│   │   ├── allocator.rs      ⚠️ bump, never frees ← Phase 11.5
+│   │   ├── allocator.rs      ✅ linked_list_allocator (Phase 11.5)
 │   │   └── paging_allocator.rs ✅ (COW, munmap, NX)
 │   ├── security/        ← Phase 18
 │   │   ├── users.rs

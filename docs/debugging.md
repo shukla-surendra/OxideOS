@@ -1,16 +1,16 @@
 ```
-hexdump -C target/x86_32-oxideos/debug/OxideOs | head -40
-hexdump -C target/x86_32-oxideos/debug/OxideOs | head -2048
+hexdump -C kernel/kernel | head -40
+hexdump -C kernel/kernel | head -2048
 ```
 ```
-readelf -h target/x86_32-oxideos/debug/OxideOs
-```
-
-```
-objdump -d target/x86_32-oxideos/debug/OxideOs
-
+readelf -h kernel/kernel
 ```
 
 ```
-nm target/x86_32-oxideos/debug/OxideOs
+objdump -d kernel/kernel
+
+```
+
+```
+nm kernel/kernel
 ```

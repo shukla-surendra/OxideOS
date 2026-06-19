@@ -497,6 +497,7 @@ clean-ext2:
 .PHONY: distclean
 distclean: clean clean-install
 	$(MAKE) -C kernel distclean
+	rm -rf limine ovmf
 
 # ── Documentation ───────────────────────────────────────────────────────────
 # `make docs` converts every docs/**/*.md (plus README.md / CONTRIBUTING.md) to
@@ -517,7 +518,7 @@ docs-manual:
 	$(DOCGEN) build
 
 .PHONY: docs-code
-docs-code:
+docs-code: limine/limine
 	$(MAKE) -C kernel doc
 	$(MAKE) -C userspace doc
 	rm -rf docs_html/code
@@ -532,4 +533,3 @@ docs-serve:
 .PHONY: clean-docs
 clean-docs:
 	rm -rf docs_html
-	rm -rf limine ovmf

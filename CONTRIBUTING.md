@@ -26,7 +26,7 @@ make run-bios
 Good first issues are labeled [`good first issue`](https://github.com/SurendraShuklaOfficial/OxideOS/issues?q=label%3A%22good+first+issue%22).
 
 Easy areas to contribute:
-- **New syscall stub** — add a Linux-compatible syscall that returns a sensible value. Pattern is in `kernel/src/kernel/syscall_core.rs` + `syscall.rs`.
+- **New syscall stub** — add a Linux-compatible syscall that returns a sensible value. Pattern is in `kernel/src/kernel/sys/syscall_core.rs` + `syscall.rs`.
 - **New coreutil** — add a program to `userspace/coreutils/src/`. Pattern: see `wc.rs` or `head.rs`.
 - **Bug fix** — pick any open bug issue and reproduce it in QEMU first.
 - **Documentation** — improve `docs/plan.md` or add inline comments to tricky kernel code.
@@ -35,17 +35,16 @@ Easy areas to contribute:
 
 ```
 kernel/src/kernel/
-├── main.rs              # entry point, subsystem init
-├── scheduler.rs         # preemptive round-robin scheduler, Task struct
-├── syscall_core.rs      # syscall enum, dispatch, trait stubs
-├── syscall.rs           # KernelRuntime impl — concrete syscall implementations
-├── vfs.rs               # virtual filesystem layer
-├── fat.rs               # FAT16 r/w driver
-├── ext2.rs              # ext2 read-only driver
+├── proc/scheduler.rs    # preemptive round-robin scheduler, Task struct
+├── proc/programs.rs     # embedded userspace binaries
+├── sys/syscall_core.rs  # syscall enum, dispatch, trait stubs
+├── sys/syscall.rs       # KernelRuntime impl — concrete syscall implementations
+├── fs/vfs.rs            # virtual filesystem layer
+├── fs/fat.rs            # FAT16 r/w driver
+├── fs/ext2.rs           # ext2 read-only driver
 ├── fs/ramfs.rs          # in-memory RamFS + FdTable
-├── paging_allocator.rs  # physical frame allocator, page tables
-├── programs.rs          # embedded userspace binaries
-└── net/                 # RTL8139 + smoltcp TCP/IP stack
+├── mem/paging_allocator.rs  # physical frame allocator, page tables
+└── drivers/net/         # RTL8139 + smoltcp TCP/IP stack
 
 userspace/
 ├── oxide-rt/            # no_std Rust runtime (syscall wrappers)
@@ -70,7 +69,7 @@ userspace/
 1. Create a new binary crate under `userspace/` or add a file to `coreutils/src/`.
 2. Use `oxide-rt` for syscalls — see `userspace/oxide-rt/src/lib.rs`.
 3. Add it to the `Cargo.toml` workspace and to `userspace/Makefile`.
-4. Embed it in `kernel/src/kernel/programs.rs` (`include_bytes!`).
+4. Embed it in `kernel/src/kernel/proc/programs.rs` (`include_bytes!`).
 
 ## Code style
 
