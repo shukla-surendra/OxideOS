@@ -84,7 +84,7 @@ pub unsafe fn init_memory_and_fs(
 
     ata::init_all();
     if ata::is_present()     { unsafe { disk_store::mount(0); } }
-    if ata::is_present_sec() { unsafe { disk_store::mount(2); } }
+    if ata::is_present_sec() { unsafe { disk_store::mount(3); } }
 
     diskfs::populate();
     SERIAL_PORT.write_str("✓ diskfs populated\n");

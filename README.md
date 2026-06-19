@@ -6,11 +6,11 @@
 
 x86-64 · Limine bootloader · BIOS + UEFI · Ring 3 userspace · GUI desktop · TCP/IP · musl libc · Bash · Python 3 · Lua 5.4 · BusyBox 1.36
 
-[![Build](https://github.com/SurendraShuklaOfficial/OxideOS/actions/workflows/build.yml/badge.svg)](https://github.com/SurendraShuklaOfficial/OxideOS/actions/workflows/build.yml)
+[![Build](https://github.com/shukla-surendra/OxideOS/actions/workflows/build.yml/badge.svg)](https://github.com/shukla-surendra/OxideOS/actions/workflows/build.yml)
 [![License](https://img.shields.io/badge/license-Custom%20Open%20Source-blue)](#license)
 [![Rust](https://img.shields.io/badge/language-Rust%20(nightly)-orange?logo=rust)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-x86--64-lightgrey)](#)
-[![Latest Release](https://img.shields.io/github/v/release/SurendraShuklaOfficial/OxideOS?label=latest%20ISO)](https://github.com/SurendraShuklaOfficial/OxideOS/releases/latest)
+[![Latest Release](https://img.shields.io/github/v/release/shukla-surendra/OxideOS?label=latest%20ISO)](https://github.com/shukla-surendra/OxideOS/releases/latest)
 
 ![OxideOS Screenshot](./oxideos.png)
 
@@ -44,7 +44,7 @@ OxideOS is a fully preemptive, multi-process operating system written from scrat
 
 ### Download and run (no build needed)
 
-Download the latest ISO from [Releases](https://github.com/SurendraShuklaOfficial/OxideOS/releases/latest):
+Download the latest ISO from [Releases](https://github.com/shukla-surendra/OxideOS/releases/latest):
 
 ```bash
 qemu-system-x86_64 \
@@ -57,7 +57,7 @@ qemu-system-x86_64 \
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/SurendraShuklaOfficial/OxideOS
+git clone https://github.com/shukla-surendra/OxideOS
 cd OxideOS
 
 # 2. Install all dependencies (Ubuntu/Debian) — Rust nightly, QEMU, cross
@@ -497,7 +497,7 @@ See [docs/plan.md](docs/plan.md) for the full feature roadmap. Key upcoming mile
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add a syscall, write a userspace program, or fix a bug.
 
-Good first issues: [issues labeled `good first issue`](https://github.com/SurendraShuklaOfficial/OxideOS/issues?q=label%3A%22good+first+issue%22)
+Good first issues: [issues labeled `good first issue`](https://github.com/shukla-surendra/OxideOS/issues?q=label%3A%22good+first+issue%22)
 
 
 

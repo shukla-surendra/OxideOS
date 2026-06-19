@@ -774,6 +774,7 @@ impl SyscallRuntime for KernelRuntime {
             };
             match entry.backend {
                 FdBackend::Fat16 => 0, // FAT16 truncate not yet implemented
+                FdBackend::Ext2  => crate::kernel::ext2::truncate(entry.raw_fd, length as u32),
                 _ => 0,
             }
         }
@@ -1131,6 +1132,11 @@ impl SyscallRuntime for KernelRuntime {
             return unsafe { crate::kernel::fat::unlink(path) };
         }
 
+        if matches!(crate::kernel::vfs::resolve(path_str), crate::kernel::vfs::Resolved::Ext2 { .. }) {
+            if !crate::kernel::ext2::is_ready() { return -19; } // ENODEV
+            return unsafe { crate::kernel::ext2::unlink(path) };
+        }
+
         match unsafe { crate::kernel::fs::ramfs::RAMFS.get() } {
             None => -2,
             Some(fs) => {
@@ -1162,7 +1168,15 @@ impl SyscallRuntime for KernelRuntime {
             if !crate::kernel::ata::is_present() { return -19; } // ENODEV
             return unsafe { crate::kernel::fat::rename(old_path, new_path) };
         }
-        if old_fat != new_fat { return -22; } // EINVAL: can't move across filesystem types
+
+        let old_ext2 = matches!(crate::kernel::vfs::resolve(old), crate::kernel::vfs::Resolved::Ext2 { .. });
+        let new_ext2 = matches!(crate::kernel::vfs::resolve(new), crate::kernel::vfs::Resolved::Ext2 { .. });
+        if old_ext2 && new_ext2 {
+            if !crate::kernel::ext2::is_ready() { return -19; } // ENODEV
+            return unsafe { crate::kernel::ext2::rename(old_path, new_path) };
+        }
+
+        if old_fat != new_fat || old_ext2 != new_ext2 { return -22; } // EINVAL: can't move across filesystem types
 
         match unsafe { crate::kernel::fs::ramfs::RAMFS.get() } {
             None => -2,
@@ -1189,6 +1203,7 @@ impl SyscallRuntime for KernelRuntime {
                         0
                     } else { -2 }
                 }
+                FdBackend::Ext2 => crate::kernel::ext2::truncate(entry.raw_fd, length as u32),
                 _ => -38, // ENOTSOCK — not a regular file
             }
         }

@@ -259,7 +259,11 @@ pub unsafe fn init_secondary() {
 }
 
 pub fn is_present()     -> bool { unsafe { DISKS[0].is_some() } }
-pub fn is_present_sec() -> bool { unsafe { DISKS[2].is_some() } }
+// Secondary SLAVE (DISKS[3]), not secondary master (DISKS[2]): when booting
+// from `-cdrom` (the normal QEMU boot path), the CD-ROM auto-attaches at
+// secondary master, so a real secondary-bus disk for ext2/installer use
+// must live at the slave position instead.
+pub fn is_present_sec() -> bool { unsafe { DISKS[3].is_some() } }
 pub fn sector_count()   -> u32  { unsafe { DISKS[0].as_ref().map(|d| d.sectors as u32).unwrap_or(0) } }
 pub fn sector_count_sec() -> u32 { unsafe { DISKS[2].as_ref().map(|d| d.sectors as u32).unwrap_or(0) } }
 
