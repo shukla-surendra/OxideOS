@@ -107,17 +107,24 @@ OxideOS's network drivers use I/O BARs, so MMIO BARs are not used here.
 
 ## Bus Enumeration
 
-OxideOS scans bus 0, all 32 device slots, function 0:
+OxideOS scans all 256 buses, all 32 device slots, and (for multi-function devices) all 8 functions:
 ```rust
-// pci.rs scan() — finds a device matching vendor:device IDs
-pub fn scan(vendor: u16, device: u16) -> Option<PciDevice> {
-    for dev in 0..32u8 {
-        let id = read32(0, dev, 0, 0x00);    // offset 0x00 = vendor:device
-        let vid = id as u16;                 // low 16 bits = vendor ID
-        let did = (id >> 16) as u16;         // high 16 bits = device ID
-        if vid == 0xFFFF { continue; }       // no device
-        if vid == vendor && did == device {
-            return Some(PciDevice { bus: 0, dev, func: 0, vendor: vid, device: did });
+// pci.rs find_device() — finds a device matching vendor:device IDs
+pub fn find_device(vendor_id: u16, device_id: u16) -> Option<PciDevice> {
+    for bus in 0..=255u8 {
+        for dev in 0..32u8 {
+            // Check all 8 functions in case it's a multi-function device.
+            let hdr = read32(bus, dev, 0, 0x0C);
+            let max_func: u8 = if (hdr >> 23) & 1 != 0 { 8 } else { 1 };
+            for func in 0..max_func {
+                let id = read32(bus, dev, func, 0x00);
+                let vendor = id as u16;
+                if vendor == 0xFFFF { continue; }       // no device
+                let device = (id >> 16) as u16;
+                if vendor == vendor_id && device == device_id {
+                    return Some(PciDevice { bus, dev, func, vendor, device });
+                }
+            }
         }
     }
     None
@@ -126,7 +133,7 @@ pub fn scan(vendor: u16, device: u16) -> Option<PciDevice> {
 
 To find the RTL8139 network card:
 ```rust
-pci::scan(0x10EC, 0x8139)  // Realtek vendor=0x10EC, RTL8139 device=0x8139
+pci::find_device(0x10EC, 0x8139)  // Realtek vendor=0x10EC, RTL8139 device=0x8139
 ```
 
 ---
@@ -143,9 +150,9 @@ Bit 2: Bus Master Enable     — allow the device to initiate DMA transfers
 ```
 
 ```rust
-// Enable I/O + Bus Master for the NIC:
-let cmd = pci::read16(bus, dev, func, 0x04);
-pci::write16(bus, dev, func, 0x04, cmd | 0x0005);
+// PciDevice::enable_bus_mastering() — sets all three bits at once:
+let cmd = read16(self.bus, self.dev, self.func, 0x04);
+write16(self.bus, self.dev, self.func, 0x04, cmd | 0x0007);
 ```
 
 ---
@@ -153,9 +160,9 @@ pci::write16(bus, dev, func, 0x04, cmd | 0x0005);
 ## Why this matters for the network driver
 
 The RTL8139 driver (`rtl8139.rs`) uses PCI to:
-1. Find the card: `pci::scan(0x10EC, 0x8139)`
+1. Find the card: `pci::find_device(0x10EC, 0x8139)`
 2. Get its I/O base address: `device.io_bar(0)` → e.g. `0xC000`
-3. Enable it: set bus master + I/O space bits in command register
+3. Enable it: `device.enable_bus_mastering()` sets bus master + I/O + memory space bits
 4. Then talk to the card via ports `0xC000`–`0xC0FF`
 
 Without PCI, the driver would have to hardcode the I/O base address — which

@@ -12,6 +12,7 @@ use core::sync::atomic::{AtomicUsize, Ordering, AtomicBool};
 use core::cell::UnsafeCell;
 use limine::memory_map::EntryType;
 use limine::request::MemoryMapRequest;
+use linked_list_allocator::Heap;
 use crate::kernel::serial::SERIAL_PORT;
 
 // ============================================================================
@@ -379,6 +380,8 @@ impl PageTableManager {
 // ============================================================================
 
 const FREE_LIST_CAPACITY: usize = 256;
+/// 16 MB pre-mapped slab for fine-grained kernel heap allocations.
+const SLAB_PAGES: usize = 4096;
 
 struct PagingAllocatorInner {
     frame_allocator:    PhysicalFrameAllocator,
@@ -390,6 +393,9 @@ struct PagingAllocatorInner {
     /// Recycled virtual ranges: (virt_start, num_pages)
     free_list:     [(usize, usize); FREE_LIST_CAPACITY],
     free_list_len: usize,
+    /// Fine-grained allocator for sub-page kernel heap objects.
+    slab:     Heap,
+    slab_end: usize,
 }
 
 pub struct PagingAllocator {
@@ -410,6 +416,8 @@ impl PagingAllocator {
                 initialized:        AtomicBool::new(false),
                 free_list:          [(0, 0); FREE_LIST_CAPACITY],
                 free_list_len:      0,
+                slab:               Heap::empty(),
+                slab_end:           0,
             }),
         }
     }
@@ -422,11 +430,35 @@ impl PagingAllocator {
 
         inner.page_table_manager = Some(PageTableManager::new(0xFFFF800000000000));
 
-        inner.heap_start = 0xFFFFFF0000000000;
-        inner.heap_end   = inner.heap_start + (64 * 1024 * 1024); // 64 MB
-        inner.next_virt_addr.store(inner.heap_start, Ordering::Relaxed);
+        // ── Map slab pages eagerly so linked_list_allocator can manage them ──
+        const SLAB_START: usize = 0xFFFFFF0000000000;
+        const SLAB_SIZE:  usize = SLAB_PAGES * 4096; // 16 MB
+        {
+            let ptm = inner.page_table_manager.as_mut().unwrap();
+            for i in 0..SLAB_PAGES {
+                let virt = (SLAB_START + i * 4096) as u64;
+                let phys = inner.frame_allocator.allocate_frame()
+                    .expect("OOM during slab init");
+                unsafe {
+                    ptm.map(virt, phys, PageTableFlags::kernel_flags(),
+                            &mut inner.frame_allocator)
+                        .expect("map failed during slab init");
+                }
+            }
+        }
+        unsafe { inner.slab.init(SLAB_START as *mut u8, SLAB_SIZE); }
+        inner.slab_end = SLAB_START + SLAB_SIZE;
+
+        inner.heap_start = SLAB_START;
+        inner.heap_end   = SLAB_START + (64 * 1024 * 1024); // 64 MB total
+        // Page-granularity fallback starts right after the slab
+        inner.next_virt_addr.store(SLAB_START + SLAB_SIZE, Ordering::Relaxed);
 
         unsafe {
+            SERIAL_PORT.write_str("Slab: 0x");
+            SERIAL_PORT.write_hex((SLAB_START >> 32) as u32);
+            SERIAL_PORT.write_hex(SLAB_START as u32);
+            SERIAL_PORT.write_str(" (16 MB, linked_list_allocator)\n");
             SERIAL_PORT.write_str("Heap: 0x");
             SERIAL_PORT.write_hex((inner.heap_start >> 32) as u32);
             SERIAL_PORT.write_hex(inner.heap_start as u32);
@@ -502,10 +534,26 @@ impl PagingAllocator {
 
 unsafe impl GlobalAlloc for PagingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let inner = unsafe { &mut *self.inner.get() };
+        if !inner.initialized.load(Ordering::Relaxed) {
+            return ptr::null_mut();
+        }
+
+        // Fast path: slab handles all small/medium kernel allocations in O(1)
+        // and actually frees memory on dealloc.
+        if let Ok(ptr) = inner.slab.allocate_first_fit(layout) {
+            return ptr.as_ptr();
+        }
+
+        // Slow path: page-granularity allocation for large objects that exceed
+        // what remains in the slab (rare in normal operation).
         let num_pages = (layout.size() + 4095) / 4096;
         match unsafe { self.allocate_pages(num_pages) } {
             Some(p) => p.as_ptr(),
-            None    => ptr::null_mut(),
+            None => {
+                unsafe { SERIAL_PORT.write_str("ALLOCATOR: Out of memory!\n") };
+                ptr::null_mut()
+            }
         }
     }
 
@@ -513,27 +561,31 @@ unsafe impl GlobalAlloc for PagingAllocator {
         let inner = unsafe { &mut *self.inner.get() };
         if !inner.initialized.load(Ordering::Relaxed) { return; }
 
+        let addr = ptr as usize;
+
+        // Slab range: [heap_start, slab_end)
+        if addr >= inner.heap_start && addr < inner.slab_end {
+            if let Some(nn) = NonNull::new(ptr) {
+                unsafe { inner.slab.deallocate(nn, layout); }
+            }
+            return;
+        }
+
+        // Page-granularity range: unmap pages and recycle the virtual range.
         let virt_start = ptr as usize;
         let num_pages  = (layout.size() + 4095) / 4096;
-
         let ptm = match inner.page_table_manager.as_mut() {
             Some(p) => p,
             None    => return,
         };
-
-        // Unmap every page — this frees the backing physical frame each time
         for i in 0..num_pages {
             let virt = (virt_start + i * 4096) as u64;
             let _ = unsafe { ptm.unmap(virt, &mut inner.frame_allocator) };
         }
-
-        // Push virtual range into the free list for reuse
         if inner.free_list_len < FREE_LIST_CAPACITY {
             inner.free_list[inner.free_list_len] = (virt_start, num_pages);
             inner.free_list_len += 1;
         }
-        // If the list is full the VA range is simply abandoned — with a 64 MB
-        // heap and 256-entry list this is extremely unlikely in practice.
     }
 }
 

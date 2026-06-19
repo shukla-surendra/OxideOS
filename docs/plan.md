@@ -6,100 +6,108 @@ designed so the OS remains bootable and usable after every milestone.
 
 ---
 
-## Current State (April 2026)
+## Current State (June 2026)
 
 ### What works today
 
 | Subsystem | Status |
 |-----------|--------|
-| 64-bit boot (Limine, UEFI/BIOS) | ✅ |
+| 64-bit boot (Limine v9, UEFI/BIOS) | ✅ |
 | GDT / TSS / IDT | ✅ |
 | PIC, PIT at 100 Hz | ✅ |
+| SMEP (CR4 bit 20) + NX bit on PTEs | ✅ |
 | Physical frame allocator (256 MB bitmap) | ✅ |
 | Per-process page tables (CR3 per task) | ✅ |
+| **Copy-on-write fork** — refcounted shared frames, COW page-fault resolver | ✅ |
 | User mode (Ring 3, iretq) | ✅ |
-| Preemptive scheduler — 8-task round-robin | ✅ |
-| ELF64 loader (ET_EXEC, static) | ✅ |
 | int 0x80 + SYSCALL/SYSRET fast path | ✅ |
-| RamFS — in-memory tree, 32 open FDs | ✅ |
-| FAT16 read + write (subdirs, ATA PIO) | ✅ |
-| ext2 read-only (superblock, BGDT, inodes, direct blocks) | ✅ |
+| Preemptive scheduler — 8-task round-robin | ✅ |
+| ELF64 loader (ET_EXEC, static) + argv/envp (full SysV AMD64 ABI) | ✅ |
+| Linux x86-64 syscall ABI — 80+ syscalls at Linux numbers | ✅ |
+| RamFS — in-memory tree, FHS-lite (`/bin /etc /tmp /home`), 32 open FDs | ✅ |
+| FAT16 read + write (subdirs, ATA PIO), mounted at `/disk` | ✅ |
+| ext2 read (superblock, BGDT, inodes, direct blocks) + **partial write** | ⚠️ |
 | MBR partition table (4 entries, type detection) | ✅ |
-| VFS layer — /dev/null, /dev/tty, mount table | ✅ |
-| Anonymous pipes (8 pairs, 4 KB) | ✅ |
+| VFS layer — `/dev/null`, `/dev/tty`, mount table, procfs, diskfs | ✅ |
+| procfs — `/proc/version`, `cpuinfo`, `meminfo`, `uptime`, `mounts` (system-wide only, no per-PID) | ⚠️ |
+| diskfs — `/store` (live on-disk record view), `/diskinfo` | ✅ |
+| Anonymous pipes (8 pairs, 4 KB) + shell pipes `cmd1 \| cmd2 \| ...` | ✅ |
 | fork / exec / waitpid / exit cleanup | ✅ |
-| Per-task FD table, dup2 | ✅ |
-| brk/sbrk heap, mmap anonymous | ✅ |
-| Full POSIX signals — sigaction, sigreturn, trampoline, pending bitmask | ✅ |
+| Job control — `&` background, `jobs`, `fg N`, SIGCHLD, pgid tracking | ✅ |
+| Per-task FD table, dup2, fcntl | ✅ |
+| brk/sbrk heap, mmap anonymous, **real munmap** (unmap + free frames + invlpg) | ✅ |
+| Full POSIX signals — sigaction, sigreturn, trampoline, sigprocmask, sigsuspend | ✅ |
+| select / poll / pselect6 | ✅ |
 | TTY — termios, ioctl TCGETS/TCSETS/TIOCGWINSZ, canonical/raw mode | ✅ |
 | PS/2 keyboard (pc-keyboard crate) + mouse | ✅ |
 | Framebuffer + double-buffered compositor | ✅ |
-| GUI — window manager, start menu, taskbar, drag/focus | ✅ |
-| IPC message queues (compositor protocol) | ✅ |
-| Shared memory — shmget/shmat/shmdt, physical frame sharing | ✅ |
-| RTL8139 NIC + smoltcp (TCP, UDP, ICMP, DHCP, ARP) | ✅ |
+| GUI — window manager: drag, resize (edge/corner), snap-to-half, z-order, start menu, taskbar, Activities overview | ✅ |
+| **Multi-window per-process GUI** — `gui_proc`, syscalls 425–432 (GuiCreate/Destroy/FillRect/DrawText/Present/PollEvent/GetSize/BlitShm) | ✅ |
+| Desktop apps — Notepad (menu bar, find, word wrap, clipboard), Terminal, File Manager, System Monitor (`sysmon`), Browser, Calendar, Notifications, Quick Settings | ✅ |
+| IPC — message queues (compositor protocol), shared memory (shmget/shmat/shmdt/shmctl) | ✅ |
+| RTL8139 + Intel e1000 + AMD PCnet NIC drivers (auto-detected) + smoltcp (TCP/UDP/ICMP/DHCP/ARP) | ✅ |
 | DHCP client — automatic IP configuration on boot | ✅ |
-| DNS resolver — A-record via UDP; kernel syscall 435; oxide-rt wrapper | ✅ |
-| wget — accepts http://hostname/path, DNS resolution, URL parsing | ✅ |
-| Socket syscalls — socket/bind/connect/listen/accept/send/recv | ✅ |
-| Socket syscalls — sendto/recvfrom (UDP) | ✅ |
-| Job control — & background, jobs, fg N | ✅ |
-| File permissions — mode/uid/gid on RamFS inodes, chmod/chown | ✅ |
+| DNS resolver — UDP A-record query, kernel syscall 435, `oxide-rt::dns_resolve()` | ✅ |
+| Socket syscalls — socket/bind/connect/listen/accept/send/recv/sendto/recvfrom | ✅ |
+| `/bin/wget` (hostname + URL), `/bin/nc`, `/bin/ping` | ✅ |
+| File permissions — mode/uid/gid on RamFS inodes, chmod/chown | ⚠️ stored but **not enforced** (getuid always returns 1000) |
 | unlink/rename/truncate syscalls | ✅ |
-| SMEP (CR4 bit 20) | ✅ |
 | ACPI shutdown — RSDP→FADT→PM1a_CNT_BLK | ✅ |
 | BSoD crash dump — framebuffer + serial register dump | ✅ |
-| Shell `/bin/sh` — fork+exec, >, >> redirect | ✅ |
-| Coreutils: ls, cat, cp, mv, rm, mkdir, pwd, ps, wget, edit, nc | ✅ |
+| Shell `/bin/sh` — fork+exec, pipes, `>`/`>>` redirect, `$VAR`, `export`, job control | ✅ |
+| Coreutils — ls cat cp mv rm mkdir pwd ps echo grep wc head tail sort sleep kill touch true false | ✅ |
 | Text editor `/bin/edit` — nano-like, VT100 | ✅ |
-| **argv/argc passing** — System V AMD64 ABI argv block on user stack, `oxide-rt::arg()`/`argc()`, `ExecArgs` syscall 6, shell passes args | ✅ |
-| Netcat `/bin/nc` — TCP listen/connect, UDP send/listen | ✅ |
-| **GUI userspace API** — per-process windows (GuiCreate/Destroy/FillRect/DrawText/Present/PollEvent/GetSize/BlitShm, syscalls 125–132) | ✅ |
-| **GUI file manager** `/bin/filemanager` — directory navigation, file listing, keyboard+mouse input | ✅ |
+| **musl libc programs** — `hello_musl`, `musl_test` | ✅ |
+| **Lua 5.4.7** (embedded, REPL + scripts) | ✅ |
+| **BusyBox 1.36.1** (embedded, 300+ applets) | ✅ |
+| **GNU Bash 5.2** (embedded) | ✅ |
+| **CPython 3.12** (userspace, loaded from `/disk` at runtime via PATH fallback) | ✅ |
+| Installable OS — `/bin/install`, `make install-image`, MBR + FAT32(EFI)/FAT16(data) layout | ✅ |
+| Kernel heap allocator — `linked_list_allocator` (frees memory) | ✅ |
 
 ### Remaining gaps (priority order)
 
 | Gap | Blocks |
 |-----|--------|
-| ~~**argv passing**~~ | ✅ Done |
-| **Open-source C programs** — musl libc + Linux ABI compat | ✅ lua, busybox, bash |
-| **Environment variables** (PATH, HOME, USER) | Shell usability |
-| **Shell pipes** (cmd1 \| cmd2) | Shell usability |
-| **Job control** (bg, fg, &) | Shell usability |
-| **select/poll** | Non-blocking I/O |
-| **munmap** (currently no-op) | Memory correctness |
-| **COW fork** | Memory efficiency |
-| **ext2 write** | Persistence |
-| **procfs** (/proc/pid, /proc/meminfo) | Observability |
-| **DNS resolver** | Networking usability |
-| **Dynamic ELF linking** | Binary compatibility |
-| ~~**Multi-window compositor** (window IDs per process)~~ | ✅ Done via gui_proc |
-| **SMP** (LAPIC + INIT-SIPI) | Performance |
-| **USB keyboard/mouse** | Real hardware |
-| **AHCI/SATA** (replace PIO) | Disk performance |
-| **Users & groups** (uid enforcement, login) | Security |
-| **ASLR** | Security |
+| **ext2 write completion** — block/inode allocation, directory-entry insert/delete, file create/truncate/append, write-back | Real persistence, Phase 22 prerequisite |
+| **Physical frame free list** — O(1) alloc/free instead of bitmap scan | Memory efficiency at scale |
+| **procfs per-process** — `/proc/PID/status`, `/proc/PID/maps`, `/proc/PID/fd/` | Accurate `ps`/`top`, debugging |
+| **Block cache (page cache)** | Disk I/O performance |
+| **Symbolic & hard links** | POSIX completeness, `ls -l` parity |
+| **Users & groups** — real uid/gid enforcement, `/etc/passwd`, `login`, `su` | Security, multi-user |
+| **ASLR** | Security hardening |
+| **SMP** (LAPIC + INIT-SIPI, per-CPU scheduler) | Performance on modern CPUs |
+| **AHCI/SATA** (replace ATA PIO) | Real-hardware disk performance |
+| **USB keyboard/mouse (XHCI)** | Real-hardware input |
 | **Audio** (Intel HDA) | Multimedia |
+| **Dynamic ELF linking** (`.so`, `ld.so`, oxide-libc) | Binary compatibility, smaller binaries |
+| **Window server protocol v2** — cross-window clipboard, drag-and-drop, decorations, exposed/focus events | GUI maturity |
+| **Init system + login** — PID 1, `/etc/rc.d`, multi-user sessions | OS maturity |
+| **Package manager + self-hosted compiler** | Self-hosting |
 
 ---
 
 ## Available `no_std` Crates
 
-| Crate | Purpose |
-|-------|---------|
-| `pc-keyboard` ✅ | PS/2 scancode decoding |
-| `smoltcp` ✅ | TCP/IP stack |
-| `acpi` | Parse MADT for SMP AP discovery |
-| `virtio-drivers` | VirtIO-net/blk for QEMU |
-| `x86_64` | Safe CR3/VirtAddr/PageTable wrappers |
-| `linked_list_allocator` | Better kernel heap (replace bump) |
-| `heapless` | Fixed-capacity Vec/String in kernel data structures |
-| `noto-sans-mono-bitmap` | High-quality Unicode font for GUI |
-| `libm` | Float math (sin/cos/sqrt) for GUI effects |
-| `miniz_oxide` | Deflate — compress initrd / ELF binaries |
-| `postcard` | Compact IPC message serialization |
-| `sha2` | File integrity, future auth |
-| `chacha20poly1305` | Authenticated encryption |
+| Crate | Status | Purpose |
+|-------|--------|---------|
+| `pc-keyboard` | ✅ in use | PS/2 scancode decoding |
+| `smoltcp` | ✅ in use | TCP/IP stack |
+| `oxide-gui-core` | ✅ in use | GUI widget framework backend |
+| `lazy_static` | ✅ in use | Static initialization with locks |
+| `limine` | ✅ in use | Bootloader protocol |
+| `png` | ✅ in use | Decode bundled image assets (wallpapers, icons) |
+| `acpi` | not yet used | Parse MADT for SMP AP discovery (Phase 17) |
+| `virtio-drivers` | not yet used | VirtIO-net/blk for QEMU (Phase 19.6) |
+| `x86_64` | not yet used | Safe CR3/VirtAddr/PageTable wrappers |
+| `linked_list_allocator` | ✅ in use | Kernel heap allocator (replaced bump allocator, Phase 11.5) |
+| `heapless` | not yet used | Fixed-capacity Vec/String in kernel data structures |
+| `noto-sans-mono-bitmap` | not yet used | High-quality Unicode font for GUI (Phase 16.3) |
+| `libm` | not yet used | Float math (sin/cos/sqrt) for GUI effects |
+| `miniz_oxide` | not yet used | Deflate — compress initrd / ELF binaries |
+| `postcard` | not yet used | Compact IPC message serialization |
+| `sha2` | not yet used | File integrity, future auth |
+| `chacha20poly1305` | not yet used | Authenticated encryption |
 
 ---
 
@@ -130,9 +138,14 @@ RTL8139 driver, smoltcp integration, socket syscalls (TCP+UDP), /bin/wget, /bin/
 Window manager, compositor IPC, shared memory, MSG_BLIT_SHM, start menu, userspace terminal
 
 ### ✅ Phase 8.4 — Userspace GUI API
-Per-process window syscalls (GuiCreate/Destroy/FillRect/DrawText/Present/PollEvent/GetSize/BlitShm, syscalls 125–132), keyboard/mouse event routing to focused window, `gui_proc` kernel module, `oxide-rt` GUI bindings, `/bin/filemanager` GUI file manager
+Per-process window syscalls (GuiCreate/Destroy/FillRect/DrawText/Present/PollEvent/GetSize/BlitShm, syscalls 425–432), keyboard/mouse event routing to focused window, `gui_proc` kernel module, `oxide-rt` GUI bindings, `/bin/filemanager` GUI file manager
 
 ### ✅ Phase 9 — Stability & Security
+SYSCALL/SYSRET, SMEP, ACPI proper shutdown, BSoD crash dump, ATA alignment fix
+
+### ✅ Phase 10.1 — argv/argc Passing
+System V AMD64 ABI argv block written to user stack by kernel. `oxide-rt::arg(i)` / `argc()` helpers. `ExecArgs` syscall 6 lets shell pass argv[1..] to exec'd programs.
+
 ### ✅ Phase 10.2 — Environment Variables
 Global env store in kernel (32 vars, 256-byte values). Getenv (79) / Setenv (80) syscalls.
 `oxide-rt::getenv_bytes()` / `setenv()` wrappers. Shell: `export VAR=val`, `$VAR` expansion.
@@ -140,291 +153,92 @@ Default env: PATH=/bin, HOME=/, TERM=vt100, USER=oxide, SHELL=/bin/sh, HOSTNAME=
 
 ### ✅ Phase 10.3 — Shell Pipes
 Pipeline execution up to 8 stages: `cmd1 | cmd2 | ... | cmdN`.
-fork/dup2/pipe plumbing in sh. Output redirect applies to last stage. Works end-to-end:
-`ls | grep sh | wc -l`, `ls | sort`, `cat file | head -n 5`, etc.
+fork/dup2/pipe plumbing in sh. Output redirect applies to last stage.
+
+### ✅ Phase 10.4 — Job Control
+`&` background, `jobs` builtin, `fg N`, SIGCHLD delivery, pgid tracking, getpgid/setpgid.
 
 ### ✅ Phase 10.5 — More Coreutils
-echo, grep (substring match), wc (-l/-w/-c), head (-n N), tail (-n N), sort (lexicographic),
-sleep (seconds), kill (-signal pid), touch (create file), true (exit 0), false (exit 1).
+echo, grep, wc (-l/-w/-c), head (-n N), tail (-n N), sort, sleep, kill, touch, true, false.
 
-### ✅ Phase 10.1 — argv/argc Passing
-System V AMD64 ABI argv block written to user stack by kernel. `oxide-rt::arg(i)` / `argc()` helpers. `ExecArgs` syscall 6 lets shell pass argv[1..] to exec'd programs. Shell updated to call `exec_args(prog, args)`. `ls` and `cat` coreutils updated to use argv.
-SYSCALL/SYSRET, SMEP, ACPI proper shutdown, BSoD crash dump, ATA alignment fix
+### ✅ Phase 10.6 — Open-Source Software Support
+Linux x86-64 syscall ABI (80+ syscalls renumbered), select/poll/pselect6, real munmap,
+full envp on stack, musl libc cross-compilation, **Lua 5.4.7** embedded, **BusyBox 1.36.1**
+embedded (getdents64, struct stat, FdBackend::Dir), **GNU Bash 5.2** embedded
+(select/pselect6, SIGCHLD, pgid), **CPython 3.12** running from `/disk` via PATH fallback.
 
----
+### ✅ Phase 11.1 — Copy-on-Write Fork
+Parent/child share refcounted physical frames after `fork()`; pages marked read-only +
+COW bit. Page-fault handler (`try_resolve_cow_fault`) allocates a private copy on first
+write. Stack range and shared-memory ranges are excluded from COW (deep-copied / kept
+shared respectively). `kernel/src/kernel/mem/paging_allocator.rs`,
+`kernel/src/kernel/proc/scheduler.rs::fork_task`.
 
-## Phase 10 — argv, Environment Variables & Shell Pipes
+### ✅ Phase 11.2 — Real munmap
+`munmap_impl` unmaps PTEs, decrements/frees physical frames, flushes TLB (`invlpg`) for
+every unmapped page, with per-task mmap region tracking. `kernel/src/kernel/sys/syscall.rs`.
 
-**Goal:** Programs receive command-line arguments. The shell gains pipes and job control.
-This single phase makes OxideOS feel like a real Unix system.
+### ✅ Phase 12.3 — procfs (basic, system-wide)
+`/proc/version`, `/proc/cpuinfo`, `/proc/meminfo`, `/proc/uptime`, `/proc/mounts` synthesised
+on demand. Per-process `/proc/PID/*` is **not yet implemented** — see Phase 12.3b below.
 
-### 10.1 argv / argc passing  ← HIGH PRIORITY
-**Problem:** All programs today prompt interactively because argv is not wired up.
+### ✅ Phase 13.1/13.2 — DHCP + DNS
+DHCP client auto-configures IP on boot (fallback static 10.0.2.15/24). DNS resolver sends
+UDP A-record queries via syscall 435; `oxide-rt::dns_resolve()`; `/bin/wget` accepts
+hostnames and URLs.
 
-Implementation:
-- Kernel `exec_program()` writes an **argument block** just below the user stack:
-  ```
-  [argc: u64] [argv[0] ptr] [argv[1] ptr] ... [NULL] [string data]
-  ```
-  Total size capped at 4 KB. Stack pointer on entry points to `argc`.
-- `oxide-rt/_start` reads `argc` from `rsp`, builds `argv: &[&[u8]]`, calls `oxide_main(argv)`.
-- All existing programs gain `fn oxide_main(args: &[&[u8]])` signature.
-- Shell splits command tokens and passes them as argv on exec.
+### ✅ Phase 13.3 — select/poll
+`poll(fds, nfds, timeout_ms)` (syscall 7) and `select`/`pselect6` (syscalls 23/270)
+implemented; used by Bash for interactive job control.
 
-Files: `kernel/src/kernel/scheduler.rs` (spawn), `kernel/src/kernel/elf_loader.rs`,
-`userspace/oxide-rt/src/lib.rs` (_start), all `userspace/*/src/main.rs`
+### ✅ Phase 14.1 — Remaining POSIX Signals
+sigprocmask, sigsuspend, SIGCHLD delivery on child exit (enables Bash job control).
 
-### 10.2 Environment variables
-- Kernel stores a per-process env block (PATH, HOME, SHELL, USER, TERM) alongside argv.
-- `syscall Getenv=79` / `Setenv=80` — read/write env vars.
-- `oxide-rt::getenv(key) -> Option<&str>`, `setenv(key, val)`.
-- Shell inherits env from parent; `export VAR=val` sets it.
-- `/bin/env` prints all variables.
+### ⚠️ Phase 16.1 (partial) — Multi-Window GUI
+Each userspace process gets its own window via `gui_proc` (syscalls 425–432). The window
+manager supports drag, edge/corner resize, snap-to-half, and z-order. **Not yet done**:
+formal client/server protocol messages (Exposed, FocusChange, CloseRequest), cross-window
+clipboard, drag-and-drop — see Phase 16.1b below.
 
-### 10.3 Shell pipes (cmd1 | cmd2)
-**Problem:** `sh` has `>` redirect but no inter-process pipes.
-
-Implementation:
-- Shell tokenises `|` — creates an anonymous pipe per `|`.
-- Left command: stdout → pipe write fd. Right command: stdin ← pipe read fd.
-- Shell forks both sides, `dup2`s fds, then waits for both.
-- Example: `ls | cat`, `ps | grep sh`
-
-### 10.4 Job control (background & foreground)
-- `&` at end of command → don't waitpid, print `[1] <pid>`.
-- Built-in `jobs` — list background PIDs + status.
-- Built-in `fg <n>` — bring job to foreground (SIGCONT).
-- Built-in `bg <n>` — resume stopped job in background.
-- Ctrl+Z → SIGTSTP → task state: Stopped. Shell notices via waitpid WIFSTOPPED.
-- `TaskState::Stopped` added to scheduler.
-
-### 10.5 More coreutils
-With argv wired:
-- `/bin/echo` — print arguments
-- `/bin/grep` — regex line filter (use `regex-lite` no_std crate)
-- `/bin/head` / `/bin/tail` — first/last N lines
-- `/bin/wc` — word/line/byte count
-- `/bin/sort` — sort lines
-- `/bin/sleep` — sleep N seconds
-- `/bin/kill` — send signal to PID
-- `/bin/touch` — create empty file / update mtime
-- `/bin/find` — walk directory tree with name filter
-- `/bin/env` — print/set environment
-- `/bin/true` / `/bin/false` — exit 0 / exit 1
-
-**Deliverable:** `ls /bin | grep sh | wc -l` works end-to-end.
+### ✅ Phase 22 — Installable OS
+`/bin/install`, `make install-image` (192 MB MBR/FAT32+FAT16 image), `make install-vdi`,
+pre-built ISO releases. See Phase 22 section for the full ext2-root variant (still pending
+on Phase 12.1).
 
 ---
 
----
-
-## Phase 10.6 — Open-Source Software Support  ← NEW GOAL
-
-**Goal:** Compile and run real open-source projects (Lua, BusyBox, curl, etc.) on OxideOS,
-starting with simple single-binary C programs and building up to interactive tools.
-
-### Why this is the critical path
-
-OxideOS already has: processes, ELF loading, a filesystem, networking, argv, a shell.
-The missing piece is a **C runtime** and **Linux ABI compatibility** so that programs
-compiled with standard toolchains just work.
-
-### 10.6.1 Linux x86-64 syscall ABI shim  ← FIRST STEP
-
-**Problem:** OxideOS syscall numbers don't match Linux. A program compiled for Linux
-calls `write` as syscall 1, but OxideOS maps 1 to `Fork`.
-
-**Options:**
-- **A (recommended): Remap OxideOS to Linux numbers.**
-  Change OxideOS syscall constants to match Linux x86-64 ABI. Update `oxide-rt` and
-  all userspace programs. One-time churn, then all standard toolchains just work.
-- **B: Personality-based shim.** Detect Linux binaries (ELF note `NT_GNU_ABI_TAG`)
-  and translate syscall numbers at the `int 0x80` / `syscall` entry point.
-
-Recommended: **Option A** (renumber OxideOS). Affected numbers:
-
-| Syscall | Linux | OxideOS now | Action |
-|---------|-------|-------------|--------|
-| read    | 0     | 20          | renumber |
-| write   | 1     | 21          | renumber |
-| open    | 2     | 22          | renumber |
-| close   | 3     | 23          | renumber |
-| mmap    | 9     | 9           | ✅ already matches |
-| brk     | 12    | 11          | renumber |
-| exit    | 60    | 0           | renumber |
-| fork    | 57    | 1           | renumber |
-| execve  | 59    | 5           | renumber |
-| getpid  | 39    | 3           | renumber |
-| wait4   | 61    | 2           | renumber |
-
-Files: `kernel/src/kernel/syscall_core.rs`, `userspace/oxide-rt/src/lib.rs`,
-all `userspace/*/src/main.rs`.
-
-### 10.6.2 musl libc cross-compilation
-
-**Goal:** Build a musl libc static library targeted at OxideOS.
-
-Steps:
-1. Clone musl 1.2.x: `git clone https://git.musl-libc.org/git/musl`
-2. Configure: `CC=x86_64-linux-musl-gcc ./configure --prefix=/opt/oxide-musl --target=x86_64-oxide`
-3. Patch musl's `src/internal/syscall.h` to use OxideOS syscall numbers.
-4. Build: `make -j$(nproc)`
-5. Result: `/opt/oxide-musl/lib/libc.a` and `/opt/oxide-musl/include/`
-
-Cross-compile a test program:
-```bash
-x86_64-linux-musl-gcc -static -nostdinc \
-  -I/opt/oxide-musl/include \
-  -L/opt/oxide-musl/lib \
-  hello.c -o hello-oxide
-```
-Load `hello-oxide` into OxideOS RamFS and run via the shell.
-
-### 10.6.3 select/poll syscalls  ← required by most programs
-
-Almost every C program that does I/O uses `select` or `poll`. Without them, programs
-block on reads and can't multiplex input.
-
-Implementation:
-- `poll(fds: *mut pollfd, nfds: u64, timeout_ms: i64) -> i64` (syscall 7 on Linux)
-  - Check each fd for POLLIN/POLLOUT readiness without blocking.
-  - If nothing ready and `timeout_ms > 0`, put task to sleep until fd ready or timeout.
-- `select(nfds, readfds, writefds, exceptfds, timeout)` (syscall 23 on Linux)
-  - Implemented on top of `poll`.
-
-Files: `kernel/src/kernel/syscall_core.rs`, `kernel/src/kernel/syscall.rs`.
-
-### 10.6.4 Real munmap
-
-Currently `munmap` is a no-op. Programs that use mmap for dynamic memory (musl's
-allocator) will leak unless munmap actually unmaps pages.
-
-Implementation:
-- Track per-task mmap regions: `Vec<(virt_base: u64, len: u64)>` in `Task`.
-- `munmap(addr, len)`: find the region, unmap PTEs, return physical frames.
-- TLB flush (`invlpg`) for every unmapped page.
-
-### 10.6.5 argv via execve (argc+argv+envp on stack)
-
-musl's `_start` reads `argc`, `argv`, and `envp` from the initial stack using the
-full System V AMD64 ABI layout. OxideOS currently writes `argc`/`argv` but no `envp`
-beyond two NULL terminators. musl is tolerant of empty envp, but we should verify.
-
-Add minimal environment variables (PATH, HOME, TERM, USER) to the envp block:
-- Kernel writes them after the argv NULL.
-- `oxide-rt::getenv(key)` walks the envp block.
-
-### 10.6.6 Target: Run Lua 5.4
-
-Lua is an ideal first target:
-- Single-file C99 codebase (~30 KLOC)
-- Minimal syscall surface: open/read/write/close/exit/mmap/munmap/time
-- No threads, no signals
-- Compiles as a static binary with musl libc
-
-Cross-compile steps:
-```bash
-make PLAT=generic CC="x86_64-linux-musl-gcc" \
-  MYCFLAGS="-static -fno-stack-protector" \
-  MYLDFLAGS="-static" lua
-```
-Load `lua` into RamFS, run `lua hello.lua`.
-
-### 10.6.7 Target: Run BusyBox
-
-BusyBox provides 300+ Unix tools in a single binary — a fully functional userland.
-
-```bash
-make ARCH=x86_64 CC=x86_64-linux-musl-gcc \
-  CONFIG_STATIC=y CONFIG_PREFIX=/bin busybox
-```
-
-Copy to OxideOS FAT16 or RamFS. Symlinks for each applet:
-```
-/bin/busybox → busybox
-/bin/ls      → busybox
-/bin/grep    → busybox
-...
-```
-
-Requires working: `fork`, `exec`, `wait`, `open`, `read`, `write`, `stat`, `mmap`,
-`munmap`, `getdents64`, `select`/`poll`, `ioctl`, `uname`.
-
-### 10.6.8 Future targets (stretch)
-
-| Program | Difficulty | Key requirements |
-|---------|-----------|-----------------|
-| coreutils (GNU) | Medium | full POSIX stat, links |
-| Python 3 | Hard | threads, select, complex signal handling |
-| curl/wget2 | Medium | select, DNS, TLS (mbedtls) |
-| Nginx | Hard | fork, epoll (or select), signals |
-| SQLite | Easy | file I/O, mmap, no threads |
-| Redis | Medium | select/epoll, fork |
-| Lua 5.4 | Easy | minimal syscalls |
-| MicroPython | Easy | mmap, minimal stdlib |
-
-### Implementation order
-
-```
-✅ 10.6.1  Remap syscall numbers to Linux ABI
-✅ 10.6.3  select/poll (poll syscall 7 implemented)
-✅ 10.6.4  real munmap — unmap+free physical frames, per-task region tracking
-✅ 10.6.5  envp on stack — full SysV ABI (argc+argv[]+NULL+envp[]+NULL)
-           + uname(63), getppid(110), clock_gettime(228), mprotect(10),
-             fcntl(72), set_tid_address(218), arch_prctl(158)
-✅ 10.6.2  musl cross-compilation setup (musl-gcc, hello_musl, musl_test)
-✅ 10.6.6  Lua 5.4.7 embedded — syscalls: sigprocmask(14), lstat(6), readv(19),
-           mremap(25→ENOMEM), getuid/getgid(102/104)→1000, gettid(186)→pid,
-           futex(202)→0, pipe2(293), lseek(8), exit_group(231)
-✅ 10.6.7  Run BusyBox — struct stat (144 B), getdents64, FdBackend::Dir, fstat, stat
-```
-
----
-
-## Phase 11 — Memory Management V2
+## Phase 11 — Memory Management V2 (remaining work)
 
 **Goal:** Correct, efficient memory handling for multi-process workloads.
 
-### 11.1 Copy-on-Write (COW) fork
-**Problem:** `fork()` currently copies all pages, which is slow and wastes RAM.
+### ✅ 11.1 Copy-on-Write fork — DONE (see Completed Phases)
 
-Implementation:
-- Mark all user pages read-only in both parent and child PTEs after fork.
-- Page fault handler: if fault is a write to a COW page, allocate new frame, copy data,
-  re-map as writable.
-- Kernel tracks COW refcount per physical frame (add `cow_refs: u8` to frame metadata).
-- Reduces fork from O(pages) memcpy to O(1) PTE walk.
-
-Files: `paging_allocator.rs` (frame metadata), `interrupts.rs` (page fault handler),
-`scheduler.rs` (fork_task).
-
-### 11.2 munmap (real implementation)
-- Currently a no-op. Implement by unmapping PTEs and returning frames to the allocator.
-- Track mapped regions in `Task` as a `Vec<(virt_base, len)>`.
-- On `munmap(addr, len)`: unmap PTEs, decrement physical frame refcounts, free zero-ref frames.
+### ✅ 11.2 munmap (real implementation) — DONE (see Completed Phases)
 
 ### 11.3 mmap file-backed regions
 - `mmap(addr, len, prot, MAP_PRIVATE, fd, offset)` — map a file into address space.
 - Read-only initially; COW on write (MAP_PRIVATE) or write-through (MAP_SHARED).
-- Required for dynamic ELF loading (Phase 15).
+- Required for dynamic ELF loading (Phase 15) and for running larger interpreters
+  (CPython currently loads its whole image via `read()`, not `mmap`).
 
 ### 11.4 Demand paging & page-level heap growth
 - Currently `brk` maps all requested pages eagerly.
-- Change to: map only the first page; install a fault handler that maps subsequent pages lazily.
-- Reduces memory pressure for programs that allocate large buffers but use them sparsely.
+- Change to: map only the first page; install a fault handler that maps subsequent pages
+  lazily.
+- Reduces memory pressure for programs (e.g. Python, Bash) that allocate large buffers but
+  use them sparsely.
 
-### 11.5 Linked-list kernel heap allocator
-Replace the kernel bump allocator (`allocator.rs`) with `linked_list_allocator` crate:
-```toml
-linked_list_allocator = { version = "0.10", default-features = false }
-```
-- Enables kernel to free heap memory (currently it never frees).
-- Critical for long-running systems where kernel allocates/frees many data structures.
+### ✅ 11.5 Linked-list kernel heap allocator
+The kernel previously used a bump allocator (`kernel/src/kernel/mem/allocator.rs`) that
+never freed memory. Replaced with `linked_list_allocator` (`kernel/Cargo.toml`), so
+kernel-side `Vec`/`String`/`Box` allocations (sockets, IPC queues, GUI window state, ext2
+metadata) can now be freed.
 
 ### 11.6 Physical frame free list
-- `alloc_frame()` scans bitmap linearly — O(N) worst case.
+- `alloc_frame()` scans the 256 MB bitmap linearly — O(N) worst case.
 - Replace with a stack-based free list for O(1) alloc/free.
-- Add `free_frame(phys)` so munmap and process exit can actually return memory.
+- `free_frame(phys)` already exists for COW/munmap; extend the free list to also serve
+  process-exit cleanup and `fork`-time allocation.
 
 ---
 
@@ -432,50 +246,53 @@ linked_list_allocator = { version = "0.10", default-features = false }
 
 **Goal:** Writable ext2, persistent storage, procfs, symbolic links.
 
-### 12.1 ext2 write support
-Current: read-only (superblock, BGDT, inodes, direct blocks).
+### 12.1 ext2 write support — IN PROGRESS  ← HIGH PRIORITY
+Current state (`kernel/src/kernel/fs/ext2.rs`): `write_fd()` exists but **only overwrites
+data within already-allocated direct blocks** of an existing file — no new block
+allocation, no inode allocation, no directory-entry insertion/deletion, no file creation.
 
-Add:
-- `ext2_write_block(block_no, buf)` — ATA sector write through block layer.
+Remaining work:
+- `ext2_write_block(block_no, buf)` — ATA sector write through block layer (the low-level
+  `write_block_from_scratch` primitive already exists; needs wiring to dirty-block
+  allocation).
 - Inode `atime`/`mtime`/`ctime` update on read/write.
-- Allocate new data blocks (scan block bitmap, update superblock free count).
-- Allocate new inodes (scan inode bitmap).
-- Directory entry insertion and deletion.
-- File creation: `ext2_create(path)`.
-- File truncation and append.
-- Write-back: dirty inode/bitmap/superblock flushed on close or sync.
+- Allocate new data blocks (scan block bitmap, update superblock free-block count) when a
+  write extends past the current allocation.
+- Allocate new inodes (scan inode bitmap) for `ext2_create(path)`.
+- Directory entry insertion (`creat`, `mkdir`) and deletion (`unlink`, `rmdir`).
+- File truncation and append (`O_TRUNC`, `O_APPEND`).
+- Write-back: dirty inode/bitmap/superblock flushed on `close()` or `sync`.
 - `sync` syscall (=162): flush all dirty buffers to disk.
 
-Files: `kernel/src/kernel/ext2.rs` (new write functions),
-`kernel/src/kernel/vfs.rs` (route writes to ext2 backend).
+Files: `kernel/src/kernel/fs/ext2.rs`, `kernel/src/kernel/fs/vfs.rs` (route writes to ext2
+backend for files opened under `/ext2`).
 
 ### 12.2 Block cache (page cache)
 - Without a cache, every read hits ATA PIO — ~1 ms per sector.
 - Add a 64-entry LRU block cache (`[Option<CachedBlock>; 64]`).
 - Cache keyed by (device_id, block_no). Hit: return cached data. Miss: read + insert.
-- On write: mark block dirty; flush on eviction or sync.
+- On write: mark block dirty; flush on eviction or `sync`.
+- Benefits both FAT16 and ext2 backends.
 
-### 12.3 procfs — `/proc`
-Mount a virtual filesystem at `/proc`:
+### 12.3b procfs — per-process `/proc/PID/*`
+System-wide `/proc/{version,cpuinfo,meminfo,uptime,mounts}` already exist (Phase 12.3 ✅).
+Add per-process entries:
 
 | Path | Content |
 |------|---------|
-| `/proc/pid/` | Directory per process |
-| `/proc/pid/status` | PID, PPID, state, memory usage |
-| `/proc/pid/maps` | Virtual memory regions |
-| `/proc/pid/fd/` | Open file descriptors |
-| `/proc/meminfo` | Total/free RAM, heap stats |
-| `/proc/cpuinfo` | Vendor, model, frequency |
-| `/proc/uptime` | Ticks since boot |
-| `/proc/version` | Kernel version string |
-| `/proc/mounts` | Mounted filesystems |
+| `/proc/PID/status` | PID, PPID, state, memory usage |
+| `/proc/PID/maps` | Virtual memory regions (from per-task mmap region list, Phase 11.6) |
+| `/proc/PID/fd/` | Open file descriptors (from per-task FD table) |
+| `/proc/PID/cmdline` | argv as NUL-separated string |
 
-Implementation: `VfsDriver` trait implementation for procfs. Reads are synthesised on demand.
+Implementation: extend `kernel/src/kernel/fs/procfs.rs` with a `VfsDriver` that synthesises
+these paths on demand by walking the scheduler's task table.
 
 ### 12.4 Symbolic links
 - RamFS: `NodeKind::Symlink(target: String)`.
 - VFS path resolution: follow up to 8 symlink hops (ELOOP after that).
-- `symlink` syscall (=88), `readlink` syscall (=89).
+- `symlink` syscall (=88), `readlink` syscall (=89) — currently a stub returning EINVAL
+  (`kernel/src/kernel/sys/syscall_core.rs:680`).
 - `ls -l` shows `->` target.
 
 ### 12.5 Hard links
@@ -487,47 +304,32 @@ Implementation: `VfsDriver` trait implementation for procfs. Reads are synthesis
 - Prevents concurrent writes to the same file from two processes.
 - Per-inode lock state tracked in VNode.
 
-### 12.7 Filesystem hierarchy (FHS-lite)
-Populate `/` with standard directories at boot:
+### 12.7 Filesystem hierarchy (FHS-lite) — PARTIAL
+RamFS already creates `/bin`, `/etc`, `/tmp`, `/home` at boot
+(`kernel/src/kernel/fs/ramfs.rs`). Remaining:
 ```
-/bin    /sbin    /usr/bin    /usr/lib
-/etc    /var     /tmp        /home/user
-/proc   /dev     /sys        /mnt
+/sbin    /usr/bin    /usr/lib
+/var     /proc (✅)  /dev (✅)   /sys    /mnt
 ```
 - `/etc/passwd` — user database (single user `oxide` for now).
 - `/etc/hostname`, `/etc/resolv.conf`, `/etc/hosts`.
-- `/tmp` — RAM-backed tmpfs with automatic cleanup on reboot.
+- `/tmp` already exists as RAM-backed; confirm automatic cleanup semantics on reboot
+  (RamFS is inherently volatile, so this is effectively free).
 
 ---
 
-## Phase 13 — Networking V2
+## Phase 13 — Networking V2 (remaining work)
 
 **Goal:** A usable TCP/IP stack with DNS, HTTP, and multiplexed I/O.
 
-### 13.1 DHCP client activation
-- smoltcp has `socket::dhcpv4`. Wire it into `net::init()` to configure IP automatically.
-- Print `IP: 10.0.2.15 GW: 10.0.2.2` on serial after lease obtained.
-- Store resolved IP/GW in `NET_CONFIG` global for use by programs.
-
-### 13.2 DNS resolver
-- Parse `/etc/resolv.conf` for nameserver IP.
-- `dns_resolve(hostname) -> Option<[u8;4]>`: send UDP DNS query to port 53, parse A record.
-- `oxide-rt::resolve(host) -> Option<[u8;4]>` — userspace wrapper.
-- Update `/bin/wget` to accept hostnames in addition to IP addresses.
-
-### 13.3 select / poll syscall
-**Problem:** recv() blocks the entire task. Multiplexed I/O is impossible.
-
-Implementation:
-- `select(nfds, readfds, writefds, exceptfds, timeout)` (syscall=23 conflict — use 130).
-- Kernel checks readiness of each fd without blocking; if none ready, task sleeps.
-- `poll(fds, nfds, timeout)` (syscall=7 — use 131) — simpler API.
-- Enables a single-threaded server to handle multiple connections.
+### ✅ 13.1 DHCP client activation — DONE
+### ✅ 13.2 DNS resolver — DONE
+### ✅ 13.3 select / poll syscall — DONE
 
 ### 13.4 Non-blocking sockets
 - `O_NONBLOCK` flag on socket fd.
 - `recv()` on non-blocking socket returns -11 (EAGAIN) immediately if no data.
-- Combined with `select/poll` for event-driven servers.
+- Combined with select/poll (already done) for event-driven servers.
 
 ### 13.5 Socket options (setsockopt)
 - `SO_REUSEADDR` — allow rapid server restart without "address already in use".
@@ -541,10 +343,7 @@ Implementation:
 - `GET /path HTTP/1.0` → read file → send headers + body.
 - `QEMU` user-mode NAT: accessible at `http://10.0.2.15/` from the host.
 
-### 13.7 ICMP ping (`/bin/ping`)
-- Use smoltcp `socket::icmp`.
-- Send echo requests, receive replies, print RTT.
-- Requires raw socket access to the ICMP layer.
+### ✅ 13.7 ICMP ping (`/bin/ping`) — DONE
 
 ### 13.8 Network stack improvements
 - **DHCP renewal** — handle lease expiry and renewal.
@@ -553,22 +352,16 @@ Implementation:
 
 ---
 
-## Phase 14 — select/poll & Advanced IPC
+## Phase 14 — Advanced IPC (remaining work)
 
-**Goal:** Standard POSIX I/O multiplexing and inter-process communication.
-
-### 14.1 POSIX signals (remaining)
-- `sigprocmask` (=135) — block/unblock signals during critical sections.
-- `sigpending` (=136) — query pending signals.
-- `sigsuspend` (=137) — atomically unblock and sleep until signal.
-- `SIGCHLD` — parent notified when child exits (enables async waitpid).
-- `SIGALRM` — alarm(N) sends SIGALRM after N seconds.
-- `alarm` syscall (=138).
+### ✅ 14.1 POSIX signals (remaining) — DONE
+sigprocmask, sigpending, sigsuspend, SIGCHLD all implemented (Phase 14.1 ✅).
 
 ### 14.2 POSIX timers
-- `setitimer` (=138) — repeating interval timer (ITIMER_REAL → SIGALRM).
-- `clock_gettime` (=139) — CLOCK_MONOTONIC (ticks), CLOCK_REALTIME (RTC time).
-- Read RTC from CMOS I/O ports 0x70/0x71 for wall-clock time.
+- `setitimer` (=38 on Linux) — repeating interval timer (ITIMER_REAL → SIGALRM).
+- `alarm` syscall.
+- `clock_gettime` already exists (228); confirm CLOCK_REALTIME reads RTC (CMOS ports
+  0x70/0x71) rather than just ticks.
 
 ### 14.3 eventfd / signalfd (optional)
 - `eventfd` (=290) — lightweight notification primitive.
@@ -577,7 +370,8 @@ Implementation:
 
 ### 14.4 Unix domain sockets
 - `AF_UNIX` socket type — IPC via filesystem path (no network).
-- Enables `X11`-style GUI IPC, `dbus`-like message buses.
+- Enables `X11`-style GUI IPC, `dbus`-like message buses — a cleaner foundation for the
+  Phase 16.1b window-server protocol than the current ad-hoc message queues.
 - `socket(AF_UNIX, SOCK_STREAM, 0)` + `bind("/tmp/my.sock")`.
 
 ---
@@ -590,13 +384,17 @@ Implementation:
 - Parse `PT_INTERP` segment — specifies the dynamic linker path.
 - Kernel loads the ELF binary AND the dynamic linker into the process.
 - Dynamic linker (`/lib/ld-oxide.so`) runs first, resolves PLT/GOT relocations.
+- Depends on Phase 11.3 (file-backed mmap) to map `.so` segments efficiently.
 
 ### 15.2 oxide-libc (minimal shared C library)
 - `malloc` / `free` / `realloc` backed by mmap + free list.
 - `printf` / `scanf` / `fopen` / `fclose` — stdio.
-- `pthread_create` (eventually) — backed by clone syscall.
+- `pthread_create` (eventually) — backed by `clone` syscall (requires SMP, Phase 17, or at
+  least cooperative green threads on a single core).
 - `execve`, `fork`, `wait` wrappers.
-- Enables compiling existing C programs for OxideOS with minimal changes.
+- Enables compiling existing C programs for OxideOS with minimal changes — today this is
+  done via static musl (Phase 10.6), which works but produces larger binaries and
+  duplicates libc in every executable.
 
 ### 15.3 Shared library ABI
 - `.so` files loaded from `/lib` and `/usr/lib`.
@@ -611,42 +409,43 @@ Implementation:
 **Goal:** Each userspace process manages its own windows. The compositor
 becomes a proper display server rather than a single-window renderer.
 
-### 16.1 Window server protocol (WayOxide)
-Replace the current single-CONTENT_X/Y compositor with a proper protocol:
+### ⚠️ 16.1 Window server protocol (WayOxide) — PARTIALLY DONE
+**Done:** per-process windows via `gui_proc` (syscalls 425–432: GuiCreate, GuiDestroy,
+GuiFillRect, GuiDrawText, GuiPresent, GuiPollEvent, GuiGetSize, GuiBlitShm). Window
+manager supports drag, resize, snap, z-order (`kernel/src/gui/window_manager.rs`).
+
+### 16.1b Remaining protocol surface
+Formalize the client → server / server → client message set on top of the existing IPC
+message queues (or migrate to AF_UNIX sockets, Phase 14.4):
 
 Client → server messages:
 ```
-CreateWindow(width, height) → window_id: u32
-DestroyWindow(window_id)
-ResizeWindow(window_id, w, h)
+ResizeWindow(window_id, w, h)        ← GuiGetSize exists; resize request does not
 SetTitle(window_id, title)
-BlitBuffer(window_id, shm_id, src_rect, dst_rect)
 RequestFocus(window_id)
 ```
 
 Server → client events:
 ```
-KeyEvent(window_id, keycode, modifiers, pressed)
-MouseEvent(window_id, x, y, buttons)
 FocusChange(window_id, gained: bool)
-CloseRequest(window_id)
+CloseRequest(window_id)              ← currently handled ad-hoc via take_closed_window()
 Exposed(window_id, rect)
 ```
 
-- Use existing IPC message queues; each window gets its own queue pair.
-- Compositor maintains a `windows: Vec<Window>` with position, size, z-order.
-- Z-order management: click-to-front, window decorations, resize handles.
+- Z-order management (click-to-front) and window decorations already exist in the WM;
+  formalize as protocol events so GUI apps can react (e.g. redraw on focus change).
 
-### 16.2 GUI applications
-With the new protocol, implement:
+### 16.2 GUI applications — mostly done
+Implemented: Notepad, Terminal, File Manager, System Monitor, Browser, Calendar,
+Notifications, Quick Settings, Activities Overview.
+
+Remaining:
 
 | App | Description |
 |-----|-------------|
-| `/bin/file_manager` | Browse RamFS + FAT16 visually. Double-click to open. |
-| `/bin/image_viewer` | Display BMP/PPM images from disk. |
+| `/bin/image_viewer` | Display PNG/PPM images from disk (PNG decoder already a dependency via `png` crate). |
 | `/bin/calculator` | Basic arithmetic with button grid. |
-| `/bin/clock_widget` | Floating analog or digital clock overlay. |
-| `/bin/settings` | Screen resolution, font size, color scheme selector. |
+| `/bin/settings` | Screen resolution, font size, color scheme selector (Quick Settings panel exists; this would be the full app). |
 | `/bin/about` | OxideOS version/build info dialog. |
 
 ### 16.3 Font improvements
@@ -659,13 +458,23 @@ noto-sans-mono-bitmap = { version = "0.3", default-features = false }
 - Anti-aliased rendering via sub-pixel blending.
 
 ### 16.4 Clipboard
-- Global clipboard buffer (string + MIME type) in kernel.
-- `ClipboardSet(data)` / `ClipboardGet() → data` IPC messages.
-- Ctrl+C/V works across windows.
+- Notepad has an internal Ctrl+C/V clipboard (`kernel/src/gui/notepad.rs`) but it is
+  **local to Notepad**, not shared across windows.
+- Promote to a global clipboard buffer (string + MIME type) in the compositor.
+- `ClipboardSet(data)` / `ClipboardGet() → data` IPC messages (or syscalls, consistent
+  with the existing Gui* syscall family).
+- Ctrl+C/V works across windows (Notepad ↔ Terminal ↔ future apps).
 
 ### 16.5 Drag-and-drop
 - Mouse button press on a window decorates the drag operation.
 - Compositor tracks drag target; sends `DropEvent(data)` to target window.
+
+### 16.6 Icon assets
+GUI icons are currently hand-drawn vector shapes (e.g. `draw_sun_icon`, `C_CLOSE_ICON`).
+For raster icon assets: draw in a pixel editor (Aseprite, GIMP, Krita) → export as 16×16
+or 24×24 PNG → convert to raw bytes with `ffmpeg -i icon.png -f rawvideo -pix_fmt gray
+icon.raw` → `include_bytes!()` in Rust. SVG is not viable in the kernel — it needs a
+renderer (resvg, librsvg) that depends on std/libc; that's only an option in userspace.
 
 ---
 
@@ -675,14 +484,15 @@ noto-sans-mono-bitmap = { version = "0.3", default-features = false }
 
 ### 17.1 APIC initialization (replace PIC)
 - Detect Local APIC via CPUID.
-- Parse MADT from ACPI to enumerate all LAPIC IDs.
+- Parse MADT from ACPI to enumerate all LAPIC IDs (use the `acpi` crate, not yet a
+  dependency).
 - Remap APIC registers (LAPIC at physical 0xFEE00000 via HHDM).
 - Initialize BSP LAPIC: SpuriousVector, timer divisor, TPR.
 - Replace PIC with APIC: mask all 8259 IRQs, enable APIC.
 - APIC timer replaces PIT for per-CPU preemption.
 
-Files: `kernel/src/kernel/apic.rs` (new), `kernel/src/kernel/pic.rs` (disable),
-`kernel/src/kernel/interrupts.rs` (route IRQs via I/O APIC).
+Files: `kernel/src/kernel/drivers/apic.rs` (new), `kernel/src/kernel/drivers/pic.rs`
+(disable), `kernel/src/kernel/arch/interrupts.rs` (route IRQs via I/O APIC).
 
 ### 17.2 I/O APIC
 - Parse MADT for I/O APIC address and GSI base.
@@ -713,15 +523,17 @@ BSP:
 - Global task table protected by a spinlock; per-queue lock for fast operations.
 - Load balancing: idle CPU steals a task from the busiest queue (work stealing).
 - IPI for task wakeup: when task becomes runnable, send IPI to the owning CPU.
-- `SpinLock<T>` wrapper using `lock xchg` (no_std, no std::sync needed).
+- `SpinLock<T>` wrapper using `lock xchg` (no_std, no std::sync needed) — note the kernel
+  already uses `lazy_static` + spinlocks in several places; audit and reuse that pattern.
 
 ### 17.6 SMP-safe kernel data structures
-Audit and lock:
+Audit and lock (currently single-core, mostly global statics):
 - `SOCK_TABLE` → `SpinLock<[Option<SocketEntry>; 16]>`
 - `RAMFS` → `SpinLock<Option<RamFs>>`
 - IPC queues → `SpinLock` per queue
 - Physical allocator bitmap → `SpinLock` or atomic operations
 - `NET` (smoltcp state) → `SpinLock` (smoltcp is not Send)
+- `gui_proc` window table, compositor state → `SpinLock`
 
 ---
 
@@ -730,24 +542,31 @@ Audit and lock:
 **Goal:** A multi-user system with proper privilege separation.
 
 ### 18.1 Users and groups
+Current state: `getuid`/`geteuid` are stubs returning `1000`; `setuid` is a stub returning
+success without changing anything (`kernel/src/kernel/sys/syscall_core.rs:612-619`). File
+permission bits (mode/uid/gid) are stored on RamFS inodes but never checked.
+
 - `/etc/passwd`: `oxide:x:1000:1000:OxideOS User:/home/oxide:/bin/sh`
-- `/etc/shadow`: hashed passwords (sha256-crypt).
-- `uid_t` / `gid_t` in `Task`: effective UID/GID, saved set-UID.
-- Syscalls `getuid=102`, `getgid=104`, `setuid=105`, `setgid=106`.
-- Permission check on `open()`: compare (uid, gid) against inode mode bits.
+- `/etc/shadow`: hashed passwords (sha256-crypt, via `sha2` crate).
+- `uid_t` / `gid_t` fields added to `Task` struct: effective UID/GID, saved set-UID.
+- Syscalls `getuid=102`, `getgid=104`, `setuid=105`, `setgid=106` — wire to real per-task
+  fields instead of constants.
+- Permission check on `open()`: compare (uid, gid) against inode mode bits; return EACCES.
 - `su` program — switch user after password verification.
-- `login` program — presented at boot before shell.
+- `login` program — presented at boot before shell (depends on Phase 21.1 init).
 
 ### 18.2 ASLR (Address Space Layout Randomization)
 - Randomize base addresses of: user stack, heap, mmap region, shared libraries.
-- Use RDRAND instruction or a simple LCG seeded from HPET/TSC.
+- Use RDRAND instruction (or RDTSC, already used in `kernel/src/kernel/drivers/timer.rs`,
+  as an LCG seed if RDRAND unavailable).
 - Stack guard page: map a non-present page below the stack to catch overflows.
 - Reduces exploitability of memory corruption bugs.
 
-### 18.3 NX / XD enforcement
-- Mark data pages as NX (No-Execute) in PTEs (bit 63 of PTE).
-- Already have SMEP (kernel can't execute user pages).
-- Add: user stack and heap are NX; only ELF PT_LOAD segments with PF_X are executable.
+### 18.3 NX / XD enforcement — MOSTLY DONE
+- NX bit (`PageTableFlags::NO_EXECUTE`, bit 63) already implemented in
+  `kernel/src/kernel/mem/paging_allocator.rs`, and SMEP is enabled in `boot_init.rs`.
+- Audit: confirm user stack and heap pages are mapped non-executable, and only ELF
+  PT_LOAD segments with `PF_X` get the executable bit cleared from NO_EXECUTE.
 
 ### 18.4 Capability system (pledge-style)
 Inspired by OpenBSD `pledge()`:
@@ -760,7 +579,8 @@ Inspired by OpenBSD `pledge()`:
 - Every syscall that takes a user pointer must call `validate_user_range()`.
 - Check all string lengths to prevent kernel reads past user buffers.
 - Return `EFAULT` (-14) instead of panicking on bad pointers.
-- Audit all existing syscall implementations.
+- Audit all existing syscall implementations (1700+ lines in `syscall_core.rs` +
+  `syscall.rs`).
 
 ### 18.6 Stack canary
 - `_start` in oxide-rt writes a random canary value below the return address.
@@ -777,10 +597,13 @@ Inspired by OpenBSD `pledge()`:
 - APIC timer is per-CPU and much more flexible.
 - Calibrate APIC timer against PIT: run PIT for 10 ms, count APIC ticks.
 - Program APIC timer in periodic mode at 100 Hz per CPU.
-- Enables true per-core preemption in SMP.
+- Enables true per-core preemption in SMP (Phase 17).
 
 ### 19.2 AHCI / SATA (replace ATA PIO)
-**Problem:** ATA PIO blocks the CPU during disk I/O. Throughput ≈ 3 MB/s.
+**Problem:** ATA PIO blocks the CPU during disk I/O. Throughput ≈ 3 MB/s. Three NIC
+drivers (RTL8139/e1000/PCnet) are already auto-detected via PCI
+(`kernel/src/kernel/drivers/net/pci.rs`) — the same PCI enumeration infrastructure can be
+reused for AHCI.
 
 Implementation:
 - Enumerate PCIe for class=0x01, subclass=0x06 (Mass Storage, SATA).
@@ -790,16 +613,20 @@ Implementation:
 - Interrupt-driven: AHCI fires an MSI/legacy IRQ on completion.
 - Throughput: 100–600 MB/s (SATA II/III).
 
-Files: `kernel/src/kernel/ahci.rs` (new), `kernel/src/kernel/vfs.rs` (route to AHCI).
+Files: `kernel/src/kernel/drivers/ahci.rs` (new), `kernel/src/kernel/fs/vfs.rs` (route to
+AHCI, behind the same block-device abstraction FAT16/ext2 already use).
 
 ### 19.3 USB keyboard & mouse (XHCI)
 **Problem:** PS/2 is obsolete; modern machines (and most VMs) use USB HID.
 
 Steps:
-- Enumerate PCIe for XHCI controller (class=0x0C, subclass=0x03, progif=0x30).
+- Enumerate PCIe for XHCI controller (class=0x0C, subclass=0x03, progif=0x30) — reuse
+  `pci.rs`.
 - Initialize XHCI: reset HC, set up command/event rings.
 - Enumerate USB devices; find HID boot-protocol keyboard and mouse.
-- Process USB HID reports in interrupt handler → feed to `stdin` / mouse delta.
+- Process USB HID reports in interrupt handler → feed to `stdin` / mouse delta (same
+  internal interface PS/2 currently feeds, `kernel/src/kernel/drivers/keyboard.rs` +
+  `kernel/src/gui/mouse.rs`).
 - Fallback: if PS/2 absent, use USB. If both present, use both.
 
 ### 19.4 Intel HDA Audio
@@ -817,9 +644,9 @@ Steps:
 - Much faster than AHCI for modern SSDs.
 
 ### 19.6 VirtIO block device (for QEMU/KVM)
-- Use `virtio-drivers` crate for VirtIO-blk.
+- Use `virtio-drivers` crate for VirtIO-blk (currently an unused dependency option).
 - Faster than ATA PIO in QEMU; supports discard, flush.
-- Auto-detected alongside RTL8139 at boot.
+- Auto-detected alongside RTL8139/e1000/PCnet at boot.
 
 ---
 
@@ -828,53 +655,47 @@ Steps:
 **Goal:** Run real-world C programs compiled for OxideOS without modification.
 
 ### 20.1 Extended syscall surface
-Add remaining high-value POSIX syscalls:
+Current syscall table already covers most high-value POSIX calls at Linux numbers
+(read/write/open/close/stat/fstat/lstat/poll/lseek/mmap/mprotect/munmap/brk/
+sigaction/sigprocmask/sigreturn/ioctl/readv/writev/access/pipe/sched_yield/mremap/
+madvise/dup/dup2/nanosleep/getpid/fork/vfork/execve/exit/waitpid/kill/uname/fcntl/
+fsync/truncate/ftruncate/getdents64/getcwd/chdir/rename/mkdir/rmdir/unlink/readlink/
+chmod/fchmod/chown/fchown/umask/gettimeofday/getrlimit/getrusage/sysinfo/getuid/getgid/
+getpgrp/setsid/getppid/gettid/arch_prctl/set_tid_address/clock_gettime/exit_group/pipe2/
+pread64/pwrite64/socket/bind/connect/listen/accept/sendto/recvfrom).
 
-| Syscall | Number | Purpose |
-|---------|--------|---------|
-| `getpid` | 3 ✅ | Process ID |
-| `getppid` | 140 | Parent PID |
-| `setsid` | 141 | Create session |
-| `setpgid` | 142 | Set process group |
-| `getpgid` | 143 | Get process group |
-| `uname` | 150 | Kernel version string |
-| `time` | 151 | Seconds since epoch |
-| `gettimeofday` | 152 | Microsecond precision |
-| `nanosleep` | 153 | Sleep with ns precision |
-| `clock_gettime` | 154 | Monotonic + realtime |
-| `fcntl` | 155 | FD flags (O_NONBLOCK, FD_CLOEXEC) |
-| `ioctl` | 92 ✅ | Device control |
-| `mprotect` | 156 | Change page permissions |
-| `msync` | 157 | Flush mmap to disk |
-| `mlock` | 158 | Pin pages in RAM |
-| `getrusage` | 159 | Resource usage stats |
-| `sysinfo` | 160 | System memory/load info |
-| `prctl` | 161 | Process control |
-| `sendfile` | 162 | Zero-copy file-to-socket |
-| `pread64` | 163 | Read at offset |
-| `pwrite64` | 164 | Write at offset |
-| `readv` | 165 | Scatter read |
-| `writev` | 166 | Gather write |
+Remaining gaps for full POSIX:
+| Syscall | Purpose | Status |
+|---------|---------|--------|
+| `setpgid`/`getpgid` | Process group | ✅ (Phase 10.4) |
+| `mprotect` | Change page permissions | check enforcement vs stub |
+| `msync` | Flush mmap to disk | needed once 11.3 (file-backed mmap) lands |
+| `mlock`/`munlock` | Pin pages in RAM | low priority |
+| `prctl` | Process control | low priority |
+| `sendfile` | Zero-copy file-to-socket | useful for Phase 13.6 httpd |
+| `flock` | Advisory file locks | Phase 12.6 |
+| `symlink`/`link` | Links | Phase 12.4/12.5 |
+| `setitimer`/`alarm` | POSIX timers | Phase 14.2 |
 
 ### 20.2 C standard library (oxide-libc)
-A minimal `libc.so` for OxideOS:
+A minimal `libc.so` for OxideOS, complementing the static-musl approach from Phase 10.6:
 - Memory: `malloc`, `calloc`, `realloc`, `free`, `mmap`, `munmap`
 - I/O: `open`, `close`, `read`, `write`, `lseek`, `stat`, `fstat`
 - Stdio: `fopen`, `fclose`, `fread`, `fwrite`, `fprintf`, `printf`, `scanf`, `fgets`
 - String: `strlen`, `strcpy`, `strcmp`, `strcat`, `strtol`, `sprintf`, `snprintf`
 - Process: `fork`, `exec`, `waitpid`, `exit`, `getenv`, `setenv`
 - Math: backed by `libm` crate
-- Enables compiling musl/busybox programs with a OxideOS-targeted toolchain.
+- Enables compiling musl/busybox-style programs against a smaller, OxideOS-native libc and
+  is a prerequisite for Phase 15 (dynamic linking).
 
-### 20.3 POSIX shell (ash/dash port)
-- Cross-compile `dash` (POSIX shell) or `busybox sh` against oxide-libc.
-- Replaces hand-written `/bin/sh` with a battle-tested POSIX shell.
-- Enables running existing shell scripts.
+### 20.3 POSIX shell — DONE via Bash
+GNU Bash 5.2 is embedded (Phase 10.6 ✅). `/bin/sh` (the hand-written shell) remains as a
+lightweight option.
 
-### 20.4 Python 3 (stretch goal)
-- Cross-compile CPython 3.x with oxide-libc and oxide-toolchain.
-- Requires: mmap, select, clock_gettime, signal, threads (Phase 17).
-- Marks the OS as "real" — can run interpreted programs.
+### 20.4 Python 3 — DONE
+CPython 3.12 runs from `/disk` (Phase 10.6 ✅, see README "Running CPython 3 from disk").
+Future: embed Python in the kernel image once `miniz_oxide`-based compression or ext2
+write makes shipping a ~30 MB interpreter in the ISO practical.
 
 ---
 
@@ -883,94 +704,96 @@ A minimal `libc.so` for OxideOS:
 **Goal:** Self-hosting development environment.
 
 ### 21.1 Init system (oxide-init)
-Replace kernel-launched terminal with a proper init:
+Replace kernel-launched GUI/terminal with a proper init:
 ```
 /sbin/oxide-init:
-  1. Mount /proc, /dev, /sys, /tmp
+  1. Mount /proc, /dev, /tmp (RamFS already provides these at boot)
   2. Run /etc/rc.d/ scripts (network up, daemons start)
-  3. Spawn /bin/login on /dev/tty0
+  3. Spawn /bin/login on tty0, or launch the GUI desktop directly
   4. Monitor children; respawn on crash
   5. Handle signals: SIGTERM → graceful shutdown sequence
 ```
-- PID 1 always running; kernel sends SIGCHLD when any process exits.
+- PID 1 always running; SIGCHLD delivery already works (Phase 10.4/14.1), so init can
+  `waitpid` zombies.
 - Service files in `/etc/rc.d/` (simple shell scripts: `start`, `stop`, `status`).
 
 ### 21.2 Package manager (opkg)
-- Simple tarball-based packages (.opkg = gzip'd POSIX tar).
+- Simple tarball-based packages (.opkg = gzip'd POSIX tar, via `miniz_oxide`).
 - `/etc/pkg/` database: installed name → file list + metadata.
-- `opkg install <name>` — fetch from HTTP server, extract to /, update db.
+- `opkg install <name>` — fetch from HTTP server (Phase 13.6), extract to `/`, update db.
 - `opkg remove <name>` — unlink files listed in db.
 - `opkg list` — show installed packages.
 
 ### 21.3 Self-hosted compiler (oxide-cc)
-- Cross-compile `tcc` (Tiny C Compiler) or `cproc` against oxide-libc.
+- Cross-compile `tcc` (Tiny C Compiler) or `cproc` against musl/oxide-libc — similar
+  process to Lua/BusyBox in Phase 10.6.
 - Run on OxideOS itself: `oxide-cc hello.c -o hello` → produces ELF.
 - Full self-hosting: OxideOS can compile OxideOS.
 
 ---
 
-## Implementation Priority Order (Updated)
+## Implementation Priority Order (Updated June 2026)
 
 ```
-✅ DONE  Phases 1–9, 10.1–10.3, 10.5 (argv, env vars, pipes, coreutils)
-✅ DONE  Phase 10.6.1–10.6.5 (Linux ABI, select/poll, munmap, envp, new syscalls)
+✅ DONE  Phases 1–9, 10.1–10.6 (argv, env vars, pipes, job control, coreutils,
+                                 Linux ABI, musl, Lua, BusyBox, Bash, Python3)
+✅ DONE  Phase 11.1–11.2 (COW fork, real munmap)
+✅ DONE  Phase 11.5 (linked-list kernel heap allocator)
+✅ DONE  Phase 12.3 (procfs, system-wide)
+✅ DONE  Phase 13.1–13.3, 13.7 (DHCP, DNS, select/poll, ping)
+✅ DONE  Phase 14.1 (sigprocmask, sigsuspend, SIGCHLD)
 ✅ DONE  Phase 22 (installable OS, /bin/install, pre-built image)
+⚠️ PARTIAL  Phase 16.1 (multi-window GUI via gui_proc; protocol v2 pending)
 
-── NEXT: Open-Source Software ──────────────────────────────────────
+── NEXT: Correctness & Persistence ─────────────────────────────────
 
-🔥 Phase 10.6.2  musl libc cross-compilation           ← first real C programs
-🔥 Phase 10.6.6  Run Lua 5.4                           ← proof of concept
-🔥 Phase 10.6.7  Run BusyBox                           ← full Unix userland
-✅ Phase 13.1  DHCP client activation — blocking spin-poll in init(); fallback static 10.0.2.15/24
-✅ Phase 13.2  DNS resolver — UDP query to NET_CONFIG.dns; kernel syscall 435 DnsResolve; oxide-rt::dns_resolve(); wget updated to accept URLs/hostnames
-✅ Phase 10.4  Job control — & background, jobs builtin, fg N
-✅ GNU Bash 5.2 — select()/pselect6(), SIGCHLD delivery, pgid tracking, getpgid/setpgid; embedded as bash.elf
+🔥 Phase 12.1   ext2 write completion (block/inode alloc, dir entries, create) ← unblocks Phase 22 ext2-root variant
+🔥 Phase 12.3b  Per-process procfs (/proc/PID/status, maps, fd)
+📌 Phase 11.6   Physical frame free list (O(1) alloc/free)
+📌 Phase 12.2   Block cache (LRU, page cache)
+📌 Phase 12.4/12.5  Symbolic & hard links
 
-── MEDIUM PRIORITY ─────────────────────────────────────────────────
+── MEDIUM PRIORITY: Security & GUI Maturity ────────────────────────
 
-📌 Phase 11.1  COW fork                             ← Memory efficiency
-📌 Phase 11.5  Linked-list kernel heap              ← Correctness
-📌 Phase 12.1  ext2 write support                   ← Persistence
-✅ Phase 12.3  procfs (/proc)                       ← Observability
-📌 Phase 10.4  Job control (bg, fg, &)              ← Shell completeness
-📌 Phase 13.3  select/poll syscall                  ← I/O multiplexing
-📌 Phase 16.1  Window server protocol               ← GUI apps
-📌 Phase 12.2  Block cache                          ← Performance
-✅ Phase 14.1  Remaining signals (sigprocmask etc.) ← POSIX compat
+📌 Phase 18.1   Users & groups — real uid/gid enforcement, /etc/passwd, login
+📌 Phase 18.2   ASLR
+📌 Phase 16.1b  Window server protocol v2 (clipboard, drag-drop, decorations)
+📌 Phase 16.3   Unicode font (noto-sans-mono-bitmap)
+📌 Phase 13.4/13.5  Non-blocking sockets, setsockopt
+📌 Phase 13.6   /bin/httpd
 
 ── ADVANCED ────────────────────────────────────────────────────────
 
 ⚙  Phase 17    SMP (LAPIC, INIT-SIPI, per-CPU sched) ← Big milestone
-⚙  Phase 15    Dynamic ELF linking                  ← Binary compat
-⚙  Phase 18    Security (users, ASLR, pledge)       ← Production ready
-⚙  Phase 19    Hardware V2 (AHCI, USB, audio, NVMe) ← Real hardware
-⚙  Phase 20    POSIX libc compatibility             ← C program support
-⚙  Phase 21    Package manager + init + self-host   ← OS maturity
-✅ Phase 22    Installable OS (USB image, installer, pre-built image, /bin/install) ← done
+⚙  Phase 11.3/11.4  File-backed mmap, demand paging
+⚙  Phase 15    Dynamic ELF linking (depends on 11.3)
+⚙  Phase 19    Hardware V2 (AHCI, USB, audio, NVMe, VirtIO-blk)
+⚙  Phase 20    POSIX libc compatibility (oxide-libc)
+⚙  Phase 21    Package manager + init + self-host
 ```
 
 ---
 
-## Phase 22 — Installable OS
+## Phase 22 — Installable OS (ext2-root variant)
 
 **Goal:** OxideOS can be written to a USB stick, booted on real x86-64 hardware, and
-installed to an internal disk with a persistent filesystem — `/bin`, `/etc`, `/home`
-survive reboot just like Ubuntu.
+installed to an internal disk with a persistent **ext2** filesystem — `/bin`, `/etc`,
+`/home` survive reboot just like Ubuntu.
+
+> The MBR/FAT32+FAT16 variant of this phase is **done** (see Completed Phases). This
+> section describes the upgrade to a writable ext2 root, which depends on Phase 12.1.
 
 ### Prerequisites (must complete first)
 - Phase 12.1 (ext2 write) — persistent root filesystem
-- Phase 12.7 (FHS-lite) — `/etc`, `/home`, `/bin`, `/usr` directory structure
-- Phase 19.2 (AHCI/SATA) — real disk I/O beyond QEMU ATA PIO
+- Phase 12.7 (FHS-lite) — `/etc`, `/home`, `/bin`, `/usr` directory structure (RamFS
+  already creates `/bin /etc /tmp /home`; ext2 needs the same layout)
+- Phase 19.2 (AHCI/SATA) — real disk I/O beyond QEMU ATA PIO (ATA PIO works for QEMU/VM
+  installs today; AHCI needed for real hardware throughput)
 - Phase 21.1 (init system) — PID 1 mounts filesystems, starts services
 
-### 22.1 Bootable USB image
-
-Create a single-file `.img` that can be written to USB with `dd`:
-- MBR partition table: partition 1 = FAT32 (EFI system / Limine boot), partition 2 = ext2 root
-- Limine bootloader installed to MBR + FAT32 `/EFI/BOOT/BOOTX64.EFI` (UEFI) and `/limine-bios.sys` (BIOS)
-- Root partition pre-populated with `/bin`, `/etc`, `/lib`, `/home`
-- Build target: `make usb-image` → `oxideos.img`
-
+### 22.1 Bootable USB image — DONE (FAT variant)
+`make install-image` already produces a 192 MB MBR image with FAT32 (EFI boot) + FAT16
+(data) partitions. The ext2-root upgrade changes partition 2 to ext2:
 ```
 Disk layout (example, 2 GB):
   Partition 1: FAT32  64 MB  → /boot (Limine, kernel ELF, initrd)
@@ -978,59 +801,34 @@ Disk layout (example, 2 GB):
 ```
 
 ### 22.2 Live mode (run without installing)
-
 On first boot from USB, default to **live mode**:
-- Root mounts the ext2 read-only; overlay RamFS on top for writes.
+- Root mounts the ext2 read-only; overlay RamFS on top for writes (RamFS already exists
+  and is the current root — this becomes the overlay rather than the root).
 - User can explore OxideOS, run programs, connect to network.
-- A desktop shortcut / shell command `install-oxide` launches the installer.
+- A desktop shortcut / shell command `install-oxide` launches the installer (the existing
+  `/bin/install` is the starting point).
 
 Implementation:
 - Kernel detects `live=1` boot parameter (Limine config entry).
 - VFS overlay: writes go to RAM, reads fall through to ext2.
 
-### 22.3 Installer (`/sbin/oxide-install`)
-
-A text-UI (or GUI) installer program:
-
+### 22.3 Installer (`/sbin/oxide-install`) — extend existing `/bin/install`
+`kernel/src/kernel/installer.rs` (582 lines) already implements the FAT32+FAT16 installer.
+Extend with:
 ```
-Step 1: Detect disks
-  - Enumerate ATA/AHCI devices via PCI scan
-  - Show: /dev/sda (320 GB, WD), /dev/sdb (64 GB, SSD)
-
-Step 2: Partition target disk
-  - Option A: Use entire disk (automatic)
-  - Option B: Manual (show current layout, let user pick partition)
-  - Write MBR partition table via syscall or direct ATA write
-
-Step 3: Format partitions
-  - mkfs.fat32 → boot partition
-  - mkfs.ext2 → root partition
-
-Step 4: Copy root filesystem
-  - rsync-style: walk live ext2, copy each inode to target ext2
-  - Show progress bar
-
-Step 5: Install bootloader
-  - Write Limine MBR stage to disk sector 0
-  - Copy limine-bios.sys + kernel ELF to boot partition
-  - Write /boot/limine.conf with correct root UUID
-
-Step 6: Configure
-  - Set hostname (/etc/hostname)
-  - Create first user (/etc/passwd entry, /home/<user>)
-  - Set root password hash (/etc/shadow)
-
-Step 7: Done
-  - Eject USB, reboot from internal disk
+Step 1: Detect disks (PCI/ATA enumeration — reuse existing ATA driver)
+Step 2: Partition target disk (MBR write — already implemented)
+Step 3: Format partitions — add mkfs.ext2 for partition 2 (needs Phase 12.1)
+Step 4: Copy root filesystem — walk live RamFS/ext2, write each file to target ext2
+Step 5: Install bootloader — Limine MBR + limine.conf (already implemented)
+Step 6: Configure — /etc/hostname, /etc/passwd (Phase 18.1), /etc/shadow
+Step 7: Done — reboot from internal disk
 ```
-
-Files: `userspace/install/src/main.rs` (new), `kernel/src/kernel/fs/ext2_write.rs` (Phase 12.1)
 
 ### 22.4 Persistent filesystem layout on disk
-
 After installation, the disk has a real FHS-compliant ext2 root:
 ```
-/bin/         → shell, coreutils, busybox applets
+/bin/         → shell, coreutils, busybox applets, bash, lua, python3
 /sbin/        → init, oxide-install, fsck
 /etc/         → hostname, passwd, shadow, resolv.conf, hosts, fstab
 /etc/rc.d/    → startup scripts (network, sshd, gui)
@@ -1042,7 +840,7 @@ After installation, the disk has a real FHS-compliant ext2 root:
 /var/www/     → httpd document root
 /tmp/         → tmpfs (cleared each boot)
 /dev/         → devfs (populated at boot)
-/proc/        → procfs (Phase 12.3)
+/proc/        → procfs (Phase 12.3, 12.3b)
 /mnt/         → mount points for removable media
 ```
 
@@ -1056,19 +854,16 @@ tmpfs             /tmp   tmpfs size=64M        0 0
 Kernel reads `fstab` at boot via init to mount all partitions.
 
 ### 22.5 First-boot setup wizard
-
 On the very first boot after installation (detected by `/etc/firstboot` marker):
-- Text-UI wizard: set timezone, create user account, configure network.
+- Text-UI wizard: set timezone, create user account (Phase 18.1), configure network.
 - Removes `/etc/firstboot` when complete.
 - Equivalent of Ubuntu's OOBE (out-of-box experience).
 
 ### 22.6 Upgrade path
-
 ```
 opkg upgrade   →  download new kernel + packages, install to /boot and /usr,
                   keep /etc and /home untouched, reboot into new version
 ```
-
 - `/boot/limine.conf` keeps a fallback entry pointing to the previous kernel.
 - On bad boot, user can select previous version from Limine menu.
 
@@ -1080,23 +875,30 @@ The milestones that cross the line from hobby OS to real OS:
 
 | Milestone | Phase | Status |
 |-----------|-------|--------|
-| Programs receive argv | 10.1 | ✅ |
-| musl libc + first C program | 10.6 | ⬡ |
-| BusyBox runs | 10.6.7 | ⬡ |
-| Shell pipes work | 10.3 | ⬡ |
-| DNS + wget by hostname | 13.2 | ⬡ |
+| Programs receive argv/envp | 10.1 | ✅ |
+| musl libc + first C program | 10.6 | ✅ |
+| Lua / BusyBox / Bash run | 10.6 | ✅ |
+| Python 3 runs | 20.4 / 10.6 | ✅ |
+| Shell pipes + job control | 10.3 / 10.4 | ✅ |
+| DNS + wget by hostname | 13.2 | ✅ |
+| Copy-on-write fork | 11.1 | ✅ |
+| Real munmap | 11.2 | ✅ |
+| Kernel heap that frees memory | 11.5 | ✅ |
+| select/poll | 13.3 | ✅ |
+| procfs (system-wide) | 12.3 | ✅ |
+| Bootable USB image + installer | 22.1/22.3 | ✅ |
+| Multiple per-process GUI windows | 16.1 | ⚠️ partial |
 | ext2 writable | 12.1 | ⬡ |
-| procfs exists | 12.3 | ✅ |
-| select/poll | 13.3 | ⬡ |
-| Multiple GUI windows | 16.1 | ⬡ |
+| procfs per-process | 12.3b | ⬡ |
+| Symbolic/hard links | 12.4/12.5 | ⬡ |
+| Window clipboard / drag-drop | 16.4/16.5 | ⬡ |
+| Users + permission enforcement | 18.1 | ⬡ |
+| ASLR | 18.2 | ⬡ |
 | SMP (N cores used) | 17 | ⬡ |
-| Users + permissions | 18.1 | ⬡ |
-| libc + C programs | 20.2 | ⬡ |
-| Python 3 runs | 20.4 | ⬡ |
-| Self-compiling | 21.3 | ⬡ |
-| Persistent /home + /etc on real disk | 22.4 | ⬡ |
-| Bootable USB image | 22.1 | ✅ |
-| Installer program | 22.3 | ✅ |
+| Dynamic ELF linking (.so) | 15 | ⬡ |
+| AHCI/USB/audio (real hardware) | 19 | ⬡ |
+| Persistent /home + /etc on ext2 disk | 22.4 | ⬡ |
+| Package manager / self-hosting | 21.2/21.3 | ⬡ |
 
 ---
 
@@ -1105,29 +907,32 @@ The milestones that cross the line from hobby OS to real OS:
 ```
 kernel/src/
 ├── kernel/
-│   ├── apic.rs          ← Phase 17.1 (LAPIC)
-│   ├── ahci.rs          ← Phase 19.2 (SATA)
-│   ├── usb/             ← Phase 19.3
-│   │   ├── xhci.rs
-│   │   └── hid.rs
-│   ├── audio/           ← Phase 19.4
-│   │   └── hda.rs
+│   ├── drivers/
+│   │   ├── apic.rs          ← Phase 17.1 (LAPIC)
+│   │   ├── ahci.rs          ← Phase 19.2 (SATA)
+│   │   ├── usb/             ← Phase 19.3
+│   │   │   ├── xhci.rs
+│   │   │   └── hid.rs
+│   │   ├── audio/           ← Phase 19.4
+│   │   │   └── hda.rs
+│   │   └── net/
+│   │       ├── rtl8139.rs   ✅
+│   │       ├── e1000.rs     ✅
+│   │       ├── pcnet.rs     ✅
+│   │       ├── stack.rs     ✅ (smoltcp)
+│   │       ├── socket.rs    ✅
+│   │       ├── dns.rs       ✅
+│   │       └── virtio.rs    ← Phase 19.6 (currently empty stub)
 │   ├── fs/
 │   │   ├── ramfs.rs     ✅
 │   │   ├── fat.rs       ✅
-│   │   ├── ext2.rs      ✅ (read) ← write Phase 12.1
-│   │   ├── procfs.rs    ← Phase 12.3
+│   │   ├── ext2.rs      ✅ (read) + ⚠️ (partial write) ← complete Phase 12.1
+│   │   ├── procfs.rs    ✅ (system-wide) ← extend Phase 12.3b
+│   │   ├── diskfs.rs    ✅
 │   │   └── block_cache.rs ← Phase 12.2
-│   ├── net/
-│   │   ├── rtl8139.rs   ✅
-│   │   ├── stack.rs     ✅ (smoltcp)
-│   │   ├── socket.rs    ✅
-│   │   ├── dns.rs       ← Phase 13.2
-│   │   └── dhcp.rs      ← Phase 13.1
-│   ├── mm/              ← Phase 11
-│   │   ├── cow.rs       (COW fork)
-│   │   ├── mmap.rs      (file-backed mmap)
-│   │   └── freelist.rs  (frame free list)
+│   ├── mem/
+│   │   ├── allocator.rs      ✅ linked_list_allocator (Phase 11.5)
+│   │   └── paging_allocator.rs ✅ (COW, munmap, NX)
 │   ├── security/        ← Phase 18
 │   │   ├── users.rs
 │   │   ├── capabilities.rs
@@ -1138,16 +943,17 @@ kernel/src/
 │       └── percpu.rs
 userspace/
 ├── oxide-rt/            ✅ (syscall wrappers, _start, bump alloc)
+├── oxide-widgets/       ✅ (GUI widget toolkit)
 ├── oxide-libc/          ← Phase 20.2 (C library)
-├── sh/                  ✅ (fork+exec, >, >>)
+├── sh/, bash            ✅ (shells)
 ├── terminal/            ✅ (GUI terminal emulator)
-├── coreutils/           ✅ + more in Phase 10.5
-├── wget/                ✅
-├── edit/                ✅
-├── nc/                  ✅
+├── filemanager/, sysmon/, browser/  ✅ (GUI apps)
+├── coreutils/           ✅
+├── wget/, nc/, ping/, edit/, install/  ✅
+├── hello_musl/, musl_test/  ✅ (musl reference programs)
+├── lua, busybox, bash (embedded ELFs) ✅
+├── python3 (FAT-disk ELF)  ✅
 ├── httpd/               ← Phase 13.6
-├── ping/                ← Phase 13.7
-├── file_manager/        ← Phase 16.2
 ├── image_viewer/        ← Phase 16.2
 ├── login/               ← Phase 21.1
 └── init/                ← Phase 21.1
