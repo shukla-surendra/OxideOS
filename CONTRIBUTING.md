@@ -23,7 +23,7 @@ make run-bios
 
 ## Where to start
 
-Good first issues are labeled [`good first issue`](https://github.com/SurendraShuklaOfficial/OxideOS/issues?q=label%3A%22good+first+issue%22).
+Good first issues are labeled [`good first issue`](https://github.com/shukla-surendra/OxideOS/issues?q=label%3A%22good+first+issue%22).
 
 Easy areas to contribute:
 - **New syscall stub** — add a Linux-compatible syscall that returns a sensible value. Pattern is in `kernel/src/kernel/sys/syscall_core.rs` + `syscall.rs`.

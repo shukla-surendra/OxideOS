@@ -79,7 +79,7 @@ pub unsafe fn vfs_open(path: &str, flags: u32) -> i64 {
             if crate::kernel::ext2::is_dir(ext2_path) {
                 return (*fdt).open_dir(ext2_path);
             }
-            let raw_fd = unsafe { crate::kernel::ext2::open(ext2_path) };
+            let raw_fd = unsafe { crate::kernel::ext2::open(ext2_path, flags) };
             if raw_fd < 0 { return raw_fd; }
             let writable = (flags & crate::kernel::fs::O_WRONLY != 0)
                         || (flags & crate::kernel::fs::O_RDWR   != 0);
@@ -182,7 +182,10 @@ pub unsafe fn vfs_mkdir(path: &str) -> i64 {
             if !crate::kernel::ata::is_present() { return -19; }
             unsafe { crate::kernel::fat::mkdir(fat_path) }
         }
-        Resolved::Ext2  { .. }       => -1, // read-only
+        Resolved::Ext2 { path: ext2_path } => {
+            if !crate::kernel::ext2::is_ready() { return -19; }
+            unsafe { crate::kernel::ext2::mkdir(ext2_path) }
+        }
         Resolved::Dev   { .. }       => -1, // EPERM
         Resolved::Proc  { .. }       => -1, // EPERM
         Resolved::DiskStore { .. }   => -1, // EPERM
@@ -334,7 +337,7 @@ pub unsafe fn vfs_stat_linux(path: &str, out: *mut LinuxStat) -> i64 {
                 unsafe { *out = LinuxStat::fill_dir(4); }
                 return 0;
             }
-            let fd = unsafe { crate::kernel::ext2::open(ext2_path) };
+            let fd = unsafe { crate::kernel::ext2::open(ext2_path, 0) };
             if fd < 0 { return -2; }
             let mut tmp = [0u8; 512]; let mut size = 0u64;
             loop {
@@ -430,7 +433,7 @@ pub unsafe fn vfs_stat(path: &str, out: *mut FileStat) -> i64 {
                     (*out) = FileStat { size: 0, kind: StatKind::Directory as u32, _pad: 0 };
                     return 0;
                 }
-                let fd = crate::kernel::ext2::open(ext2_path);
+                let fd = crate::kernel::ext2::open(ext2_path, 0);
                 if fd < 0 { return -7; }
                 let mut tmp = [0u8; 512]; let mut size = 0u64;
                 loop {

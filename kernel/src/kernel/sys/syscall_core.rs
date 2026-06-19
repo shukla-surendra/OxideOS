@@ -44,6 +44,7 @@ pub enum Syscall {
     Flock         = 73,  // flock — stub
     Fsync         = 74,  // fsync — stub
     Fdatasync     = 75,  // fdatasync — stub
+    Sync          = 162, // sync — flush all dirty filesystem buffers to disk
     Ftruncate     = 77,  // ftruncate(fd, length)
     Fchdir        = 81,  // fchdir(fd)
     Rmdir         = 84,  // rmdir(path)
@@ -284,6 +285,7 @@ impl Syscall {
             Self::Flock         => "flock",
             Self::Fsync         => "fsync",
             Self::Fdatasync     => "fdatasync",
+            Self::Sync          => "sync",
             Self::Ftruncate     => "ftruncate",
             Self::Fchdir        => "fchdir",
             Self::Rmdir         => "rmdir",
@@ -362,6 +364,7 @@ impl From<u64> for Syscall {
             73  => Self::Flock,
             74  => Self::Fsync,
             75  => Self::Fdatasync,
+            162 => Self::Sync,
             76  => Self::Truncate,
             77  => Self::Ftruncate,
             78  => Self::ReadDir,
@@ -661,6 +664,11 @@ pub trait SyscallRuntime {
 
     /// fdatasync — flush file data. Stub returns 0.
     fn fdatasync_impl(&mut self, _fd: i32) -> i64 { 0 }
+
+    /// sync — flush all dirty filesystem buffers to disk. Default: no-op,
+    /// since every filesystem backend here is currently write-through.
+    /// TODO(12.2): flush block cache here once one exists.
+    fn sync_impl(&mut self) -> i64 { 0 }
 
     /// ftruncate — truncate an open fd to length bytes.
     fn ftruncate_impl(&mut self, _fd: i32, _length: u64) -> i64 { ENOSYS }
@@ -1272,6 +1280,7 @@ pub unsafe fn dispatch<R: SyscallRuntime>(
         Syscall::Flock       => SyscallResult::ok(runtime.flock_impl(request.arg1 as i32, request.arg2 as u32)),
         Syscall::Fsync       => SyscallResult::ok(runtime.fsync_impl(request.arg1 as i32)),
         Syscall::Fdatasync   => SyscallResult::ok(runtime.fdatasync_impl(request.arg1 as i32)),
+        Syscall::Sync        => SyscallResult::ok(runtime.sync_impl()),
         Syscall::Ftruncate   => { let r = runtime.ftruncate_impl(request.arg1 as i32, request.arg2); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
         Syscall::Fchdir      => { let r = runtime.fchdir_impl(request.arg1 as i32); if r < 0 { SyscallResult::err(r) } else { SyscallResult::ok(r) } }
         Syscall::Rmdir       => unsafe {
