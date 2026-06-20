@@ -486,10 +486,26 @@ See [docs/plan.md](docs/plan.md) for the full feature roadmap. Key upcoming mile
 - [x] Basic procfs (`/proc/version`, `/proc/cpuinfo`, `/proc/meminfo`, `/proc/uptime`, `/proc/mounts`)
 - [ ] Per-process procfs (`/proc/PID/maps`, `/proc/PID/status`)
 - [x] Copy-on-write fork
-- [ ] ext2 write support
+- [x] ext2 write support
 - [ ] Job control (`bg`, `fg`, `Ctrl+Z`)
 - [ ] Shared memory (`shm`) syscalls
 - [ ] SMP (multi-core)
+
+---
+
+## Design Docs
+
+Short, why-not-how design-rationale docs — decisions made, tradeoffs, and
+known limitations for each subsystem:
+
+- [docs/boot.md](docs/boot.md)
+- [docs/interrupts.md](docs/interrupts.md)
+- [docs/memory.md](docs/memory.md)
+- [docs/scheduler.md](docs/scheduler.md)
+- [docs/filesystem.md](docs/filesystem.md)
+
+For step-by-step "how it works" walkthroughs instead, see
+[docs/oxide_cocepts/](docs/oxide_cocepts/) and [docs/study/](docs/study/).
 
 ---
 
