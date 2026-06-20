@@ -320,6 +320,14 @@ pub unsafe fn run_gui_with_mouse(
         if net_probe.tick() { needs_redraw = true; }
         if matches!(net_probe.phase, NetProbePhase::Connecting { .. }) { needs_redraw = true; }
 
+        // The terminal/notepad-only partial redraw path can't preserve z-order
+        // when userspace (GUI-proc) windows are present, since it doesn't repaint
+        // the background or windows beneath them. Escalate to a full redraw so the
+        // interleaved z-order compositing runs.
+        if terminal_dirty && unsafe { gui_proc::has_active_windows() } {
+            needs_redraw = true;
+        }
+
         // ── Draw ──────────────────────────────────────────────────────────────
         let mut did_draw = false;
 
@@ -341,11 +349,14 @@ pub unsafe fn run_gui_with_mouse(
                 if wid == sysinfo_window_id {
                     unsafe { draw_sysinfo_panel(graphics, &*wm, sysinfo_window_id, &net_probe); }
                 }
+                // Composite this window's GUI-proc content (if any) right here,
+                // so userspace windows stack in the same z-order as native ones
+                // instead of always painting on top in a later batch pass.
+                unsafe { gui_proc::composite_window(graphics, wid as u32); }
             }
             launcher_app.draw(graphics, screen_h);
             unsafe { (*wm).draw_context_menu(graphics); }
             start_menu.draw_menu(graphics);
-            unsafe { gui_proc::composite_all(graphics); }
             for np in notepads.iter() { np.draw_dropdown_overlay(graphics, unsafe { &*wm }); }
             overview.draw(graphics, unsafe { &*wm }, screen_w, screen_h);
             quick_settings.draw(graphics, screen_w);

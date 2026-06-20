@@ -581,19 +581,61 @@ pub unsafe fn on_process_exit(pid: u32) {
 
 // ── Compositor ───────────────────────────────────────────────────────────────
 
+/// Returns `true` if any GUI-proc window is currently active.
+pub unsafe fn has_active_windows() -> bool {
+    for i in 0..MAX_ENTRIES {
+        if unsafe { entries()[i].active } { return true; }
+    }
+    false
+}
+
+/// Composite the single GUI-proc window identified by WM window id `window_id`
+/// into the back-buffer, if it is active and visible.  Returns `true` if it
+/// blitted anything.
+///
+/// The main loop calls this *inside* its z-order draw pass — right after
+/// drawing window `window_id`'s chrome — so GUI-proc content stacks correctly
+/// relative to native windows (terminals, notepads) instead of always landing
+/// on top.
+pub unsafe fn composite_window(graphics: &Graphics, window_id: u32) -> bool {
+    if !GFX_VALID { return false; }
+    for i in 0..MAX_ENTRIES {
+        let e = unsafe { &entries()[i] };
+        if !e.active || e.window_id != window_id { continue; }
+        // Don't blit if the WM window has been removed (e.g. user clicked ×).
+        if !WM_PTR.is_null() && !unsafe { (*WM_PTR).is_window_visible(e.window_id as usize) } {
+            return false;
+        }
+        let w = e.back_w as u64;
+        let h = e.back_h as u64;
+        if w == 0 || h == 0 { return false; }
+        if e.backing.len() != (w * h) as usize { return false; }
+        graphics.write_rect(e.back_cx, e.back_cy, w, h, &e.backing);
+        return true;
+    }
+    false
+}
+
 /// Composite every active GUI-proc window's backing buffer into the
-/// back-buffer.  Call this after drawing all kernel window chrome so that
-/// GUI-proc content lands on top (correct z-order) and survives full redraws
-/// even when the userspace task is sleeping.
+/// back-buffer, in WM z-order (bottom-to-top) so proc windows stack
+/// correctly relative to *each other*.  The full-redraw path prefers
+/// `composite_window` interleaved into its z-loop (which also orders proc
+/// windows relative to native windows); this batch form is kept for partial
+/// redraws that have no native windows interleaved.
 pub unsafe fn composite_all(graphics: &Graphics) {
     if !GFX_VALID { return; }
+    // Prefer WM z-order so overlapping proc windows paint back-to-front.
+    if !WM_PTR.is_null() {
+        let z = unsafe { (*WM_PTR).z_order_slice() };
+        for &wid in z.iter() {
+            unsafe { composite_window(graphics, wid as u32); }
+        }
+        return;
+    }
+    // Fallback (no WM): slot order.
     for i in 0..MAX_ENTRIES {
         let e = unsafe { &entries()[i] };
         if !e.active { continue; }
-        // Don't blit if the WM window has been removed (e.g. user clicked ×).
-        if !WM_PTR.is_null() && !unsafe { (*WM_PTR).is_window_visible(e.window_id as usize) } {
-            continue;
-        }
         let w = e.back_w as u64;
         let h = e.back_h as u64;
         if w == 0 || h == 0 { continue; }

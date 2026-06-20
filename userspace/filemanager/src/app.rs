@@ -4,7 +4,7 @@
 //! Each method group has a section comment so the file stays easy to scan.
 
 use oxide_rt::{exit, chdir, getcwd, readdir, stat, FileStat, gui_get_size, GuiEvent, GuiWindow,
-               open, close, mkdir, unlink, rename};
+               open, close, mkdir, unlink, rename, get_time};
 use crate::constants::*;
 use crate::fixstr::FixStr;
 use crate::types::{BarMode, EscState, Layout, DirEntry, SidebarHit, SIDEBAR_ITEMS};
@@ -35,6 +35,13 @@ pub struct App {
     pub(crate) bar_mode:       BarMode,
     pub(crate) bar_text:       FixStr<128>,
     pub(crate) status_msg:     FixStr<160>,
+    /// `true` when `status_msg` is an error (drawn red) vs. a confirmation
+    /// (drawn green). Lets one status line serve both purposes.
+    pub(crate) status_is_err:  bool,
+    /// Row index and timer tick of the last file-list click, for
+    /// double-click detection (single click selects, double click opens).
+    pub(crate) last_click_idx:  Option<usize>,
+    pub(crate) last_click_tick: u64,
 }
 
 impl App {
@@ -55,9 +62,13 @@ impl App {
             bar_mode:       BarMode::None,
             bar_text:       FixStr::new(),
             status_msg:     FixStr::new(),
+            status_is_err:  false,
+            last_click_idx:  None,
+            last_click_tick: 0,
         };
         a.refresh_cwd();
         a.load_entries();
+        a.announce_location();
         a
     }
 }
@@ -170,12 +181,46 @@ impl App {
         self.dirty = true;
     }
 
-    /// `chdir` to `path` and reload the entry list.
+    /// `chdir` to `path` and reload the entry list. On success, posts an
+    /// explicit confirmation to the status bar so the move is unmistakable;
+    /// on failure, posts an error instead of silently doing nothing.
     pub fn navigate_to(&mut self, path: &str) {
-        if chdir(path) >= 0 {
+        let r = chdir(path);
+        if r >= 0 {
             self.refresh_cwd();
             self.load_entries();
+            self.announce_location();
+        } else {
+            self.set_status_err("Cannot open", r);
         }
+    }
+
+    /// Name of the current directory (its own leaf, not the full path):
+    /// `"/"` at the root, otherwise the last path segment.
+    pub(crate) fn leaf_name(&self) -> &str {
+        if self.path_seg_count <= 1 { "/" }
+        else { self.path_segs[self.path_seg_count - 1].as_str() }
+    }
+
+    /// Number of real entries (everything except the `..` parent link).
+    pub(crate) fn real_entry_count(&self) -> usize {
+        let mut n = 0;
+        for i in 0..self.entry_count {
+            if self.entries[i].name.as_str() != ".." { n += 1; }
+        }
+        n
+    }
+
+    /// Post a confirmation line naming the directory just entered and how
+    /// many items it holds — the primary "yes, you moved" signal.
+    pub(crate) fn announce_location(&mut self) {
+        let mut msg = FixStr::<160>::new();
+        msg.push_str("In ");
+        msg.push_str(self.leaf_name());
+        msg.push_str("  -  ");
+        msg.push_usize(self.real_entry_count());
+        msg.push_str(" items");
+        self.set_info(msg.as_str());
     }
 
     /// Enter the currently selected directory (no-op for files).
@@ -210,9 +255,20 @@ impl App {
     fn set_status(&mut self, msg: &str) {
         self.status_msg.clear();
         self.status_msg.push_str(msg);
+        self.status_is_err = true;
+        self.dirty = true;
+    }
+
+    /// Post a positive (non-error) confirmation line, drawn in green.
+    pub(crate) fn set_info(&mut self, msg: &str) {
+        self.status_msg.clear();
+        self.status_msg.push_str(msg);
+        self.status_is_err = false;
+        self.dirty = true;
     }
 
     fn set_status_err(&mut self, msg: &str, code: i64) {
+        self.status_is_err = true;
         self.status_msg.clear();
         self.status_msg.push_str(msg);
         self.status_msg.push_str(" (");
@@ -374,6 +430,7 @@ impl App {
 
     pub(crate) fn sel_up(&mut self) {
         if self.selected > 0 { self.selected -= 1; }
+        self.status_msg.clear();
         self.clamp_scroll(); self.dirty = true;
     }
 
@@ -381,6 +438,7 @@ impl App {
         if self.entry_count > 0 && self.selected + 1 < self.entry_count {
             self.selected += 1;
         }
+        self.status_msg.clear();
         self.clamp_scroll(); self.dirty = true;
     }
 }
@@ -496,14 +554,25 @@ impl App {
             if !pressed { return; }
             let bx = x as u32; let by = y as u32;
 
-            // File list
+            // File list — single click selects, double click opens.
             if bx >= lay.right_x && bx < lay.scroll_x
                 && by >= lay.list_y0 && by < lay.status_y
             {
                 let idx = self.scroll + ((by - lay.list_y0) / ROW_H) as usize;
                 if idx < self.entry_count {
-                    if self.selected == idx { self.enter_selected(); }
-                    else { self.selected = idx; self.dirty = true; }
+                    let now = get_time();
+                    let is_double = self.last_click_idx == Some(idx)
+                        && now.wrapping_sub(self.last_click_tick) <= DOUBLE_CLICK_TICKS;
+                    self.selected = idx;
+                    if is_double {
+                        self.last_click_idx = None;
+                        self.enter_selected();
+                    } else {
+                        self.last_click_idx  = Some(idx);
+                        self.last_click_tick = now;
+                        self.status_msg.clear();
+                        self.dirty = true;
+                    }
                 }
                 return;
             }

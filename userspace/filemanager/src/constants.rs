@@ -20,6 +20,11 @@ pub const SCROLL_W:   u32 = 10;  // scrollbar width
 pub const COL_TYPE_W: u32 = 50;  // TYPE column width (measured from right edge)
 pub const COL_SIZE_W: u32 = 68;  // SIZE column width (measured from right edge)
 
+// ── Interaction ─────────────────────────────────────────────────────────────
+/// Max gap between two clicks on the same row to count as a double-click,
+/// in system-timer ticks. The timer runs at 100 Hz, so 40 ticks ≈ 400 ms.
+pub const DOUBLE_CLICK_TICKS: u64 = 40;
+
 // ── Sidebar section heights ────────────────────────────────────────────────────
 pub const SIDEBAR_MAIN_H: u32 = 24; // "EXPLORER" master header
 pub const SIDEBAR_SEC_H:  u32 = 18; // "PLACES" / "PATH" section headers
@@ -62,3 +67,5 @@ pub const COL_SEC_TXT:      u32 = 0xFF6A6A6A; // section header label text
 pub const COL_BAR_BG:       u32 = 0xFF2D2D30; // new/rename/delete action bar background
 pub const COL_BAR_INPUT_BG: u32 = 0xFF1E1E1E; // action bar text-input background
 pub const COL_DANGER:       u32 = 0xFFF48771; // delete-confirm / error text
+pub const COL_OK:           u32 = 0xFF73C991; // positive / confirmation status text
+pub const COL_EMPTY_TXT:    u32 = 0xFF6A6A6A; // "this folder is empty" placeholder
