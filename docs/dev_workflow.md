@@ -126,7 +126,7 @@ qemu-system-x86_64 \
     -M pc -serial stdio \
     -cdrom oxide_os-x86_64.iso -boot d \
     -drive file=oxide_disk.img,format=raw,if=ide,index=0 \
-    -drive file=test_target.img,format=raw,if=ide,index=1 \
+    -drive file=test_target.img,format=raw,if=ide,index=3 \
     -m 2G -cpu max \
     -netdev user,id=net0 -device rtl8139,netdev=net0
 
@@ -214,7 +214,7 @@ Run `make userspace` before `make kernel` — the kernel embeds binaries at comp
 
 ### Installer: "No secondary disk detected"
 
-The installer uses the secondary ATA bus (`0x170`). In QEMU, use `-drive if=ide,index=1`. In VirtualBox, make sure the blank HDD is on an IDE controller (Controller: IDE), not SATA.
+The installer uses the secondary ATA bus, slave position (`0x170`, device-select bit 4) — not master, since QEMU's `-cdrom` boot path auto-attaches at secondary master. In QEMU, use `-drive if=ide,index=3`. In VirtualBox, make sure the blank HDD is on an IDE controller (Controller: IDE), not SATA.
 
 ---
 

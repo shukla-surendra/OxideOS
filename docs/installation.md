@@ -193,7 +193,7 @@ qemu-system-x86_64 \
     -cdrom oxide_os-x86_64.iso \
     -boot d \
     -drive file=oxide_disk.img,format=raw,if=ide,index=0 \
-    -drive file=install_target.img,format=raw,if=ide,index=1 \
+    -drive file=install_target.img,format=raw,if=ide,index=3 \
     -m 2G -cpu max \
     -netdev user,id=net0 -device rtl8139,netdev=net0
 
@@ -252,7 +252,7 @@ Both UEFI and legacy BIOS boot are supported:
 The installer only sees the **second** ATA disk. If you only have one disk attached, the installer aborts.
 
 - **VirtualBox:** Make sure you have two storage devices — the ISO (optical) and the blank HDD. The HDD must be attached to an IDE controller, not SATA.
-- **QEMU:** Use `-drive file=...,if=ide,index=1` for the blank disk. `index=0` is reserved for `oxide_disk.img`.
+- **QEMU:** Use `-drive file=...,if=ide,index=3` (secondary slave) for the blank disk — not `index=2`, since QEMU's `-cdrom` boot path auto-attaches at secondary master. `index=0` is reserved for `oxide_disk.img`.
 
 ### Installer stalls / no progress
 
