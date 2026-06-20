@@ -265,7 +265,7 @@ pub fn is_present()     -> bool { unsafe { DISKS[0].is_some() } }
 // must live at the slave position instead.
 pub fn is_present_sec() -> bool { unsafe { DISKS[3].is_some() } }
 pub fn sector_count()   -> u32  { unsafe { DISKS[0].as_ref().map(|d| d.sectors as u32).unwrap_or(0) } }
-pub fn sector_count_sec() -> u32 { unsafe { DISKS[2].as_ref().map(|d| d.sectors as u32).unwrap_or(0) } }
+pub fn sector_count_sec() -> u32 { unsafe { DISKS[3].as_ref().map(|d| d.sectors as u32).unwrap_or(0) } }
 
 // ── Unified read / write ──────────────────────────────────────────────────
 
@@ -294,10 +294,10 @@ pub unsafe fn write_sector(idx: usize, lba: u32, buf: &[u8; 512]) -> bool {
 // ── Legacy per-bus wrappers (installer.rs uses these) ─────────────────────
 
 pub unsafe fn read_sector_sec(lba: u32, buf: &mut [u8; 512]) -> bool {
-    unsafe { read_sector(2, lba, buf) }
+    unsafe { read_sector(3, lba, buf) }
 }
 pub unsafe fn write_sector_sec(lba: u32, buf: &[u8; 512]) -> bool {
-    unsafe { write_sector(2, lba, buf) }
+    unsafe { write_sector(3, lba, buf) }
 }
 
 // ── Low-level PIO read/write ──────────────────────────────────────────────

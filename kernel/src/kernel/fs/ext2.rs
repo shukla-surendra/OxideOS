@@ -1,7 +1,9 @@
 //! Read/write ext2 filesystem driver for OxideOS.
 //!
-//! Reads and writes the secondary IDE master disk (`ata::read_sector_sec`/
-//! `write_sector_sec`). The partition offset (LBA of first block) is set
+//! Reads and writes the secondary IDE slave disk (`ata::read_sector_sec`/
+//! `write_sector_sec`) — the slave position, not master, since QEMU's
+//! `-cdrom` boot path auto-attaches at secondary master. The partition
+//! offset (LBA of first block) is set
 //! during `init()` either from the MBR partition table or by treating the
 //! whole disk as ext2 (LBA 0). Block and inode allocation is bitmap-based
 //! (one bitmap block per group); every alloc/free writes its bitmap, BGDT
@@ -805,7 +807,7 @@ unsafe fn dir_delete_entry(state: &Ext2State, dir_ino: u32, name: &[u8]) -> bool
 
 /// Initialise the ext2 driver.
 ///
-/// Uses the secondary IDE master; if it is absent or the superblock is invalid,
+/// Uses the secondary IDE slave; if it is absent or the superblock is invalid,
 /// the driver stays in `!ready` state (all operations return errors).
 ///
 /// `partition_lba`: LBA of the partition start (0 = whole-disk ext2).

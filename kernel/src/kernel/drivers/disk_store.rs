@@ -81,6 +81,17 @@ unsafe fn write_slot(disk: usize, slot: u32, s: &RecordSlot) -> bool {
     unsafe { ata::write_sector(disk, record_lba(disk, slot), &buf) }
 }
 
+/// Check whether `disk` (whole-disk, no MBR partition offset) holds an
+/// ext2 filesystem, by reading its superblock magic (0xEF53) at byte
+/// offset 1024 (LBA 2, same convention `ext2::init` uses for an unpartitioned
+/// ext2 image).
+unsafe fn is_ext2_disk(disk: usize) -> bool {
+    const EXT2_MAGIC: u16 = 0xEF53;
+    let mut buf = [0u8; 512];
+    if !unsafe { ata::read_sector(disk, 2, &mut buf) } { return false; }
+    u16::from_le_bytes([buf[56], buf[57]]) == EXT2_MAGIC
+}
+
 // ── Public API ────────────────────────────────────────────────────────────
 
 /// Mount (or format) the record store on disk `idx`.
@@ -112,6 +123,16 @@ pub unsafe fn mount(disk: usize) -> bool {
             STORE_MOUNTED[disk] = true;
         }
         return true;
+    }
+
+    // Refuse to format a disk that's actually an ext2 filesystem — `/store`'s
+    // header/record-slot layout starts at LBA 2048 (1 MB in), which overlaps
+    // an ext2 image's inode table and would corrupt it.
+    if unsafe { is_ext2_disk(disk) } {
+        unsafe { SERIAL_PORT.write_str("[store] disk"); }
+        unsafe { SERIAL_PORT.write_decimal(disk as u32); }
+        unsafe { SERIAL_PORT.write_str(" is an ext2 filesystem — not formatting\n"); }
+        return false;
     }
 
     // Format: write header.

@@ -187,7 +187,7 @@ run-hdd: run-hdd-$(KARCH)
 # Optional ATA disk flags — only passed when the images exist.
 comma      := ,
 DISK_FLAG  := $(if $(wildcard $(DISK_IMAGE)),-drive file=$(DISK_IMAGE)$(comma)format=raw$(comma)if=ide$(comma)index=0)
-EXT2_FLAG  := $(if $(wildcard $(EXT2_IMAGE)),-drive file=$(EXT2_IMAGE)$(comma)format=raw$(comma)if=ide$(comma)index=1)
+EXT2_FLAG  := $(if $(wildcard $(EXT2_IMAGE)),-drive file=$(EXT2_IMAGE)$(comma)format=raw$(comma)if=ide$(comma)index=3)
 
 .PHONY: run-x86_64
 run-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
@@ -380,9 +380,16 @@ run-hdd-bios: $(IMAGE_NAME).hdd
 		-hda $(IMAGE_NAME).hdd \
 		$(QEMUFLAGS)
 
+# osdev0/edk2-ovmf-nightly no longer publishes standalone ovmf-code-*.fd /
+# ovmf-vars-*.fd release assets — only a combined edk2-ovmf.tar.gz/.tar.xz
+# archive (containing edk2-ovmf/ovmf-{code,vars}-<arch>.fd). `curl -f` makes
+# a failed/missing-asset fetch fail the build loudly instead of silently
+# writing a 404 error page as if it were the firmware file.
 ovmf/ovmf-code-$(KARCH).fd:
 	mkdir -p ovmf
-	curl -Lo $@ https://github.com/osdev0/edk2-ovmf-nightly/releases/latest/download/ovmf-code-$(KARCH).fd
+	curl -fL -o /tmp/edk2-ovmf-$(KARCH).tar.gz https://github.com/osdev0/edk2-ovmf-nightly/releases/latest/download/edk2-ovmf.tar.gz
+	tar -xzf /tmp/edk2-ovmf-$(KARCH).tar.gz -C ovmf --strip-components=1 edk2-ovmf/ovmf-code-$(KARCH).fd
+	rm -f /tmp/edk2-ovmf-$(KARCH).tar.gz
 	case "$(KARCH)" in \
 		aarch64) dd if=/dev/zero of=$@ bs=1 count=0 seek=67108864 2>/dev/null;; \
 		loongarch64) dd if=/dev/zero of=$@ bs=1 count=0 seek=5242880 2>/dev/null;; \
@@ -391,7 +398,9 @@ ovmf/ovmf-code-$(KARCH).fd:
 
 ovmf/ovmf-vars-$(KARCH).fd:
 	mkdir -p ovmf
-	curl -Lo $@ https://github.com/osdev0/edk2-ovmf-nightly/releases/latest/download/ovmf-vars-$(KARCH).fd
+	curl -fL -o /tmp/edk2-ovmf-$(KARCH).tar.gz https://github.com/osdev0/edk2-ovmf-nightly/releases/latest/download/edk2-ovmf.tar.gz
+	tar -xzf /tmp/edk2-ovmf-$(KARCH).tar.gz -C ovmf --strip-components=1 edk2-ovmf/ovmf-vars-$(KARCH).fd
+	rm -f /tmp/edk2-ovmf-$(KARCH).tar.gz
 	case "$(KARCH)" in \
 		aarch64) dd if=/dev/zero of=$@ bs=1 count=0 seek=67108864 2>/dev/null;; \
 		loongarch64) dd if=/dev/zero of=$@ bs=1 count=0 seek=5242880 2>/dev/null;; \
