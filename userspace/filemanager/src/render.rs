@@ -149,6 +149,24 @@ fn draw_file_list(app: &App, win: oxide_rt::GuiWindow, lay: &Layout) {
     let vis    = lay.visible_rows();
     let name_w = lay.col_size_x.saturating_sub(lay.right_x + PAD + 28 + 4);
 
+    // Empty-folder placeholder: without this an empty directory looks
+    // identical to a window that didn't react to the click at all.
+    if app.real_entry_count() == 0 {
+        let only_parent = app.entry_count == 1 && app.entries[0].name.as_str() == "..";
+        if app.entry_count == 0 || only_parent {
+            if app.entry_count == 1 {
+                // Still draw the ".." row so the user can navigate back up.
+                draw_list_row(app, win, lay, 0, name_w);
+            }
+            let msg = "( this folder is empty )";
+            let mx  = lay.right_x + (lay.scroll_x - lay.right_x)
+                          .saturating_sub(msg.len() as u32 * CHAR_W) / 2;
+            let my  = lay.list_y0 + lay.list_h / 2 - 6;
+            gui_draw_text(win, mx, my, COL_EMPTY_TXT, msg);
+            return;
+        }
+    }
+
     for row in 0..vis {
         let idx = app.scroll + row;
         let ry  = lay.list_y0 + row as u32 * ROW_H;
@@ -162,47 +180,56 @@ fn draw_file_list(app: &App, win: oxide_rt::GuiWindow, lay: &Layout) {
             continue;
         }
 
-        let e      = app.entries[idx];
-        let is_sel = idx == app.selected;
-        let is_hov = app.hover == Some(idx);
-        let row_bg = if is_sel { COL_SELECTED }
-                     else if is_hov { COL_HOVER }
-                     else if row % 2 != 0 { COL_ROW_ODD }
-                     else { COL_BG };
-
-        gui_fill_rect(win, lay.right_x, ry, lay.scroll_x - lay.right_x, ROW_H, row_bg);
-        if is_sel { gui_fill_rect(win, lay.right_x, ry, 2, ROW_H, COL_ACCENT); }
-
-        // Icon
-        let (icon, icon_col) = if e.is_dir {
-            if e.name.as_str() == ".." { ("..", COL_TEXT_DIM) } else { ("dir", COL_DIR) }
-        } else { ("   ", COL_TEXT_DIM) };
-        gui_draw_text(win, lay.right_x + PAD, ry + 2, icon_col, icon);
-
-        // Name (truncated with ".." if too long)
-        let name_str  = e.name.as_str();
-        let max_chars = (name_w / CHAR_W) as usize;
-        let (display, truncated) = if name_str.len() > max_chars && max_chars > 3 {
-            (&name_str[..max_chars.saturating_sub(2)], true)
-        } else { (name_str, false) };
-        gui_draw_text(win, lay.right_x + PAD + 28, ry + 2,
-                      if e.is_dir { COL_DIR } else { COL_FILE }, display);
-        if truncated {
-            let tx = lay.right_x + PAD + 28 + display.len() as u32 * CHAR_W;
-            gui_draw_text(win, tx, ry + 2, COL_TEXT_DIM, "..");
-        }
-
-        // Size (files only)
-        if !e.is_dir && e.have_size {
-            let mut sz = FixStr::<16>::new();
-            sz.push_size(e.size);
-            gui_draw_text(win, lay.col_size_x, ry + 2, COL_SIZE_FG, sz.as_str());
-        }
-
-        // Type badge
-        let (type_str, type_col) = if e.is_dir { ("DIR", COL_DIR) } else { ("FILE", COL_TEXT_DIM) };
-        gui_draw_text(win, lay.col_type_x, ry + 2, type_col, type_str);
+        draw_list_row(app, win, lay, row, name_w);
     }
+}
+
+/// Draw a single file-list row. `row` is the on-screen row index; the entry
+/// shown is `app.entries[app.scroll + row]` (caller guarantees it's in range).
+fn draw_list_row(app: &App, win: oxide_rt::GuiWindow, lay: &Layout, row: usize, name_w: u32) {
+    let idx = app.scroll + row;
+    let ry  = lay.list_y0 + row as u32 * ROW_H;
+
+    let e      = app.entries[idx];
+    let is_sel = idx == app.selected;
+    let is_hov = app.hover == Some(idx);
+    let row_bg = if is_sel { COL_SELECTED }
+                 else if is_hov { COL_HOVER }
+                 else if row % 2 != 0 { COL_ROW_ODD }
+                 else { COL_BG };
+
+    gui_fill_rect(win, lay.right_x, ry, lay.scroll_x - lay.right_x, ROW_H, row_bg);
+    if is_sel { gui_fill_rect(win, lay.right_x, ry, 2, ROW_H, COL_ACCENT); }
+
+    // Icon
+    let (icon, icon_col) = if e.is_dir {
+        if e.name.as_str() == ".." { ("..", COL_TEXT_DIM) } else { ("dir", COL_DIR) }
+    } else { ("   ", COL_TEXT_DIM) };
+    gui_draw_text(win, lay.right_x + PAD, ry + 2, icon_col, icon);
+
+    // Name (truncated with ".." if too long)
+    let name_str  = e.name.as_str();
+    let max_chars = (name_w / CHAR_W) as usize;
+    let (display, truncated) = if name_str.len() > max_chars && max_chars > 3 {
+        (&name_str[..max_chars.saturating_sub(2)], true)
+    } else { (name_str, false) };
+    gui_draw_text(win, lay.right_x + PAD + 28, ry + 2,
+                  if e.is_dir { COL_DIR } else { COL_FILE }, display);
+    if truncated {
+        let tx = lay.right_x + PAD + 28 + display.len() as u32 * CHAR_W;
+        gui_draw_text(win, tx, ry + 2, COL_TEXT_DIM, "..");
+    }
+
+    // Size (files only)
+    if !e.is_dir && e.have_size {
+        let mut sz = FixStr::<16>::new();
+        sz.push_size(e.size);
+        gui_draw_text(win, lay.col_size_x, ry + 2, COL_SIZE_FG, sz.as_str());
+    }
+
+    // Type badge
+    let (type_str, type_col) = if e.is_dir { ("DIR", COL_DIR) } else { ("FILE", COL_TEXT_DIM) };
+    gui_draw_text(win, lay.col_type_x, ry + 2, type_col, type_str);
 }
 
 // ── Scrollbar ─────────────────────────────────────────────────────────────────
@@ -266,9 +293,22 @@ fn draw_action_bar(app: &App, win: oxide_rt::GuiWindow, lay: &Layout) {
 fn draw_status_bar(app: &App, win: oxide_rt::GuiWindow, lay: &Layout) {
     gui_fill_rect(win, 0, lay.status_y, lay.w, STATUS_H, COL_STATUS_BG);
 
+    // Right: keyboard hint, always visible so shortcuts stay discoverable.
+    let hint   = "  dbl-click/Enter open   Bksp up   n new  N folder  m rename  d del   q quit  ";
+    let hint_x = lay.w.saturating_sub(hint.len() as u32 * CHAR_W);
+    gui_draw_text(win, hint_x, lay.status_y + 3, 0xFFD0E8F8, hint);
+
+    // Left: a transient confirmation/error line takes priority; otherwise
+    // show the live "N items | selected (size)" summary.
+    if !app.status_msg.is_empty() {
+        let col = if app.status_is_err { COL_DANGER } else { COL_OK };
+        gui_draw_text(win, PAD, lay.status_y + 3, col, app.status_msg.as_str());
+        return;
+    }
+
     let mut st = FixStr::<128>::new();
     st.push_str("  ");
-    st.push_usize(app.entry_count);
+    st.push_usize(app.real_entry_count());
     st.push_str(" items");
     if app.selected < app.entry_count {
         let e = &app.entries[app.selected];
@@ -279,15 +319,4 @@ fn draw_status_bar(app: &App, win: oxide_rt::GuiWindow, lay: &Layout) {
         }
     }
     gui_draw_text(win, 0, lay.status_y + 3, COL_STATUS_TXT, st.as_str());
-
-    if !app.status_msg.is_empty() {
-        let msg    = app.status_msg.as_str();
-        let msg_x  = lay.w.saturating_sub(msg.len() as u32 * CHAR_W + PAD);
-        gui_draw_text(win, msg_x, lay.status_y + 3, COL_DANGER, msg);
-        return;
-    }
-
-    let hint   = "  jk/arrows  enter  bksp=up  n=new N=folder d=del m=rename  q=quit  ";
-    let hint_x = lay.w.saturating_sub(hint.len() as u32 * CHAR_W);
-    gui_draw_text(win, hint_x, lay.status_y + 3, 0xFFD0E8F8, hint);
 }
