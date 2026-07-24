@@ -32,9 +32,10 @@ override comma := ,
 # -cpu cortex-a72, and Limine v9 fails its higher-half handoff on QEMU's
 # `max` CPU model (TTBR1_EL1 left null → the jump to the kernel entry
 # instruction-aborts into a recursive fault loop before any kernel code runs).
-# The aarch64 run targets already provide the xhci controller + USB HID.
+# The aarch64 run targets provide virtio-mmio keyboard + mouse devices, which
+# the kernel's polled virtio-input driver consumes (no USB stack yet).
 ifeq ($(KARCH),aarch64)
-$(call USER_VARIABLE,QEMUFLAGS,-m 2G -device usb-tablet)
+$(call USER_VARIABLE,QEMUFLAGS,-m 2G)
 else
 $(call USER_VARIABLE,QEMUFLAGS,-m 2G -cpu max -device qemu-xhci$(comma)id=xhci -device usb-tablet)
 endif
@@ -295,9 +296,8 @@ run-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME)
 		-cpu cortex-a72 \
 		-serial stdio \
 		-device ramfb \
-		-device qemu-xhci \
-		-device usb-kbd \
-		-device usb-mouse \
+		-device virtio-keyboard-device \
+		-device virtio-mouse-device \
 		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
@@ -311,9 +311,8 @@ run-gui-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_N
 		-cpu cortex-a72 \
 		-serial stdio \
 		-device ramfb \
-		-device qemu-xhci \
-		-device usb-kbd \
-		-device usb-mouse \
+		-device virtio-keyboard-device \
+		-device virtio-mouse-device \
 		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
@@ -326,9 +325,8 @@ run-hdd-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_N
 		-M virt \
 		-cpu cortex-a72 \
 		-device ramfb \
-		-device qemu-xhci \
-		-device usb-kbd \
-		-device usb-mouse \
+		-device virtio-keyboard-device \
+		-device virtio-mouse-device \
 		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-hda $(IMAGE_NAME).hdd \
@@ -340,9 +338,8 @@ run-riscv64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME)
 		-M virt \
 		-cpu rv64 \
 		-device ramfb \
-		-device qemu-xhci \
-		-device usb-kbd \
-		-device usb-mouse \
+		-device virtio-keyboard-device \
+		-device virtio-mouse-device \
 		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
@@ -354,9 +351,8 @@ run-hdd-riscv64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_N
 		-M virt \
 		-cpu rv64 \
 		-device ramfb \
-		-device qemu-xhci \
-		-device usb-kbd \
-		-device usb-mouse \
+		-device virtio-keyboard-device \
+		-device virtio-mouse-device \
 		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-hda $(IMAGE_NAME).hdd \
@@ -368,9 +364,8 @@ run-loongarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_N
 		-M virt \
 		-cpu la464 \
 		-device ramfb \
-		-device qemu-xhci \
-		-device usb-kbd \
-		-device usb-mouse \
+		-device virtio-keyboard-device \
+		-device virtio-mouse-device \
 		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
@@ -382,9 +377,8 @@ run-hdd-loongarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMA
 		-M virt \
 		-cpu la464 \
 		-device ramfb \
-		-device qemu-xhci \
-		-device usb-kbd \
-		-device usb-mouse \
+		-device virtio-keyboard-device \
+		-device virtio-mouse-device \
 		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-hda $(IMAGE_NAME).hdd \

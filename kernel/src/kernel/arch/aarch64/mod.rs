@@ -6,6 +6,7 @@
 //!   [x] timer.rs        ARM generic timer, polled     (x86: PIT in drivers/timer)
 //!   [x] rtc.rs          PL031 real-time clock         (x86: CMOS in drivers/rtc)
 //!   [x] psci.rs         PSCI power off / reset        (x86: drivers/shutdown)
+//!   [x] virtio_input.rs virtio-mmio mouse+keyboard    (x86: 8042 in drivers/keyboard + gui/mouse)
 //!   [ ] gic.rs          GICv2 interrupt controller    (x86: pic)
 //!
 //! See docs/arm/ for the full porting plan and design notes.
@@ -15,3 +16,4 @@ pub mod psci;
 pub mod rtc;
 pub mod serial;
 pub mod timer;
+pub mod virtio_input;

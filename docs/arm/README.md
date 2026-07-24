@@ -17,13 +17,13 @@ mapping, HHDM, memory map, framebuffer).
 |---|---------|--------|---------|-----|
 | 1 | Arch abstraction layer (`arch::cpu` facade, per-arch modules) | ✅ | ✅ | [01-arch-abstraction.md](01-arch-abstraction.md) |
 | 2 | Boot: entry, exception vectors, serial console | ✅ GDT/IDT + COM1 | ✅ EL1 vectors + PL011 | [02-boot-and-exceptions.md](02-boot-and-exceptions.md) |
-| 3 | Interrupt controller + timer + power | ✅ PIC + PIT + ACPI ports | 🔜 GICv2 + generic timer + PSCI | 03-gic-timer-psci.md |
+| 3 | Interrupt controller + timer + power | ✅ PIC + PIT + ACPI ports | 🔜 GICv2 + generic timer + PSCI | 04-gic-timer-psci.md |
 | 4 | Memory: frame allocator, heap, paging | ✅ 4-level x86 paging | 🔜 4 KB granule, TTBR0/1 | 04-memory.md |
 | 5 | Framebuffer GUI desktop | ✅ | 🔜 | 05-gui.md |
 | 6 | Scheduler context switch | ✅ | ⏳ planned | — |
 | 7 | User mode (EL0) + syscalls (SVC, Linux aarch64 ABI) | ✅ SYSCALL/SYSRET | ⏳ planned | — |
 | 8 | Disk: block driver + FAT/ext2 | ✅ ATA PIO | ⏳ planned (virtio-blk) | — |
-| 9 | Input: keyboard + mouse | ✅ PS/2 | ⏳ planned (virtio-input / USB HID) | — |
+| 9 | Input: keyboard + mouse | ✅ PS/2 | ✅ virtio-input (polled virtio-mmio) | 03-virtio-input.md |
 | 10 | Networking | ✅ RTL8139/e1000/PCnet | ⏳ planned (virtio-net) | — |
 | 11 | Userspace programs (aarch64 builds) | ✅ | ⏳ planned | — |
 
@@ -42,7 +42,7 @@ counterpart:
 | Timer tick | 8253/8254 PIT, IRQ 0 | ARM generic timer (`CNTP_*` system registers), PPI 30 |
 | Power off / reboot | ACPI PM / keyboard-controller reset ports | PSCI (`SYSTEM_OFF` / `SYSTEM_RESET` via SMC/HVC) |
 | Disk | ATA PIO (ports `0x1F0`…) | virtio-blk (MMIO/PCI) |
-| Keyboard/mouse | 8042 PS/2 (ports `0x60`/`0x64`) | virtio-input or USB HID (xHCI) |
+| Keyboard/mouse | 8042 PS/2 (ports `0x60`/`0x64`) | virtio-input (virtio-mmio at `0x0a00_0000`, polled) |
 | NIC | RTL8139 / e1000 / PCnet (PCI port I/O) | virtio-net |
 | Discovery | PCI config ports `0xCF8`/`0xCFC`, ACPI | Device tree / ECAM PCIe, ACPI (AAVMF) |
 
