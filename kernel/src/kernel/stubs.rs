@@ -1,49 +1,16 @@
 //! aarch64 stand-ins for subsystems the ARM port hasn't reached yet.
 //!
 //! Each inner module mirrors the public API its x86 counterpart exposes to
-//! the GUI layer, so the desktop compiles and runs display-only on aarch64.
-//! As real drivers land (GIC, virtio-blk, virtio-input, virtio-net, EL0
-//! processes), these shrink and disappear.  Everything here is safe to call:
-//! storage and spawn operations report failure, input reports nothing.
+//! the GUI layer, so the desktop compiles and runs on aarch64.  As real
+//! drivers land (GIC, virtio-blk, virtio-net, EL0 processes), these shrink
+//! and disappear — keyboard/mouse input is already real (virtio-input via
+//! the shared drivers/keyboard decoder).  Everything here is safe to call:
+//! storage and spawn operations report failure.
 
 #![cfg(target_arch = "aarch64")]
 
-// ── keyboard (x86: drivers/keyboard — PS/2) ──────────────────────────────────
-pub mod keyboard {
-    pub type KeyCallback = unsafe fn(u8);
-    pub type ArrowKeyCallback = unsafe fn(ArrowKey);
-
-    pub enum ArrowKey {
-        Up,
-        Down,
-        Left,
-        Right,
-        PageUp,
-        PageDown,
-    }
-
-    static mut KEY_CALLBACK: Option<KeyCallback> = None;
-    static mut ARROW_KEY_CALLBACK: Option<ArrowKeyCallback> = None;
-    static mut GUI_KEY_CALLBACK: Option<unsafe fn(u8)> = None;
-
-    pub unsafe fn register_key_callback(callback: KeyCallback) {
-        unsafe { KEY_CALLBACK = Some(callback); }
-    }
-    pub unsafe fn register_arrow_key_callback(callback: ArrowKeyCallback) {
-        unsafe { ARROW_KEY_CALLBACK = Some(callback); }
-    }
-    pub unsafe fn register_gui_key_callback(callback: unsafe fn(u8)) {
-        unsafe { GUI_KEY_CALLBACK = Some(callback); }
-    }
-
-    /// No input source yet (USB/virtio-input arrives in a later port step).
-    pub unsafe fn poll() {}
-
-    pub unsafe fn is_shift_pressed() -> bool { false }
-    pub unsafe fn is_ctrl_pressed() -> bool { false }
-    pub unsafe fn is_alt_pressed() -> bool { false }
-    pub unsafe fn is_caps_lock_on() -> bool { false }
-}
+// ── keyboard: real driver — drivers/keyboard decode pipeline fed by
+// arch/aarch64/virtio_input.rs (no stub needed any more) ─────────────────────
 
 // ── scheduler (x86: proc/scheduler) ──────────────────────────────────────────
 pub mod scheduler {
@@ -261,8 +228,8 @@ pub mod interrupts {
     pub static mut MOUSE_CURSOR: Option<MouseCursor> = None;
     pub static mut SCREEN_DIMENSIONS: (u64, u64) = (0, 0);
 
-    /// Place a (motionless, for now) cursor at screen centre so the desktop
-    /// renders identically to x86.  Real input arrives with virtio/USB HID.
+    /// Place the cursor at screen centre; virtio-input moves it from there.
+    /// (`PS2Mouse` here is only the arch-neutral button/packet state.)
     pub unsafe fn init_mouse_system(screen_width: u64, screen_height: u64) {
         unsafe {
             SCREEN_DIMENSIONS = (screen_width, screen_height);
@@ -273,7 +240,11 @@ pub mod interrupts {
         }
     }
 
-    pub unsafe fn poll_mouse_data() -> bool { false }
+    /// Drain pending virtio-input events (mouse *and* keyboard — one queue
+    /// drain services every device).  Returns true if anything arrived.
+    pub unsafe fn poll_mouse_data() -> bool {
+        unsafe { crate::kernel::arch::aarch64::virtio_input::poll() }
+    }
 }
 
 // ── compositor + gui_proc (x86: kernel/gui — need IPC + processes) ───────────

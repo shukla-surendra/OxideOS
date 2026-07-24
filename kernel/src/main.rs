@@ -179,8 +179,8 @@ unsafe extern "C" fn kmain() -> ! {
     hcf()
 }
 
-/// aarch64 entry: serial + exception vectors + heap, then the same desktop
-/// the x86 build runs (display-only until input drivers are ported).
+/// aarch64 entry: serial + exception vectors + heap + virtio-input, then the
+/// same desktop the x86 build runs (mouse + keyboard polled each frame).
 #[cfg(target_arch = "aarch64")]
 #[unsafe(no_mangle)]
 unsafe extern "C" fn kmain() -> ! {
@@ -219,7 +219,13 @@ unsafe extern "C" fn kmain() -> ! {
     // Wake source for `wfe` in the GUI loop (no GIC yet).
     unsafe { kernel::arch::aarch64::timer::enable_event_stream(); }
 
-    // ── Stage 4: Graphics + GUI desktop ────────────────────────────────────
+    // ── Stage 4: Input (virtio-mmio keyboard + mouse, polled) ─────────────
+    unsafe {
+        kernel::keyboard::init();
+        kernel::arch::aarch64::virtio_input::init();
+    }
+
+    // ── Stage 5: Graphics + GUI desktop ────────────────────────────────────
     if let Some(fb_resp) = FRAMEBUFFER_REQUEST.get_response() {
         if let Some(framebuffer) = fb_resp.framebuffers().next() {
             unsafe { SERIAL_PORT.write_str("✓ Framebuffer acquired\n"); }
@@ -228,7 +234,7 @@ unsafe extern "C" fn kmain() -> ! {
             unsafe {
                 interrupts::init_mouse_system(width, height);
                 let (terminal_id, sysinfo_id) = gui_loop::create_boot_screen(&graphics);
-                SERIAL_PORT.write_str("Entering GUI loop (display-only: input drivers pending)\n");
+                SERIAL_PORT.write_str("Entering GUI loop (virtio-input polled)\n");
                 gui_loop::run_gui_with_mouse(&graphics, terminal_id, sysinfo_id);
             }
         } else {

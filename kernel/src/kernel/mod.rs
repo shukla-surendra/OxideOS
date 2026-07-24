@@ -1,8 +1,7 @@
 // ── Category modules ──────────────────────────────────────────────────────────
 // Subsystems full of x86 port I/O and inline asm are compiled only on x86_64;
 // the aarch64 port re-enables them one feature at a time (see docs/arm/).
-#[cfg(target_arch = "x86_64")]
-pub mod drivers;  // serial, pic, timer, keyboard, ata, shutdown, net/
+pub mod drivers;  // serial, pic, timer, keyboard (cross-arch), ata, shutdown, net/
 pub mod arch;     // cpu facade + per-architecture code (x86_64/, aarch64/)
 #[cfg(target_arch = "x86_64")]
 pub mod mem;      // paging_allocator
@@ -36,7 +35,6 @@ pub use drivers::pic;
 pub use drivers::timer;
 #[cfg(target_arch = "x86_64")]
 pub use drivers::rtc;
-#[cfg(target_arch = "x86_64")]
 pub use drivers::keyboard;
 #[cfg(target_arch = "x86_64")]
 pub use drivers::ata;
@@ -77,14 +75,8 @@ pub use arch::aarch64::psci as shutdown;
 #[cfg(target_arch = "aarch64")]
 pub use stubs::{
     ata, compositor, disk_store, diskfs, ext2, fat, fs, gui_proc, interrupts,
-    keyboard, net, pipe, programs, scheduler, stdin, syscall, user_mode,
+    net, pipe, programs, scheduler, stdin, syscall, user_mode,
 };
-
-// `gui/oxide_backend.rs` imports through `kernel::drivers::keyboard`.
-#[cfg(target_arch = "aarch64")]
-pub mod drivers {
-    pub use super::stubs::keyboard;
-}
 
 // mem/
 #[cfg(target_arch = "x86_64")]

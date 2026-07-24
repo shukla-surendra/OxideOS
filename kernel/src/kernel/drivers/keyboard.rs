@@ -1,7 +1,15 @@
 // src/kernel/keyboard.rs
-//! PS/2 keyboard driver using the `pc-keyboard` crate for robust scancode
-//! decoding.  Handles VirtualBox quirks (AUXB bit 5 incorrect for IRQ1).
+//! Keyboard driver using the `pc-keyboard` crate for robust scancode decoding.
+//!
+//! The decode pipeline (scancode-set-1 → unicode/raw keys → stdin + GUI
+//! callbacks) is architecture-neutral and compiles on every target.  Bytes
+//! reach it from an arch-specific front end:
+//!   x86_64  — 8042 PS/2 controller (IRQ1 handler + port-I/O polling fallback;
+//!             handles VirtualBox quirks such as AUXB bit 5 wrong for IRQ1)
+//!   aarch64 — virtio-input (arch/aarch64/virtio_input.rs) translates evdev
+//!             keycodes to set-1 bytes and feeds `process_scancode` directly.
 
+#[cfg(target_arch = "x86_64")]
 use core::arch::asm;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use crate::kernel::serial::SERIAL_PORT;
@@ -91,6 +99,7 @@ pub unsafe fn register_gui_key_callback(callback: unsafe fn(u8)) {
 /// present in the output buffer here is keyboard data — even if bit 5 of the
 /// status register says otherwise (VirtualBox sometimes sets it incorrectly).
 /// We therefore only gate on OBF (bit 0) and trust that IRQ1 means keyboard.
+#[cfg(target_arch = "x86_64")]
 pub unsafe fn handle_keyboard_interrupt() {
     unsafe {
         let status: u8;
@@ -115,6 +124,7 @@ pub unsafe fn handle_keyboard_interrupt() {
 /// Polling fallback: read any pending keyboard byte without waiting for IRQ.
 /// Called from the main GUI loop each frame.
 /// In polling context we honour AUXB (bit 5) so we don't consume mouse data.
+#[cfg(target_arch = "x86_64")]
 pub unsafe fn poll() {
     unsafe {
         for _ in 0..8u8 {
@@ -135,11 +145,22 @@ pub unsafe fn poll() {
     }
 }
 
+/// Polling entry point on aarch64: drain pending virtio-input events.  The
+/// virtio driver dispatches keyboard events back into `process_scancode` and
+/// mouse events into the cursor/button state, so this single call services
+/// every input device.
+#[cfg(target_arch = "aarch64")]
+pub unsafe fn poll() {
+    unsafe { crate::kernel::arch::aarch64::virtio_input::poll(); }
+}
+
 // ============================================================================
 // SCANCODE PROCESSING  (via pc-keyboard crate)
 // ============================================================================
 
-unsafe fn process_scancode(scancode: u8) {
+/// Feed one scancode-set-1 byte into the decoder.  Public so non-PS/2 front
+/// ends (aarch64 virtio-input) can inject translated scancodes.
+pub unsafe fn process_scancode(scancode: u8) {
     unsafe {
         let kb = match core::ptr::addr_of_mut!(KB).as_mut().and_then(|o| o.as_mut()) {
             Some(kb) => kb,
@@ -195,6 +216,9 @@ unsafe fn update_leds(m: &ModState) {
     let prev = LAST_LED.load(Ordering::Relaxed);
     if led != prev {
         LAST_LED.store(led, Ordering::Relaxed);
+        // Only the PS/2 keyboard has host-driven LEDs; virtio-input LEDs
+        // would go through the statusq, which we don't use yet.
+        #[cfg(target_arch = "x86_64")]
         unsafe { send_led_command(led); }
     }
 }
@@ -325,9 +349,10 @@ pub unsafe fn is_caps_lock_on() -> bool {
 }
 
 // ============================================================================
-// 8042 CONTROLLER HELPERS
+// 8042 CONTROLLER HELPERS  (x86 only — PS/2 port I/O)
 // ============================================================================
 
+#[cfg(target_arch = "x86_64")]
 unsafe fn wait_write_ready() {
     unsafe {
         for _ in 0..100_000u32 {
@@ -339,6 +364,7 @@ unsafe fn wait_write_ready() {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 unsafe fn flush_output_buffer() {
     unsafe {
         for _ in 0..16u8 {
@@ -351,6 +377,7 @@ unsafe fn flush_output_buffer() {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 unsafe fn ctrl_cmd(cmd: u8) {
     unsafe {
         wait_write_ready();
@@ -358,6 +385,7 @@ unsafe fn ctrl_cmd(cmd: u8) {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 unsafe fn ctrl_data(b: u8) {
     unsafe {
         wait_write_ready();
@@ -366,6 +394,7 @@ unsafe fn ctrl_data(b: u8) {
 }
 
 /// Read one byte from the 8042 with a short timeout.  Returns 0xFF on timeout.
+#[cfg(target_arch = "x86_64")]
 unsafe fn ctrl_read_fast() -> u8 {
     unsafe {
         for _ in 0..10_000u32 {
@@ -383,6 +412,7 @@ unsafe fn ctrl_read_fast() -> u8 {
 }
 
 /// Send LED command to keyboard (best-effort; timeout-safe).
+#[cfg(target_arch = "x86_64")]
 unsafe fn send_led_command(led: u8) {
     unsafe {
         ctrl_data(0xED);
@@ -398,16 +428,19 @@ unsafe fn send_led_command(led: u8) {
 
 /// Initialise the keyboard driver.
 ///
-/// Strategy for maximum VirtualBox / QEMU compatibility:
+/// On x86 this also brings up the 8042 controller, with a strategy for
+/// maximum VirtualBox / QEMU compatibility:
 ///  - Drain stale output-buffer bytes.
 ///  - Write a known-good CCB directly (no CCB read — unreliable on some hypervisors).
 ///    CCB = 0x47: IRQ1 enabled (bit 0), IRQ12 enabled (bit 1), scancode
 ///    translation enabled (bit 6), both clocks enabled (bits 4/5 = 0).
 ///  - Re-enable the keyboard port.
 ///  - Set LEDs.
+///
+/// On aarch64 only the decoder is set up; scancodes arrive from virtio-input.
 pub unsafe fn init() {
     unsafe {
-        SERIAL_PORT.write_str("Initializing keyboard driver (pc-keyboard + 8042)...\n");
+        SERIAL_PORT.write_str("Initializing keyboard driver (pc-keyboard)...\n");
 
         // Set up the pc-keyboard decoder (scancode set 1, US layout).
         // HandleControl::MapLettersToUnicode: Ctrl+C → '\x03', Ctrl+D → '\x04', etc.
@@ -417,27 +450,30 @@ pub unsafe fn init() {
             HandleControl::MapLettersToUnicode,
         ));
 
-        // 1. Drain any stale data.
-        flush_output_buffer();
+        #[cfg(target_arch = "x86_64")]
+        {
+            // 1. Drain any stale data.
+            flush_output_buffer();
 
-        // 2. Disable keyboard port temporarily.
-        ctrl_cmd(0xAD);
+            // 2. Disable keyboard port temporarily.
+            ctrl_cmd(0xAD);
 
-        // 3. Drain again.
-        flush_output_buffer();
+            // 3. Drain again.
+            flush_output_buffer();
 
-        // 4. Write a known-good CCB without reading the old one.
-        ctrl_cmd(0x60);
-        ctrl_data(0x47);
+            // 4. Write a known-good CCB without reading the old one.
+            ctrl_cmd(0x60);
+            ctrl_data(0x47);
 
-        // 5. Re-enable the keyboard port.
-        ctrl_cmd(0xAE);
+            // 5. Re-enable the keyboard port.
+            ctrl_cmd(0xAE);
 
-        // 6. Drain once more.
-        flush_output_buffer();
+            // 6. Drain once more.
+            flush_output_buffer();
 
-        // 7. Set initial LEDs (num-lock on).
-        send_led_command(0x02);
+            // 7. Set initial LEDs (num-lock on).
+            send_led_command(0x02);
+        }
 
         SERIAL_PORT.write_str("Keyboard driver ready\n");
     }
