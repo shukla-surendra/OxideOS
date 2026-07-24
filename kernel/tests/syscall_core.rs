@@ -1,5 +1,30 @@
-#[path = "../src/kernel/syscall_core.rs"]
+#[path = "../src/kernel/sys/syscall_core.rs"]
 mod syscall_core;
+
+/// Stubs for the few `crate::kernel::*` items syscall_core.rs reaches for.
+/// In the kernel build `crate` is the kernel crate; in this standalone test
+/// harness `crate` is the test crate, so we provide minimal stand-ins here.
+mod kernel {
+    pub mod paging_allocator {
+        /// Test stand-in: all user pointers count as mapped.
+        pub unsafe fn is_page_mapped_current(_virt: u64) -> bool {
+            true
+        }
+    }
+    pub mod fs {
+        pub const EBADF: i64 = -9;
+    }
+    pub mod ipc {
+        pub const MAX_MSG_SIZE: usize = 256;
+        /// Mirrors kernel::ipc::Message — only its size matters here.
+        #[derive(Copy, Clone)]
+        pub struct Message {
+            pub type_id: u32,
+            pub size: u32,
+            pub data: [u8; MAX_MSG_SIZE],
+        }
+    }
+}
 
 use std::vec::Vec;
 
@@ -11,6 +36,7 @@ use syscall_core::{
 #[derive(Default)]
 struct FakeRuntime {
     trace_log: Vec<Syscall>,
+    unknown_log: Vec<u64>,
     output: Vec<u8>,
     ticks: u64,
     pid: u64,
@@ -21,6 +47,21 @@ struct FakeRuntime {
 impl SyscallRuntime for FakeRuntime {
     fn trace(&mut self, syscall: Syscall) {
         self.trace_log.push(syscall);
+    }
+
+    fn trace_unknown(&mut self, num: u64) {
+        self.unknown_log.push(num);
+    }
+
+    /// No FD table in the fake: stdout/stderr report "no FdTable entry"
+    /// (fs::EBADF, -9) so `sys_write` falls back to the plain console;
+    /// every other fd is simply a bad descriptor.
+    fn fs_write_file(&mut self, fd: i32, _buf: &[u8]) -> i64 {
+        if fd == 1 || fd == 2 {
+            crate::kernel::fs::EBADF
+        } else {
+            EBADF
+        }
     }
 
     fn current_pid(&self) -> u64 {
@@ -43,6 +84,17 @@ impl SyscallRuntime for FakeRuntime {
         self.sleep_target = Some(target_tick);
     }
 
+    fn select_impl(
+        &mut self,
+        _nfds: u64,
+        _read_ptr: u64,
+        _write_ptr: u64,
+        _except_ptr: u64,
+        _timeout_ptr: u64,
+    ) -> i64 {
+        ENOSYS
+    }
+
     fn exit(&mut self, code: i32) -> ! {
         panic!("unexpected exit({code}) in test runtime");
     }
@@ -55,7 +107,8 @@ fn unknown_syscall_returns_enosys() {
     let result = unsafe { dispatch(&mut runtime, SyscallRequest::new(0xDEAD, 0, 0, 0, 0, 0)) };
 
     assert_eq!(result, SyscallResult::err(ENOSYS));
-    assert_eq!(runtime.trace_log, vec![Syscall::Invalid]);
+    assert!(runtime.trace_log.is_empty());
+    assert_eq!(runtime.unknown_log, vec![0xDEAD]);
 }
 
 #[test]

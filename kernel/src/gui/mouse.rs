@@ -102,6 +102,19 @@ impl PS2Mouse {
         }
     }
 
+    pub fn is_left_clicked(&self) -> bool {
+        self.left_button
+    }
+
+    pub fn is_right_clicked(&self) -> bool {
+        self.right_button
+    }
+}
+
+// PS/2 controller I/O — port-mapped, x86 only.  On other architectures the
+// struct above is pure button/packet state driven by a future input driver.
+#[cfg(target_arch = "x86_64")]
+impl PS2Mouse {
     // Add this new function to clear any leftover data
     unsafe fn clear_buffer(&self) {
         unsafe{
@@ -318,14 +331,6 @@ impl PS2Mouse {
                 SERIAL_PORT.write_str("\n");
             }
         }
-    }
-
-    pub fn is_left_clicked(&self) -> bool {
-        self.left_button
-    }
-
-    pub fn is_right_clicked(&self) -> bool {
-        self.right_button
     }
 
     unsafe fn send_reset_command(&self) {

@@ -16,21 +16,61 @@
 //! ─────────────────────────────────────────────────────────────────────────────
 #![no_std]
 #![no_main]
-#![feature(abi_x86_interrupt)]
+#![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
 
 mod panic;
 mod kernel;
-mod gui;
-mod wallpaper;
 mod version;
 
-// Modules extracted from the original main.rs
+// The desktop (gui/, gui_loop, sysinfo, net_probe, wallpaper) builds for both
+// architectures — on aarch64 the kernel-side subsystems it calls are the
+// stubs/real drivers wired up in `kernel/mod.rs`.  Only the x86 hardware
+// bring-up (boot_init) stays arch-specific.
+mod gui;
+mod wallpaper;
 mod net_probe;
 mod sysinfo;
+#[cfg(target_arch = "x86_64")]
 mod boot_init;
 mod gui_loop;
 
 extern crate alloc;
+
+/// aarch64 heap: a linked-list allocator over the largest usable Limine
+/// memory-map region, addressed through the HHDM.  (x86 uses the paging
+/// allocator in `kernel/mem/`; this moves there too once aarch64 paging lands.)
+#[cfg(target_arch = "aarch64")]
+mod heap {
+    use linked_list_allocator::LockedHeap;
+
+    #[global_allocator]
+    static HEAP: LockedHeap = LockedHeap::empty();
+
+    /// Cap so the identity of "largest region" can't hand us all of RAM
+    /// before a real frame allocator exists.
+    const HEAP_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+    pub unsafe fn init(memory_map: &limine::request::MemoryMapRequest, hhdm_offset: u64) -> u64 {
+        use limine::memory_map::EntryType;
+
+        let Some(resp) = memory_map.get_response() else { return 0 };
+        let mut best: Option<(u64, u64)> = None;
+        for entry in resp.entries() {
+            if entry.entry_type == EntryType::USABLE {
+                if best.map(|(_, len)| entry.length > len).unwrap_or(true) {
+                    best = Some((entry.base, entry.length));
+                }
+            }
+        }
+        let Some((base, len)) = best else { return 0 };
+        let size = len.min(HEAP_MAX_BYTES);
+        unsafe {
+            HEAP.lock().init((hhdm_offset + base) as *mut u8, size as usize);
+        }
+        size
+    }
+}
+
 use gui::graphics::Graphics;
 use kernel::serial::SERIAL_PORT;
 use kernel::interrupts;
@@ -45,8 +85,17 @@ use limine::request::{
 // ── Limine boot protocol requests ─────────────────────────────────────────────
 // Must stay in the crate root so the linker can place them in .requests sections.
 
+#[cfg(target_arch = "x86_64")]
 #[used] #[unsafe(link_section = ".requests")]
 static BASE_REVISION: BaseRevision = BaseRevision::new();
+
+// Revision 2 keeps Limine's unconditional direct map of the first 4 GiB, which
+// is what lets us reach the PL011 UART MMIO (phys 0x0900_0000) through the
+// HHDM before we own page tables.  Revision 3 maps only RAM + framebuffer;
+// switch back once the aarch64 memory step maps device memory explicitly.
+#[cfg(target_arch = "aarch64")]
+#[used] #[unsafe(link_section = ".requests")]
+static BASE_REVISION: BaseRevision = BaseRevision::with_revision(2);
 
 #[used] #[unsafe(link_section = ".requests")]
 static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
@@ -75,11 +124,14 @@ pub static mut WINDOW_MANAGER: gui::window_manager::WindowManager =
     gui::window_manager::WindowManager::new();
 
 /// Kernel ELF binary as mapped by Limine — read by the installer.
+#[cfg(target_arch = "x86_64")]
 pub static mut KERNEL_BINARY_PTR: *const u8 = core::ptr::null();
+#[cfg(target_arch = "x86_64")]
 pub static mut KERNEL_BINARY_LEN: usize      = 0;
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+#[cfg(target_arch = "x86_64")]
 #[unsafe(no_mangle)]
 unsafe extern "C" fn kmain() -> ! {
     // ── Stage 1: Serial console ────────────────────────────────────────────
@@ -122,6 +174,68 @@ unsafe extern "C" fn kmain() -> ! {
     } else {
         unsafe { SERIAL_PORT.write_str("✗ No framebuffer response\n"); }
         unsafe { boot_init::run_text_mode_kernel(); }
+    }
+
+    hcf()
+}
+
+/// aarch64 entry: serial + exception vectors + heap, then the same desktop
+/// the x86 build runs (display-only until input drivers are ported).
+#[cfg(target_arch = "aarch64")]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn kmain() -> ! {
+    use kernel::arch::aarch64::exceptions;
+
+    // ── Stage 1: Serial console (PL011 via Limine HHDM) ───────────────────
+    unsafe { SERIAL_PORT.init(); }
+    unsafe { SERIAL_PORT.write_str("\n=== OXIDEOS AARCH64 KERNEL BOOT ===\n"); }
+    assert!(BASE_REVISION.is_supported());
+
+    unsafe {
+        SERIAL_PORT.write_str("Current EL: ");
+        SERIAL_PORT.write_decimal(exceptions::current_el() as u32);
+        SERIAL_PORT.write_str("\n");
+    }
+
+    // ── Stage 2: EL1 exception vectors ─────────────────────────────────────
+    unsafe {
+        exceptions::init();
+        SERIAL_PORT.write_str("✓ EL1 exception vectors installed\n");
+    }
+
+    // ── Stage 3: Heap ──────────────────────────────────────────────────────
+    let hhdm_offset = HHDM_REQUEST.get_response().map(|r| r.offset()).unwrap_or(0);
+    let heap_bytes = unsafe { heap::init(&MEMORY_MAP_REQUEST, hhdm_offset) };
+    unsafe {
+        SERIAL_PORT.write_str("✓ Heap: ");
+        SERIAL_PORT.write_decimal((heap_bytes / (1024 * 1024)) as u32);
+        SERIAL_PORT.write_str(" MB\n");
+    }
+    if heap_bytes == 0 {
+        unsafe { SERIAL_PORT.write_str("✗ No usable memory region — halting\n"); }
+        hcf();
+    }
+
+    // Wake source for `wfe` in the GUI loop (no GIC yet).
+    unsafe { kernel::arch::aarch64::timer::enable_event_stream(); }
+
+    // ── Stage 4: Graphics + GUI desktop ────────────────────────────────────
+    if let Some(fb_resp) = FRAMEBUFFER_REQUEST.get_response() {
+        if let Some(framebuffer) = fb_resp.framebuffers().next() {
+            unsafe { SERIAL_PORT.write_str("✓ Framebuffer acquired\n"); }
+            let graphics = Graphics::new(framebuffer);
+            let (width, height) = graphics.get_dimensions();
+            unsafe {
+                interrupts::init_mouse_system(width, height);
+                let (terminal_id, sysinfo_id) = gui_loop::create_boot_screen(&graphics);
+                SERIAL_PORT.write_str("Entering GUI loop (display-only: input drivers pending)\n");
+                gui_loop::run_gui_with_mouse(&graphics, terminal_id, sysinfo_id);
+            }
+        } else {
+            unsafe { SERIAL_PORT.write_str("✗ No framebuffer\n"); }
+        }
+    } else {
+        unsafe { SERIAL_PORT.write_str("✗ No framebuffer response\n"); }
     }
 
     hcf()

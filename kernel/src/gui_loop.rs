@@ -421,7 +421,7 @@ pub unsafe fn run_gui_with_mouse(
         }
 
         unsafe { crate::kernel::net::poll(); }
-        unsafe { core::arch::asm!("hlt"); }
+        crate::kernel::cpu::wait_for_interrupt();
     }
 }
 

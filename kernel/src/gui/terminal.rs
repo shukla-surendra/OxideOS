@@ -8,7 +8,6 @@ extern crate alloc;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::arch::asm;
 
 use crate::kernel::{keyboard, syscall, timer};
 use crate::kernel::fs::ramfs::{RAMFS, NodeKind};
@@ -57,15 +56,9 @@ static mut INPUT_HEAD: usize = 0;
 static mut INPUT_TAIL: usize = 0;
 
 fn with_interrupts_disabled<T>(f: impl FnOnce() -> T) -> T {
-    let flags: u64;
-    unsafe {
-        asm!("pushfq; pop {}", out(reg) flags, options(nomem, preserves_flags));
-        asm!("cli", options(nomem, preserves_flags));
-    }
+    let was_enabled = crate::kernel::cpu::irq_save();
     let result = f();
-    if (flags & (1 << 9)) != 0 {
-        unsafe { asm!("sti", options(nomem, preserves_flags)); }
-    }
+    crate::kernel::cpu::irq_restore(was_enabled);
     result
 }
 
