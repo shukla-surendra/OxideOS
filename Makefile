@@ -279,6 +279,7 @@ run-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME)
 	qemu-system-$(KARCH) \
 		-M virt \
 		-cpu cortex-a72 \
+		-serial stdio \
 		-device ramfb \
 		-device qemu-xhci \
 		-device usb-kbd \
@@ -286,6 +287,23 @@ run-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME)
 		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
+		$(QEMUFLAGS)
+
+# GUI variant (default `make run` MODE): same machine with an SDL window.
+.PHONY: run-gui-aarch64
+run-gui-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
+	qemu-system-$(KARCH) \
+		-M virt \
+		-cpu cortex-a72 \
+		-serial stdio \
+		-device ramfb \
+		-device qemu-xhci \
+		-device usb-kbd \
+		-device usb-mouse \
+		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
+		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
+		-cdrom $(IMAGE_NAME).iso \
+		-display sdl \
 		$(QEMUFLAGS)
 
 .PHONY: run-hdd-aarch64

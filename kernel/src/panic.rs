@@ -4,6 +4,7 @@
 //! detailed error reporting, and a Blue-Screen-of-Death framebuffer display.
 
 use core::panic::PanicInfo;
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 use core::arch::asm;
 use crate::kernel::loggers::LOGGER;
 use crate::kernel::serial::SERIAL_PORT;
@@ -12,9 +13,7 @@ use crate::kernel::serial::SERIAL_PORT;
 #[panic_handler]
 pub fn panic_handler(info: &PanicInfo) -> ! {
     // Immediately disable interrupts to prevent further damage
-    unsafe {
-        asm!("cli", options(nostack, nomem));
-    }
+    crate::kernel::cpu::irq_disable();
 
     unsafe {
         // Print panic header
@@ -77,6 +76,8 @@ pub fn panic_handler(info: &PanicInfo) -> ! {
     }
 
     // Draw BSoD on framebuffer (best effort — silently skips if not initialised).
+    // aarch64 has no GUI/framebuffer globals yet, so panics stay serial-only.
+    #[cfg(target_arch = "x86_64")]
     draw_bsod(info);
 
     // Halt the CPU indefinitely
@@ -433,6 +434,7 @@ unsafe fn bsod_fill(fb: *mut u32, pitch_px: usize, x: usize, y: usize, w: usize,
 }
 
 /// Render a full Blue-Screen-of-Death on the framebuffer.
+#[cfg(target_arch = "x86_64")]
 fn draw_bsod(info: &PanicInfo) {
     let pfb = unsafe { crate::gui::graphics::PANIC_FB };
     let fb_info = match pfb { Some(f) => f, None => return };
@@ -535,11 +537,7 @@ fn draw_bsod(info: &PanicInfo) {
 
 /// Halt the system safely
 fn halt_system() -> ! {
-    unsafe {
-        loop {
-            asm!("hlt", options(nostack, nomem));
-        }
-    }
+    crate::kernel::cpu::halt_forever();
 }
 
 /// Enhanced panic function with custom message (for internal kernel use)

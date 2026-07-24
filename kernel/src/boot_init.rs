@@ -18,7 +18,7 @@ use crate::kernel::{gdt, idt, interrupts, timer, pic, keyboard,
 pub unsafe fn init_interrupt_system() {
     SERIAL_PORT.write_str("=== 64-BIT INTERRUPT SYSTEM SETUP ===\n");
     SERIAL_PORT.write_str("Step 1: Disabling interrupts (CLI)...\n");
-    unsafe { asm!("cli"); }
+    crate::kernel::cpu::irq_disable();
 
     SERIAL_PORT.write_str("Step 2: Installing x86_64 GDT/TSS...\n");
     gdt::init();
@@ -176,7 +176,7 @@ unsafe fn verify_idt_entries_64bit() {
 }
 
 unsafe fn test_64bit_interrupts() {
-    unsafe { asm!("sti"); }
+    crate::kernel::cpu::irq_enable();
     pic::unmask_irq(0);
 
     let initial_ticks = timer::get_ticks();
@@ -193,7 +193,7 @@ unsafe fn test_64bit_interrupts() {
             SERIAL_PORT.write_str("  TIMEOUT: No timer interrupts\n");
             break;
         }
-        for _ in 0..100 { unsafe { asm!("pause"); } }
+        for _ in 0..100 { crate::kernel::cpu::spin_hint(); }
     }
 
     pic::unmask_irq(1);
@@ -212,6 +212,6 @@ pub unsafe fn run_text_mode_kernel() -> ! {
             SERIAL_PORT.write_decimal(counter as u32);
             SERIAL_PORT.write_str("\n");
         }
-        unsafe { core::arch::asm!("hlt"); }
+        crate::kernel::cpu::wait_for_interrupt();
     }
 }
