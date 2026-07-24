@@ -58,10 +58,33 @@ pub use arch::interrupts;
 #[cfg(target_arch = "x86_64")]
 pub use arch::interrupts_asm;
 
-// aarch64: the PL011 driver stands in for drivers::serial so shared code
-// (panic handler, loggers) keeps using `crate::kernel::serial::SERIAL_PORT`.
+// ── aarch64 flat-path wiring ─────────────────────────────────────────────────
+// Real aarch64 drivers (PL011, generic timer, PL031, PSCI) and API-compatible
+// stubs (see stubs.rs) take the same flat names the x86 modules re-export, so
+// the GUI layer and shared code compile unchanged.
+#[cfg(target_arch = "aarch64")]
+pub mod stubs;
+
 #[cfg(target_arch = "aarch64")]
 pub use arch::aarch64::serial;
+#[cfg(target_arch = "aarch64")]
+pub use arch::aarch64::timer;
+#[cfg(target_arch = "aarch64")]
+pub use arch::aarch64::rtc;
+#[cfg(target_arch = "aarch64")]
+pub use arch::aarch64::psci as shutdown;
+
+#[cfg(target_arch = "aarch64")]
+pub use stubs::{
+    ata, compositor, disk_store, diskfs, ext2, fat, fs, gui_proc, interrupts,
+    keyboard, net, pipe, programs, scheduler, stdin, syscall, user_mode,
+};
+
+// `gui/oxide_backend.rs` imports through `kernel::drivers::keyboard`.
+#[cfg(target_arch = "aarch64")]
+pub mod drivers {
+    pub use super::stubs::keyboard;
+}
 
 // mem/
 #[cfg(target_arch = "x86_64")]

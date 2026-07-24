@@ -33,6 +33,14 @@ Status: **done** (boots to serial + framebuffer test pattern on QEMU virt).
    (observed during bring-up as a nested abort with FAR just past the image).
 3. The exception handlers never return, so the vector stubs save no frame yet.
    The GIC/timer step must add a real save/restore frame before IRQs return.
+4. **Never run aarch64 QEMU with `-cpu max`** — Limine v9's higher-half
+   handoff fails on that CPU model (`TTBR1_EL1` left null, so the jump to the
+   kernel entry instruction-aborts into a recursive fault loop before any
+   kernel code runs; symptom: silence after `BdsDxe: starting Boot0002`).
+   The Makefile's default `QEMUFLAGS` is arch-conditional for this reason;
+   the run targets pin `-cpu cortex-a72`. Also note: commas inside
+   `$(call USER_VARIABLE,...)` values must be written as `$(comma)` or make
+   silently drops everything after them.
 
 ## Verified
 

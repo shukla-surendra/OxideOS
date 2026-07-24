@@ -19,11 +19,25 @@ endif
 # Port `make docs` serves the documentation site on.
 $(call USER_VARIABLE,DOCS_PORT,8000)
 
+# Literal comma for use inside $(call ...) arguments — a bare comma would
+# split the argument list and silently drop everything after it.
+override comma := ,
+
 # Default user QEMU flags. These are appended to the QEMU command calls.
 # -cpu max: expose all available CPU features so LLVM-vectorised code (fill_rect, etc.) can use SSE/AVX.
 # -device qemu-xhci,id=xhci: USB 3.0 host controller
 # -device usb-tablet: absolute mouse positioning (better than PS/2 relative movements)
-$(call USER_VARIABLE,QEMUFLAGS,-m 2G -cpu max -device qemu-xhci,id=xhci -device usb-tablet)
+#
+# aarch64 must NOT get -cpu max: appended flags override the targets'
+# -cpu cortex-a72, and Limine v9 fails its higher-half handoff on QEMU's
+# `max` CPU model (TTBR1_EL1 left null → the jump to the kernel entry
+# instruction-aborts into a recursive fault loop before any kernel code runs).
+# The aarch64 run targets already provide the xhci controller + USB HID.
+ifeq ($(KARCH),aarch64)
+$(call USER_VARIABLE,QEMUFLAGS,-m 2G -device usb-tablet)
+else
+$(call USER_VARIABLE,QEMUFLAGS,-m 2G -cpu max -device qemu-xhci$(comma)id=xhci -device usb-tablet)
+endif
 
 # Network flags: expose an RTL8139 NIC via QEMU user-mode NAT.
 # The guest gets IP 10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3.

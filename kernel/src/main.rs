@@ -22,44 +22,57 @@ mod panic;
 mod kernel;
 mod version;
 
-// Desktop + subsystem glue: x86-only until the ARM port reaches the GUI step.
-#[cfg(target_arch = "x86_64")]
+// The desktop (gui/, gui_loop, sysinfo, net_probe, wallpaper) builds for both
+// architectures — on aarch64 the kernel-side subsystems it calls are the
+// stubs/real drivers wired up in `kernel/mod.rs`.  Only the x86 hardware
+// bring-up (boot_init) stays arch-specific.
 mod gui;
-#[cfg(target_arch = "x86_64")]
 mod wallpaper;
-#[cfg(target_arch = "x86_64")]
 mod net_probe;
-#[cfg(target_arch = "x86_64")]
 mod sysinfo;
 #[cfg(target_arch = "x86_64")]
 mod boot_init;
-#[cfg(target_arch = "x86_64")]
 mod gui_loop;
 
-// No heap on aarch64 yet — the allocator arrives with the memory port step.
-#[cfg(target_arch = "x86_64")]
 extern crate alloc;
 
-/// Placeholder allocator so the aarch64 image links: every allocation fails,
-/// which routes stray heap use to the panic handler instead of corruption.
+/// aarch64 heap: a linked-list allocator over the largest usable Limine
+/// memory-map region, addressed through the HHDM.  (x86 uses the paging
+/// allocator in `kernel/mem/`; this moves there too once aarch64 paging lands.)
 #[cfg(target_arch = "aarch64")]
-mod no_heap {
-    use core::alloc::{GlobalAlloc, Layout};
-
-    struct NoHeap;
-
-    unsafe impl GlobalAlloc for NoHeap {
-        unsafe fn alloc(&self, _layout: Layout) -> *mut u8 { core::ptr::null_mut() }
-        unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
-    }
+mod heap {
+    use linked_list_allocator::LockedHeap;
 
     #[global_allocator]
-    static NO_HEAP: NoHeap = NoHeap;
+    static HEAP: LockedHeap = LockedHeap::empty();
+
+    /// Cap so the identity of "largest region" can't hand us all of RAM
+    /// before a real frame allocator exists.
+    const HEAP_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+    pub unsafe fn init(memory_map: &limine::request::MemoryMapRequest, hhdm_offset: u64) -> u64 {
+        use limine::memory_map::EntryType;
+
+        let Some(resp) = memory_map.get_response() else { return 0 };
+        let mut best: Option<(u64, u64)> = None;
+        for entry in resp.entries() {
+            if entry.entry_type == EntryType::USABLE {
+                if best.map(|(_, len)| entry.length > len).unwrap_or(true) {
+                    best = Some((entry.base, entry.length));
+                }
+            }
+        }
+        let Some((base, len)) = best else { return 0 };
+        let size = len.min(HEAP_MAX_BYTES);
+        unsafe {
+            HEAP.lock().init((hhdm_offset + base) as *mut u8, size as usize);
+        }
+        size
+    }
 }
-#[cfg(target_arch = "x86_64")]
+
 use gui::graphics::Graphics;
 use kernel::serial::SERIAL_PORT;
-#[cfg(target_arch = "x86_64")]
 use kernel::interrupts;
 
 use limine::BaseRevision;
@@ -107,7 +120,6 @@ static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
 
 // ── Kernel globals ─────────────────────────────────────────────────────────────
 
-#[cfg(target_arch = "x86_64")]
 pub static mut WINDOW_MANAGER: gui::window_manager::WindowManager =
     gui::window_manager::WindowManager::new();
 
@@ -167,8 +179,8 @@ unsafe extern "C" fn kmain() -> ! {
     hcf()
 }
 
-/// aarch64 bring-up entry: serial console + exception vectors, then park.
-/// Next port steps light up the GIC, generic timer, and memory management.
+/// aarch64 entry: serial + exception vectors + heap, then the same desktop
+/// the x86 build runs (display-only until input drivers are ported).
 #[cfg(target_arch = "aarch64")]
 #[unsafe(no_mangle)]
 unsafe extern "C" fn kmain() -> ! {
@@ -191,47 +203,41 @@ unsafe extern "C" fn kmain() -> ! {
         SERIAL_PORT.write_str("✓ EL1 exception vectors installed\n");
     }
 
-    if let Some(resp) = HHDM_REQUEST.get_response() {
-        unsafe {
-            SERIAL_PORT.write_str("HHDM offset: ");
-            exceptions::write_hex64(resp.offset());
-            SERIAL_PORT.write_str("\n");
-        }
+    // ── Stage 3: Heap ──────────────────────────────────────────────────────
+    let hhdm_offset = HHDM_REQUEST.get_response().map(|r| r.offset()).unwrap_or(0);
+    let heap_bytes = unsafe { heap::init(&MEMORY_MAP_REQUEST, hhdm_offset) };
+    unsafe {
+        SERIAL_PORT.write_str("✓ Heap: ");
+        SERIAL_PORT.write_decimal((heap_bytes / (1024 * 1024)) as u32);
+        SERIAL_PORT.write_str(" MB\n");
+    }
+    if heap_bytes == 0 {
+        unsafe { SERIAL_PORT.write_str("✗ No usable memory region — halting\n"); }
+        hcf();
     }
 
-    // ── Stage 3: Framebuffer smoke test ────────────────────────────────────
+    // Wake source for `wfe` in the GUI loop (no GIC yet).
+    unsafe { kernel::arch::aarch64::timer::enable_event_stream(); }
+
+    // ── Stage 4: Graphics + GUI desktop ────────────────────────────────────
     if let Some(fb_resp) = FRAMEBUFFER_REQUEST.get_response() {
-        if let Some(fb) = fb_resp.framebuffers().next() {
+        if let Some(framebuffer) = fb_resp.framebuffers().next() {
+            unsafe { SERIAL_PORT.write_str("✓ Framebuffer acquired\n"); }
+            let graphics = Graphics::new(framebuffer);
+            let (width, height) = graphics.get_dimensions();
             unsafe {
-                SERIAL_PORT.write_str("✓ Framebuffer ");
-                SERIAL_PORT.write_decimal(fb.width() as u32);
-                SERIAL_PORT.write_str("x");
-                SERIAL_PORT.write_decimal(fb.height() as u32);
-                SERIAL_PORT.write_str(" — painting test pattern\n");
+                interrupts::init_mouse_system(width, height);
+                let (terminal_id, sysinfo_id) = gui_loop::create_boot_screen(&graphics);
+                SERIAL_PORT.write_str("Entering GUI loop (display-only: input drivers pending)\n");
+                gui_loop::run_gui_with_mouse(&graphics, terminal_id, sysinfo_id);
             }
-            // Unmissable test pattern: eight bright color bars inside a white
-            // frame — proves mapping, pitch, and scanout at a glance.
-            const BARS: [u32; 8] = [
-                0x00FF0000, 0x00FF8000, 0x00FFFF00, 0x0000FF00,
-                0x0000FFFF, 0x000000FF, 0x00FF00FF, 0x00FFFFFF,
-            ];
-            let addr = fb.addr() as *mut u32;
-            let (w, h, pitch) = (fb.width() as usize, fb.height() as usize, fb.pitch() as usize / 4);
-            for y in 0..h {
-                for x in 0..w {
-                    let border = x < 8 || y < 8 || x >= w - 8 || y >= h - 8;
-                    let color = if border { 0x00FFFFFF } else { BARS[x * 8 / w] };
-                    unsafe { addr.add(y * pitch + x).write_volatile(color) };
-                }
-            }
+        } else {
+            unsafe { SERIAL_PORT.write_str("✗ No framebuffer\n"); }
         }
     } else {
         unsafe { SERIAL_PORT.write_str("✗ No framebuffer response\n"); }
     }
 
-    unsafe {
-        SERIAL_PORT.write_str("aarch64 bring-up complete — parking CPU (next: GIC + timer)\n");
-    }
     hcf()
 }
 

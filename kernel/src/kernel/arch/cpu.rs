@@ -74,14 +74,19 @@ pub fn irq_restore(was_enabled: bool) {
     }
 }
 
-/// Sleep the CPU until the next interrupt arrives.
+/// Sleep the CPU until the next interrupt (x86) or wake event (aarch64).
+///
+/// aarch64 uses `wfe`, not `wfi`: until the GIC is programmed no interrupt
+/// can ever become pending, so `wfi` would sleep forever.  The generic-timer
+/// event stream (see `arch::aarch64::timer::enable_event_stream`) wakes `wfe`
+/// every ~0.5 ms instead.  Switches to `wfi` once the GIC + timer IRQ land.
 #[inline(always)]
 pub fn wait_for_interrupt() {
     unsafe {
         #[cfg(target_arch = "x86_64")]
         asm!("hlt", options(nostack, nomem, preserves_flags));
         #[cfg(target_arch = "aarch64")]
-        asm!("wfi", options(nostack, nomem, preserves_flags));
+        asm!("wfe", options(nostack, nomem, preserves_flags));
     }
 }
 
