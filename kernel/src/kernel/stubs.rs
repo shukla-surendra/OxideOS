@@ -85,32 +85,20 @@ pub mod stdin {
     pub fn pop() -> Option<u8> { None }
 }
 
-// ── ata + disk_store + diskfs (x86: ATA PIO storage stack) ───────────────────
-pub mod ata {
-    pub fn is_present() -> bool { false }
-    pub fn is_present_sec() -> bool { false }
-    pub fn is_present_at(_idx: usize) -> bool { false }
-    pub fn disk_info(_idx: usize) -> Option<(u64, bool, bool)> { None }
-}
+// ── ata + disk_store + diskfs: REAL storage stack over virtio-blk ────────────
+// The virtio-blk driver exposes the exact drivers/ata.rs API, so the portable
+// x86 storage modules compile here unchanged (`super::ata` / flat-path uses
+// resolve to the re-exports below, same #[path] trick as ramfs).
+pub use crate::kernel::arch::aarch64::virtio_blk as ata;
 
-pub mod disk_store {
-    pub const RECORD_DATA_MAX: usize = 496;
+#[path = "drivers/disk_store.rs"]
+pub mod disk_store;
 
-    pub fn is_mounted(_disk: usize) -> bool { false }
-    pub unsafe fn write_record(_disk: usize, _id: u32, _data: &[u8]) -> bool { false }
-    pub unsafe fn read_record(_disk: usize, _id: u32, _buf: &mut [u8]) -> Option<usize> { None }
-    pub unsafe fn delete_record(_disk: usize, _id: u32) -> bool { false }
-    pub unsafe fn list_records(_disk: usize, _out: &mut [u32]) -> usize { 0 }
-}
+#[path = "fs/diskfs.rs"]
+pub mod diskfs;
 
-pub mod diskfs {
-    pub fn populate() {}
-    pub fn refresh_all_records() {}
-    pub fn refresh_record(_record_id: u32) {}
-    pub fn write_record(_record_id: u32, _data: &[u8]) -> bool { false }
-    pub fn list_store_raw(_buf: &mut [u8]) -> i64 { 0 }
-    pub fn parse_record_id(_path: &str) -> Option<u32> { None }
-}
+#[path = "fs/mbr.rs"]
+pub mod mbr;
 
 // ── ipc/proc shims the real ramfs reaches for ────────────────────────────────
 pub mod pipe {
@@ -131,25 +119,9 @@ pub mod user_mode {
     pub fn output_write(_bytes: &[u8]) {}
 }
 
-// ── fat (x86: fs/fat — needs the ATA driver) ─────────────────────────────────
-pub mod fat {
-    use alloc::string::String;
-    use alloc::vec::Vec;
-
-    #[derive(Clone, Copy, Debug)]
-    pub enum DirLoc {
-        Root,
-        Subdir(u16),
-    }
-
-    pub unsafe fn open(_raw_path: &[u8], _flags: u32) -> i64 { -1 }
-    pub unsafe fn mkdir(_raw_path: &[u8]) -> i64 { -1 }
-    pub unsafe fn read_fd(_fd: i32, _buf: &mut [u8]) -> i64 { -1 }
-    pub unsafe fn write_fd(_fd: i32, _buf: &[u8]) -> i64 { -1 }
-    pub unsafe fn close(_fd: i32) -> i64 { -1 }
-    pub unsafe fn resolve_dir(_raw_path: &[u8]) -> Option<DirLoc> { None }
-    pub unsafe fn list_dir(_dir: DirLoc) -> Vec<(String, bool)> { Vec::new() }
-}
+// ── fat: REAL FAT16 driver (x86: fs/fat) over virtio-blk ─────────────────────
+#[path = "fs/fat.rs"]
+pub mod fat;
 
 // ── fs (the real in-RAM filesystem IS portable — reuse it directly) ──────────
 // Declared at top level: #[path] here resolves relative to src/kernel/, and

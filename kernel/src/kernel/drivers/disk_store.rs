@@ -92,6 +92,15 @@ unsafe fn is_ext2_disk(disk: usize) -> bool {
     u16::from_le_bytes([buf[56], buf[57]]) == EXT2_MAGIC
 }
 
+/// Detect a whole-disk FAT filesystem: 0x55AA boot signature plus the
+/// "FAT1x"/"FAT32" type string at its fixed BPB offset.
+unsafe fn is_fat_disk(disk: usize) -> bool {
+    let mut buf = [0u8; 512];
+    if !unsafe { ata::read_sector(disk, 0, &mut buf) } { return false; }
+    if buf[510] != 0x55 || buf[511] != 0xAA { return false; }
+    buf[0x36..0x3B].starts_with(b"FAT") || buf[0x52..0x57].starts_with(b"FAT")
+}
+
 // ── Public API ────────────────────────────────────────────────────────────
 
 /// Mount (or format) the record store on disk `idx`.
@@ -102,6 +111,18 @@ unsafe fn is_ext2_disk(disk: usize) -> bool {
 pub unsafe fn mount(disk: usize) -> bool {
     if !ata::is_present_at(disk) {
         unsafe { SERIAL_PORT.write_str("[store] disk not present\n"); }
+        return false;
+    }
+
+    // Refuse a FAT disk outright — even a previously-written store header.
+    // The record slots (LBA 2048..2303) live inside the FAT16 data region on
+    // the 4 MB oxide_disk.img, so store writes would corrupt FAT files and
+    // FAT cluster allocation would corrupt records.  FAT disks are served by
+    // the FAT16 driver at /disk; the record store keeps to non-FAT disks.
+    if unsafe { is_fat_disk(disk) } {
+        unsafe { SERIAL_PORT.write_str("[store] disk"); }
+        unsafe { SERIAL_PORT.write_decimal(disk as u32); }
+        unsafe { SERIAL_PORT.write_str(" is a FAT filesystem — store disabled on it\n"); }
         return false;
     }
 
