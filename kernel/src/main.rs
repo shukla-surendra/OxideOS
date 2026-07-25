@@ -179,6 +179,59 @@ unsafe extern "C" fn kmain() -> ! {
     hcf()
 }
 
+/// Storage smoke test, serial-only: read `/disk/bootcnt.txt`, increment the
+/// number inside, write it back.  A count that grows across reboots proves
+/// the virtio-blk + FAT16 write path end to end without touching the GUI.
+#[cfg(target_arch = "aarch64")]
+const STORAGE_BOOT_TEST: bool = false;
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn storage_boot_test() {
+    use kernel::fat;
+    use kernel::fs::{O_CREAT, O_TRUNC, O_WRONLY};
+
+    unsafe {
+        let mut count: u32 = 0;
+        let fd = fat::open(b"bootcnt.txt", 0);
+        if fd >= 0 {
+            let mut buf = [0u8; 16];
+            let n = fat::read_fd(fd as i32, &mut buf);
+            fat::close(fd as i32);
+            if n > 0 {
+                for &b in &buf[..n as usize] {
+                    if b.is_ascii_digit() {
+                        count = count * 10 + (b - b'0') as u32;
+                    }
+                }
+            }
+        }
+        count += 1;
+
+        let fd = fat::open(b"bootcnt.txt", O_WRONLY | O_CREAT | O_TRUNC);
+        if fd < 0 {
+            SERIAL_PORT.write_str("✗ Storage self-test: open /disk/bootcnt.txt failed\n");
+            return;
+        }
+        let mut out = [0u8; 10];
+        let mut i = out.len();
+        let mut v = count;
+        loop {
+            i -= 1;
+            out[i] = b'0' + (v % 10) as u8;
+            v /= 10;
+            if v == 0 {
+                break;
+            }
+        }
+        fat::write_fd(fd as i32, &out[i..]);
+        fat::close(fd as i32);
+
+        SERIAL_PORT.write_str("✓ Storage self-test: boot #");
+        SERIAL_PORT.write_decimal(count);
+        SERIAL_PORT.write_str(" recorded in /disk/bootcnt.txt\n");
+    }
+}
+
 /// aarch64 entry: serial + exception vectors + heap + virtio-input, then the
 /// same desktop the x86 build runs (mouse + keyboard polled each frame).
 #[cfg(target_arch = "aarch64")]
@@ -223,6 +276,23 @@ unsafe extern "C" fn kmain() -> ! {
     unsafe {
         kernel::keyboard::init();
         kernel::arch::aarch64::virtio_input::init();
+    }
+
+    // ── Stage 4.5: Storage (virtio-blk, polled) + filesystems ──────────────
+    // Same sequence as the x86 boot path: RamFS root, block driver, record
+    // store, mount-point population, then MBR parse + FAT16 mount.
+    unsafe {
+        kernel::fs::ramfs::RAMFS.init();
+        kernel::arch::aarch64::virtio_blk::init();
+        if kernel::ata::is_present() { kernel::disk_store::mount(0); }
+        if kernel::ata::is_present_sec() { kernel::disk_store::mount(3); }
+        kernel::diskfs::populate();
+        kernel::mbr::init();
+        kernel::fat::init();
+        SERIAL_PORT.write_str("✓ Storage initialised\n");
+    }
+    if STORAGE_BOOT_TEST {
+        unsafe { storage_boot_test(); }
     }
 
     // ── Stage 5: Graphics + GUI desktop ────────────────────────────────────

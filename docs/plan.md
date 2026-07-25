@@ -65,12 +65,12 @@ on AAVMF — same boot protocol as x86-64. Detail in [docs/arm/](arm/README.md).
 | Arch abstraction layer (`arch::cpu` facade, no raw `asm!` outside `arch/`) | ✅ |
 | Boot: EL1 exception vectors, PL011 serial console | ✅ |
 | Input: virtio-input keyboard + mouse (polled virtio-mmio), works in GUI | ✅ |
+| Disk: polled virtio-blk + FAT16/MBR/diskfs — files persist across reboots (ext2 pending) | ✅ |
 | GICv2 + generic timer + PSCI power | 🔜 next |
 | Memory: frame allocator, heap, TTBR0/1 paging (4 KB granule) | 🔜 |
 | Framebuffer GUI desktop | 🔜 |
 | Scheduler context switch | ⏳ |
 | User mode (EL0) + SVC syscalls (Linux aarch64 ABI) | ⏳ |
-| Disk: virtio-blk + FAT/ext2 | ⏳ |
 | Networking: virtio-net | ⏳ |
 | Userspace programs built for aarch64 | ⏳ |
 
@@ -274,7 +274,7 @@ Ordered feature queue (picks up where the status table above leaves off):
 | B3 | Framebuffer GUI desktop | ramfb; compositor is already portable Limine-fb code | 06-gui.md |
 | B4 | Scheduler context switch | x0–x30/SP/ELR/SPSR save-restore | — |
 | B5 | EL0 user mode + SVC syscalls | Linux **aarch64** syscall numbers (differ from x86-64!) | — |
-| B6 | virtio-blk + FAT/ext2 | Reuses M1's FS work unchanged; shares virtio infra with M6 | — |
+| B6 | ✅ virtio-blk + FAT16 (ext2 pending) | Done ahead of B1–B5: polled virtio-mmio, real FAT/MBR/diskfs stack reused | [04-virtio-blk.md](arm/04-virtio-blk.md) |
 | B7 | virtio-net + smoltcp | smoltcp is arch-independent | — |
 | B8 | aarch64 userspace builds | oxide-rt SVC stubs; rebuild coreutils/sh; musl aarch64 | — |
 

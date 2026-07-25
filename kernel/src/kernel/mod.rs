@@ -75,7 +75,7 @@ pub use arch::aarch64::psci as shutdown;
 #[cfg(target_arch = "aarch64")]
 pub use stubs::{
     ata, compositor, disk_store, diskfs, ext2, fat, fs, gui_proc, interrupts,
-    net, pipe, programs, scheduler, stdin, syscall, user_mode,
+    mbr, net, pipe, programs, scheduler, stdin, syscall, user_mode,
 };
 
 // mem/

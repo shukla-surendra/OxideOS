@@ -87,9 +87,12 @@ all-hdd: $(IMAGE_NAME).hdd
 .PHONY: disk
 disk: $(DISK_IMAGE)
 
+# mkfs.fat -F 16 -s 1: force FAT16 with 512-byte clusters (8192 clusters at
+# 4 MB — comfortably above the 4085-cluster FAT16 minimum).  mformat's -F
+# flag produced FAT32, which the kernel's FAT16 driver cannot mount.
 $(DISK_IMAGE):
 	dd if=/dev/zero bs=512 count=$(DISK_SECTORS) of=$(DISK_IMAGE)
-	mformat -i $(DISK_IMAGE) -F -v OXIDEDISK ::
+	mkfs.fat -F 16 -s 1 -n OXIDEDISK $(DISK_IMAGE)
 
 # Create a blank ext2 disk image for the secondary IDE drive.
 # Requires e2fsprogs (mke2fs).  Run once; not rebuilt automatically.
@@ -203,6 +206,10 @@ run-hdd: run-hdd-$(KARCH)
 comma      := ,
 DISK_FLAG  := $(if $(wildcard $(DISK_IMAGE)),-drive file=$(DISK_IMAGE)$(comma)format=raw$(comma)if=ide$(comma)index=0)
 EXT2_FLAG  := $(if $(wildcard $(EXT2_IMAGE)),-drive file=$(EXT2_IMAGE)$(comma)format=raw$(comma)if=ide$(comma)index=3)
+# Same disk image on the virt machine, as a virtio-mmio block device (the
+# aarch64 kernel's polled virtio-blk driver picks it up; run `make disk` once
+# to create it).
+VBLK_FLAG  := $(if $(wildcard $(DISK_IMAGE)),-drive if=none$(comma)file=$(DISK_IMAGE)$(comma)format=raw$(comma)id=vblk0 -device virtio-blk-device$(comma)drive=vblk0)
 
 .PHONY: run-x86_64
 run-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
@@ -301,6 +308,7 @@ run-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME)
 		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
+		$(VBLK_FLAG) \
 		$(QEMUFLAGS)
 
 # GUI variant (default `make run` MODE): same machine with an SDL window.
@@ -317,6 +325,7 @@ run-gui-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_N
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
 		-display sdl \
+		$(VBLK_FLAG) \
 		$(QEMUFLAGS)
 
 .PHONY: run-hdd-aarch64
@@ -330,6 +339,7 @@ run-hdd-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_N
 		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-hda $(IMAGE_NAME).hdd \
+		$(VBLK_FLAG) \
 		$(QEMUFLAGS)
 
 .PHONY: run-riscv64
