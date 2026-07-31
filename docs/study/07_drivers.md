@@ -5,11 +5,21 @@ interrupts) and the kernel's language (functions, buffers, events). This doc tea
 you how to read a hardware spec and turn it into driver code — using your existing
 drivers as models.
 
+> **Architecture scope:** Models A–C below are x86-64 (port I/O and PCI
+> don't exist on ARM at all). **Model D** is aarch64 — and unlike docs
+> 02/05/06, this one isn't a "not built yet" gap: the aarch64 port's two
+> newest drivers, `virtio_blk.rs` and `virtio_input.rs`, are real, working
+> code you can read today. See `docs/arm/03-virtio-input.md` and
+> `docs/arm/04-virtio-blk.md` for the full write-ups.
+
 ---
 
-## How hardware is accessed on x86
+## How hardware is accessed: two families
 
-There are two mechanisms:
+x86 has both of the mechanisms below. **ARM (and QEMU's `virt` machine)
+has only the second one** — there is no port-mapped I/O on ARM at all,
+which is *the* defining fact that shapes every aarch64 driver in this
+kernel (see `docs/arm/README.md`'s "Why the device story differs" table).
 
 ### Port-mapped I/O (PMIO)
 x86 has a separate 64K I/O address space accessed with special instructions:
@@ -82,6 +92,81 @@ PCI devices are discovered by scanning a configuration space:
 
 ---
 
+## Model D: MMIO virtio driver (aarch64) — `arch/aarch64/virtio_input.rs`, `virtio_blk.rs`
+
+QEMU's `virt` machine exposes a bank of 32 **virtio-mmio transport slots**
+starting at physical address `0x0a00_0000`, each 0x200 bytes apart. Every
+virtio device (keyboard, mouse, block device, ...) that QEMU is configured
+with lands in one of these slots. There's no bus enumeration step like
+PCI's — you just probe each slot in turn and read its magic number and
+device-ID register to find out what's there:
+
+```rust
+// virtio_input.rs — register offsets are just constants, no chip-specific
+// instruction needed to reach them (contrast Model A's port 0x70/0x71 pair)
+const MMIO_BASE:   u64 = 0x0a00_0000;
+const MMIO_STRIDE: u64 = 0x200;
+const MMIO_SLOTS:  u64 = 32;
+
+const REG_MAGIC:     u64 = 0x000; // "virt" = 0x74726976
+const REG_DEVICE_ID: u64 = 0x008; // 18 = input, 2 = block device
+```
+
+**Reading/writing a register is a plain pointer dereference** — no `in`/`out`
+instruction exists on ARM, so "access this device register" *is* "read
+this memory address," except the compiler must be stopped from doing what
+it would normally do to a plain memory read (caching the value, reordering
+it relative to other reads, or optimizing a "redundant" read away
+entirely) since the *hardware*, not your program, can change what's there
+between two reads of the same address:
+
+```rust
+fn mmio_read32(base: u64, off: u64) -> u32 {
+    unsafe { ((base + off) as *const u32).read_volatile() }
+}
+fn mmio_write32(base: u64, off: u64, val: u32) {
+    unsafe { ((base + off) as *mut u32).write_volatile(val) }
+}
+```
+(`virtio_input.rs:118-122`)
+
+`read_volatile`/`write_volatile` are the Rust spelling of C's `volatile`
+qualifier — see doc 07's original Model A/B/C intro for the same idea
+applied to framebuffer/PCI MMIO on the x86 side. Every access here is
+`unsafe` for the same reason raw pointer dereferences always are (doc 00
+§7): the compiler can't verify `base + off` is actually a valid, mapped
+address — that's on the driver author to get right from the datasheet
+(here, the [VirtIO 1.1 spec](https://docs.oasis-open.org/virtio/virtio/v1.1/virtio-v1.1.html)).
+
+**No interrupts, by design (for now).** A real virtio driver would set up
+a used-ring and let the device *interrupt* the CPU when data arrives —
+but that requires the GICv2 interrupt controller, which isn't wired up on
+this port yet (doc 02's ARM note). Instead, both `virtio_blk.rs` and
+`virtio_input.rs` are **polled**: the GUI loop calls into them once per
+frame to drain whatever's arrived in the used ring since the last check.
+This is architecturally the same trade-off C's `keyboard.rs` avoids by
+being interrupt-driven (Model B above) — polling burns a little CPU
+every frame checking "is anything new," rather than costing nothing until
+hardware says so — accepted here as a deliberate bring-up simplification,
+not a design endorsement; `docs/arm/03-virtio-input.md` says so explicitly.
+
+**Rust patterns specific to this model:**
+- Every MMIO helper function is a **thin, safe-looking wrapper around an
+  unsafe operation** — `mmio_read32` itself has no `unsafe` in its
+  signature, but its *body* is one `unsafe` block, which is the same
+  "small unsafe core, safe(r) surface" pattern doc 00 §7 walks through for
+  the x86-64 paging allocator, just applied to registers instead of page
+  tables.
+- `fence(Ordering::...)` calls around ring-buffer updates
+  (`virtio_input.rs`, `use core::sync::atomic::{fence, Ordering}`) are a
+  memory-barrier — telling the compiler/CPU "don't reorder memory
+  operations across this point" — because the *device* reads the same
+  ring buffer concurrently with the CPU; without a fence, the CPU could
+  reorder "write the descriptor" after "notify the device the descriptor
+  is ready," and the device would read garbage.
+
+---
+
 ## How to write a new driver: PC Speaker
 
 The PC speaker is controlled by two things:
@@ -131,8 +216,35 @@ the relevant documents are:
 | PS/2 keyboard | OSDev wiki: "PS/2 Keyboard" |
 | ATA/IDE | "ATA-4 specification" or OSDev "ATA PIO Mode" |
 | RTL8139 | "RTL8139 Programming Guide" (Realtek, available online) |
+| virtio (any virtio-mmio device) | [VirtIO 1.1 spec](https://docs.oasis-open.org/virtio/virtio/v1.1/virtio-v1.1.html), §4.2 for the MMIO transport specifically |
 
-OSDev wiki (wiki.osdev.org) is the best starting point for any x86 hardware.
+OSDev wiki (wiki.osdev.org) is the best starting point for x86 hardware;
+for ARM, the QEMU `virt` machine's own docs (`qemu-system-aarch64 -M
+virt,help`) plus the VirtIO spec cover everything this port currently uses.
+
+---
+
+## Rust patterns you'll see (Models A–C, x86)
+
+(Full primer: `00_rust_for_os_readers.md`. Model D's patterns are covered
+in its own section above.)
+
+- **`asm!` wrapped in tiny, named functions** — `rtc.rs`'s port
+  read/write and `pci.rs`'s `pci_read_u32` are one or two lines of
+  `unsafe { asm!(...) }` each, never inlined ad-hoc at every call site.
+  This is the same "small unsafe core" shape as Model D's `mmio_read32` —
+  x86 port I/O and ARM MMIO are different mechanisms wrapped in the
+  identical Rust idiom.
+- **Bit-flag structs via plain `const` + `|`** — driver init sequences
+  (PIC's ICW1–ICW4, the PC-speaker exercise's port-0x61 bits) build
+  control-register values by OR-ing named `const` bytes together rather
+  than magic numbers, so `0xB6` reads as "channel 2, square wave, binary
+  mode" instead of an opaque literal — the same readability goal
+  `PageTableFlags` serves in the memory-management code (doc 04).
+- **Function pointers as the callback boundary** — `KEY_CALLBACK: Option<
+  unsafe fn(u8)>` in `keyboard.rs` is how a low-level driver hands events
+  upward without knowing who's listening; doc 03's Rust-patterns section
+  covers exactly this value.
 
 ---
 

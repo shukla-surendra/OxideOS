@@ -3,6 +3,15 @@
 Before reading any code, you need a map. This doc ties every concept to a file
 in this codebase so you always know where to look.
 
+> **New to Rust?** Read [`00_rust_for_os_readers.md`](00_rust_for_os_readers.md)
+> first — this whole series assumes you're comfortable with `Option`/`Result`,
+> `match`, structs/enums, and `unsafe`.
+
+> **Scope note:** this file map (and most of docs 02–06) describes the
+> **x86-64** kernel, which is the mature, fully-featured build. OxideOS also
+> has a growing **aarch64** port — see [ARM at a glance](#arm-aarch64-at-a-glance)
+> below and [`docs/arm/README.md`](../arm/README.md) for what's ported so far.
+
 ---
 
 ## What an OS actually does
@@ -41,6 +50,13 @@ The boundary is crossed via:
 This split is the *most important concept* in OS design. Every other design decision
 flows from maintaining it correctly.
 
+**On aarch64**, the same idea exists under a different name: ARM has four
+**Exception Levels** (EL0 = least privileged, up to EL3 = firmware/secure
+monitor). OxideOS's aarch64 kernel currently runs entirely at **EL1** (the
+ARM analog of Ring 0) — the EL0/user-mode split (ARM's Ring 3 equivalent)
+isn't wired up yet, which is why the aarch64 build has no scheduler or
+userspace processes today (see the ARM section below).
+
 ---
 
 ## File map: what lives where
@@ -54,6 +70,14 @@ kernel/src/kernel/arch/
                         numbers to handler functions
   interrupts.rs       — The actual ISR (Interrupt Service Routine) functions
   interrupts_asm.rs   — Raw assembly stubs that save/restore CPU state before calling Rust
+
+kernel/src/kernel/arch/aarch64/   — aarch64 equivalents (different mechanism, see below)
+  exceptions.rs       — EL1 exception vector table (16 slots) + fault dump
+  timer.rs            — ARM generic timer (CNTP_* system registers)
+  psci.rs             — power off / reboot via SMC/HVC
+  serial.rs           — PL011 UART (MMIO), not port I/O
+  virtio_blk.rs        — polled virtio-mmio block device
+  virtio_input.rs      — polled virtio-mmio keyboard + mouse
 ```
 
 ### Driver Layer
@@ -161,6 +185,60 @@ Reading `main.rs` top to bottom gives you the initialization sequence:
 8. Window manager + initial GUI windows
 9. Scheduler (start userspace tasks)
 10. **Main loop** — runs forever: poll input → update state → draw → repeat
+
+---
+
+## ARM (aarch64) at a glance
+
+`kernel/src/kernel/arch/` holds one subdirectory per architecture; `mod.rs`
+(`kernel/src/kernel/mod.rs`) `#[cfg(target_arch = "x86_64")]`-gates the
+subsystems that don't exist on ARM yet. As of this doc, the aarch64 kernel
+boots straight into the GUI desktop (mouse/keyboard/disk all working) but
+has **no scheduler, no userspace processes, and no syscalls** — those are
+the next port targets. Full status table:
+[`docs/arm/README.md`](../arm/README.md#feature-status).
+
+| x86-64 file/mechanism | aarch64 equivalent | Status |
+|---|---|---|
+| `gdt.rs`, `idt.rs`, `interrupts_asm.rs` | `arch/aarch64/exceptions.rs` — one EL1 vector table, 16 slots | ✅ done, but every exception just dumps state and halts — no IRQ dispatch yet |
+| `pic.rs` (8259A) | GICv2 interrupt controller | 🔜 not wired up — see next row |
+| `keyboard.rs` (PS/2, interrupt-driven) | `arch/aarch64/virtio_input.rs` (virtio-mmio, **polled** each GUI frame, not interrupt-driven) | ✅ works today, different mechanism |
+| `ata.rs` (ATA PIO) | `arch/aarch64/virtio_blk.rs` (virtio-mmio, polled) | ✅ works today |
+| `timer.rs` (8253 PIT) | `arch/aarch64/timer.rs` (ARM generic timer, `CNTP_*` registers) | ✅ ticks, but nothing consumes it yet (no scheduler) |
+| `shutdown.rs` (ACPI ports) | `arch/aarch64/psci.rs` (SMC/HVC calls) | ✅ done |
+| `scheduler.rs`, `user_mode.rs`, `elf_loader.rs`, `sys/` | — | ⏳ planned |
+
+The **why**: x86 has decades of legacy port-I/O devices (PIC, PIT, PS/2,
+ATA) with no ARM equivalent at all — ARM's QEMU `virt` machine is
+memory-mapped-I/O only. See `docs/study/07_drivers.md`'s new "Model D"
+section for what an MMIO driver looks like, and
+[`docs/arm/01-arch-abstraction.md`](../arm/01-arch-abstraction.md) for how
+`kernel/src/kernel/arch/cpu.rs` lets portable code (the GUI, the panic
+handler) call one function (`cpu::irq_disable()`, etc.) that compiles to
+different instructions per architecture instead of scattering `#[cfg(...)]`
+through shared code.
+
+---
+
+## Rust patterns in this file map
+
+You don't need new Rust *syntax* to read a file map — but the map itself
+*is* Rust module structure, so it's worth naming explicitly:
+
+- **`kernel/src/kernel/mod.rs`** is the literal source of this file map —
+  every `pub mod drivers;` / `pub mod arch;` line you see there is a
+  directory this doc describes. If a subsystem doesn't apply to the
+  current architecture, its `mod` line is prefixed with
+  `#[cfg(target_arch = "x86_64")]`, and on an aarch64 build that code isn't
+  compiled at all (see `docs/study/00_rust_for_os_readers.md#11`).
+- **`pub use drivers::serial;`** style re-exports (also in `mod.rs`) are why
+  code elsewhere writes `crate::kernel::serial::SERIAL_PORT` instead of the
+  deeper `crate::kernel::drivers::serial::SERIAL_PORT` — same item, shorter
+  path, nothing duplicated.
+- `main.rs`'s two `kmain()` functions (one `#[cfg(target_arch = "x86_64")]`,
+  one `#[cfg(target_arch = "aarch64")]`) are the cleanest single example in
+  the whole codebase of "same entry-point name, architecture picks which
+  body compiles."
 
 ---
 

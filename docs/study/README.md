@@ -37,17 +37,30 @@ You understand the OS when you can explain *why* each layer exists.
 
 Work through these in order. Each builds on the previous.
 
-| # | Topic | File | Status |
-|---|-------|------|--------|
-| 01 | [Mental model + file map](01_mental_model.md) | — | |
-| 02 | [Interrupts: from hardware to handler](02_interrupts.md) | `pic.rs`, `idt.rs`, `interrupts.rs` | |
-| 03 | [Keyboard: tracing a keypress end-to-end](03_keypress_trace.md) | `keyboard.rs`, `terminal.rs` | |
-| 04 | [Memory: bump allocator and page tables](04_memory.md) | `allocator.rs`, `paging_allocator.rs` | |
-| 05 | [Processes: what a task actually is](05_processes.md) | `scheduler.rs`, `elf_loader.rs` | |
-| 06 | [Syscalls: crossing the ring boundary](06_syscalls.md) | `syscall_core.rs`, `syscall_handler.rs` | |
-| 07 | [Drivers: writing new hardware code](07_drivers.md) | `ata.rs`, `rtc.rs` | |
+| # | Topic | File | Arch | Status |
+|---|-------|------|------|--------|
+| 00 | [Rust for OS readers](00_rust_for_os_readers.md) | — (new to Rust? start here) | both | |
+| 01 | [Mental model + file map](01_mental_model.md) | — | both (has ARM section) | |
+| 02 | [Interrupts: from hardware to handler](02_interrupts.md) | `pic.rs`, `idt.rs`, `interrupts.rs` | x86-64 only¹ | |
+| 03 | [Keyboard: tracing a keypress end-to-end](03_keypress_trace.md) | `keyboard.rs`, `terminal.rs` | both² | |
+| 04 | [Memory: bump allocator and page tables](04_memory.md) | `allocator.rs`, `paging_allocator.rs` | x86-64 only³ | |
+| 05 | [Processes: what a task actually is](05_processes.md) | `scheduler.rs`, `elf_loader.rs` | x86-64 only⁴ | |
+| 06 | [Syscalls: crossing the ring boundary](06_syscalls.md) | `syscall_core.rs`, `syscall_handler.rs` | x86-64 only⁴ | |
+| 07 | [Drivers: writing new hardware code](07_drivers.md) | `ata.rs`, `rtc.rs`, `virtio_*.rs` | both — has ARM Model D | |
 
 Update the Status column as you go: `reading` → `understood` → `exercised`.
+
+**Arch column footnotes** — see [`docs/arm/README.md`](../arm/README.md)
+for the full ARM port status table:
+1. aarch64 has an EL1 exception vector table (`arch/aarch64/exceptions.rs`)
+   that plays the IDT's hardware role, but no GICv2 yet — no device fires a
+   real hardware interrupt on aarch64 today (devices are polled instead).
+2. Same *trace* on both architectures — aarch64's virtio-input driver
+   feeds the identical `keyboard.rs` decoder x86's PS/2 driver does.
+3. aarch64 has a much simpler `linked_list_allocator` heap (no page
+   tables, no virtual memory) — see the note at the top of doc 04.
+4. Not ported yet — aarch64 has no scheduler or userspace processes, so
+   there's nothing to make a syscall from.
 
 ---
 

@@ -3,6 +3,19 @@
 A syscall is the only legitimate way for a user program to ask the kernel to do
 something. Understanding syscalls means understanding the ring boundary in action.
 
+> **Architecture scope:** x86-64 only — `sys/` is `#[cfg(target_arch =
+> "x86_64")]`-gated, same as `proc/` in doc 05, and for the same reason:
+> there's no userspace on aarch64 yet to make a syscall *from*
+> (`docs/arm/README.md` row 7: ⏳ planned). When it lands, ARM's mechanism
+> will differ at the instruction level — `SVC #0` instead of `SYSCALL`,
+> landing in the EL1 synchronous-exception vector slot
+> (`arch/aarch64/exceptions.rs`, already built for doc 02's fault handling)
+> instead of the `LSTAR` MSR target — but the *design*, a numbered dispatch
+> table behind a narrow validated boundary, carries over unchanged: that's
+> exactly why `syscall_core.rs`'s dispatch logic is written against the
+> `SyscallRuntime` trait (see `00_rust_for_os_readers.md §5`) rather than
+> directly against x86 mechanics.
+
 ---
 
 ## Why syscalls exist
@@ -93,6 +106,33 @@ Adding a syscall touches exactly these files, in this order:
 2. **`syscall_core.rs`** — add a branch in `dispatch()` that calls your handler
 3. **`syscall_core.rs`** — implement `sys_yourname()` below the existing ones
 4. **Userspace program** — call it with `syscall` instruction and your number in RAX
+
+---
+
+## Rust patterns you'll see
+
+(Full primer: `00_rust_for_os_readers.md`.)
+
+- **The `Syscall` enum + `impl From<u64> for Syscall`** — see doc 00 §3 for
+  why this is `#[repr(u64)]` (pinning the layout to match raw syscall
+  numbers) and §4 for why converting the raw RAX value *into* the enum is
+  an explicit, fallible-looking conversion rather than a cast — a syscall
+  number a user program invents that doesn't match any variant has to go
+  *somewhere* sensible (an "unknown syscall" branch), not silently become
+  garbage.
+- **The `SyscallRuntime` trait** (`syscall_core.rs`) is this doc's best
+  example of doc 00 §5's "mechanism vs. policy" split: the dispatch
+  function that matches on `Syscall::Write => ...` etc. is written once,
+  entirely against trait methods (`runtime.write_console(...)`,
+  `runtime.exit(...)`) — it has no idea whether `runtime` is the real
+  kernel or a test double. That's what lets `run_boot_self_tests()`
+  exercise the exact same matching logic without a real process, a real
+  disk, or real user memory behind it.
+- **`Result<_, i64>` as the syscall return convention** — POSIX syscalls
+  signal failure with a negative `errno` value in the same integer slot as
+  a successful return, which is exactly what a lot of this dispatch code
+  models directly with `Result`'s two cases, then flattens back to a
+  single `i64` at the very end for the trip back into RAX.
 
 ---
 

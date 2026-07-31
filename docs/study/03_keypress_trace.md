@@ -4,6 +4,16 @@ This is a reading exercise. Follow one 'A' keypress from hardware to screen,
 opening each file as you go. Don't just skim — understand what each step does
 before moving to the next.
 
+> **Architecture scope:** steps 1–3 below (PS/2, IRQ1, `interrupts.rs`) are
+> x86-64 only. On aarch64, `arch/aarch64/virtio_input.rs` produces the
+> *same* raw scancode byte a different way — it polls the virtio-mmio
+> keyboard device once per GUI frame and translates the evdev keycode it
+> gets back into a scancode-set-1 byte — then feeds it into the **same**
+> `keyboard::process_scancode()` at step 4 onward. That reuse is
+> deliberate: it's why the rest of this trace (steps 4–6, the whole
+> callback → ring-buffer → `pop_key_event()` chain) is identical on both
+> architectures. See `docs/arm/03-virtio-input.md` for the polling side.
+
 ---
 
 ## Setup: open these files side by side
@@ -124,6 +134,9 @@ Draw this on paper without looking. If you can't, re-read the relevant section.
 ---
 
 ## Rust patterns you'll see
+
+(See `00_rust_for_os_readers.md` for the full primer — these are just the
+patterns specific to this trace.)
 
 **`static mut` with `unsafe`** — the event queue and keyboard callbacks are global
 mutable state. This is `unsafe` because Rust can't prove they're not accessed from

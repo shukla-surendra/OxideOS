@@ -4,6 +4,18 @@ Interrupts are the mechanism by which hardware tells the CPU "something happened
 stop what you're doing and handle it." Understanding interrupts means understanding
 how your OS stays responsive without constantly polling every device.
 
+> **Architecture scope:** everything below (PIC, IDT, `interrupts_asm.rs`) is
+> **x86-64 only**. The aarch64 port has an exception *vector table*
+> (`arch/aarch64/exceptions.rs`) that plays the same hardware role as the
+> IDT, but there's no GICv2 interrupt-controller wiring yet (see
+> `docs/arm/README.md` row 3, status 🔜) — so today's aarch64 build doesn't
+> use hardware interrupts for devices at all. The keyboard and mouse (which
+> *would* be interrupt-driven on x86, via IRQ1/IRQ12 below) are instead
+> **polled once per GUI frame** on aarch64 — see `virtio_input.rs` and
+> `docs/arm/03-virtio-input.md`. Keep reading this doc for the concepts
+> (why interrupts beat polling, how a handler saves/restores state); the
+> mechanism differs, the reasoning doesn't.
+
 ---
 
 ## The problem interrupts solve
@@ -170,6 +182,30 @@ notepad.rs / terminal.rs: pop_key_event()  ← called each draw frame
        ↓
 [UI reacts: character inserted, cursor moves, etc.]
 ```
+
+---
+
+## Rust patterns you'll see
+
+- **`#[repr(packed)]`/fixed layout structs** — `IdtEntry` in `idt.rs` has to
+  match the exact byte layout x86 hardware expects (offset split across
+  non-contiguous fields), so it's annotated to stop Rust from reordering or
+  padding fields the way it normally would for cache efficiency. This is
+  one of the few places "the struct's memory layout *is* the API" — the
+  CPU reads these bytes directly, not through any Rust code.
+- **`extern "C"` function pointers** — the IDT stores addresses of the
+  assembly stubs (`isr0`..`isr255`) as function pointers with the C calling
+  convention, because the *hardware* jumps to them directly; Rust's default
+  calling convention isn't a stable ABI the CPU could be told to use.
+- **`asm!` for single instructions** — reading port `0x60` (`in al, 0x60`)
+  has no safe Rust equivalent; it's one of the operations listed in
+  `00_rust_for_os_readers.md §7` that requires an `unsafe` block by
+  definition, not by choice.
+- **`static mut` global tables** — `IDT: [IdtEntry; 256]` is exactly the
+  kind of reachable-from-anywhere mutable state described in
+  `00_rust_for_os_readers.md §9`. Every `IDT[33].set_handler(...)` touches
+  it through `unsafe`, because the compiler has no way to prove an
+  interrupt won't fire mid-write.
 
 ---
 

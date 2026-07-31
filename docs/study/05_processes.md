@@ -4,6 +4,19 @@ A "process" is just a bundle of state the OS saves and restores to give the illu
 that multiple programs run simultaneously. This doc explains what that state is and
 how your scheduler manages it.
 
+> **Architecture scope:** this entire doc is **x86-64 only**. The whole
+> `proc` module (`scheduler.rs`, `elf_loader.rs`, `user_mode.rs`, ...) is
+> `#[cfg(target_arch = "x86_64")]`-gated in `kernel/mod.rs` and has no
+> aarch64 counterpart yet (`docs/arm/README.md` rows 6–7: scheduler and
+> user mode/syscalls both ⏳ "planned"). Practically: the aarch64 `kmain()`
+> in `main.rs` never calls anything resembling `spawn()` — it initializes
+> drivers, then jumps straight into the GUI event loop and stays there.
+> There is currently exactly one "task" on aarch64: the kernel itself.
+> When this lands, expect it to reuse the concepts here (a `TaskContext`
+> saving ARM's general registers `x0`–`x30`/`sp`/`elr_el1` instead of
+> `rax`–`r15`/`rsp`/`rip`) but not the x86-specific mechanics (no CR3 — ARM
+> uses `TTBR0_EL1`; no `IRETQ` — ARM returns from an exception with `eret`).
+
 ---
 
 ## What the CPU needs to "run a program"
@@ -102,6 +115,30 @@ CS selector and automatically:
 The program is now running in user mode. If it does anything privileged (like `in`
 port I/O), the CPU triggers a General Protection Fault (vector 13) which the kernel
 handles.
+
+---
+
+## Rust patterns you'll see
+
+(Full primer: `00_rust_for_os_readers.md`.)
+
+- **A struct as a "saved CPU" snapshot** — `TaskContext` is the cleanest
+  example in the codebase of a struct whose fields exist purely because
+  hardware has registers, not because the *program logic* needs them named
+  individually. It's a plain-old-data struct: no methods that compute
+  anything, just a place to put bytes so they can be copied wholesale into
+  and out of the real CPU registers on a context switch.
+- **`[u8; N]` fixed-size arrays for `Task.output`/`Task.name`** — like
+  `Task` in doc 00 §3, these are stack/struct-resident, not heap-backed
+  `Vec`s or `String`s, because `MAX_TASKS` tasks' worth of state has to
+  exist as one predictably-sized block the kernel can allocate once at
+  boot — no allocation failure possible later, no fragmentation from 8
+  processes' buffers growing and shrinking independently.
+- **`TaskState` as the state machine** — re-read `00_rust_for_os_readers.md
+  §3`'s walkthrough of this exact enum if you skipped it; understanding
+  why `Sleeping(u64)` carries its own wake-tick *inside* the enum (instead
+  of a separate `wake_tick: u64` field that's only meaningful for one
+  state) is the single most useful Rust idea for reading `scheduler.rs`.
 
 ---
 

@@ -17,7 +17,27 @@ line-level references to the source code.
 | RTL8139 — Ethernet NIC | `drivers/net/rtl8139.rs` | [rtl8139.md](rtl8139.md) |
 | ACPI — Power Management / Shutdown | `drivers/shutdown.rs` | [acpi_shutdown.md](acpi_shutdown.md) |
 
-## How to read these docs
+## Modern hardware, compared
+
+*(Reference only — real-world hardware OxideOS doesn't drive, or a modern
+successor to a chip above. Each doc explains what changed and why, with
+the legacy chip above as the baseline comparison.)*
+
+| Topic | Compares against | Doc |
+|---|---|---|
+| Wi-Fi NICs (Broadcom, Intel BE200, MediaTek, Qualcomm) | RTL8139 | [modern_wifi_nics.md](modern_wifi_nics.md) |
+| Interrupt controllers (APIC/x2APIC, ARM GICv3/v4, Apple AIC) | 8259A PIC | [interrupt_controller_modern.md](interrupt_controller_modern.md) |
+| Timers (HPET, LAPIC timer, TSC-deadline, ARM generic timer) | 8253/8254 PIT | [modern_timers.md](modern_timers.md) |
+| Input (USB HID, Apple SPI/DockChannel transport) | 8042 PS/2 | [modern_input_hid.md](modern_input_hid.md) |
+| Storage (NVMe over PCIe) | ATA/IDE PIO | [nvme_storage.md](nvme_storage.md) |
+| Debug consoles (BMC Serial-over-LAN, PL011, USB-serial) | 16550 UART | [modern_serial_debug.md](modern_serial_debug.md) |
+| Real-time clocks (PMIC RTC, UEFI time services) | CMOS/MC146818 | [modern_rtc.md](modern_rtc.md) |
+| PCIe (ECAM, lanes/generations, MSI-X) | Legacy PCI | [pcie_bus.md](pcie_bus.md) |
+| GPU & display architecture | OxideOS's raw framebuffer (no GPU driver) | [modern_gpu_display.md](modern_gpu_display.md) |
+| USB & xHCI | No OxideOS driver (QEMU flags attach one, unused) | [usb_xhci.md](usb_xhci.md) |
+| Memory (DDR5/LPDDR5X, memory controllers, ECC) | OxideOS's flat physical-map allocator | [modern_memory.md](modern_memory.md) |
+
+## How to read the driver docs (chips OxideOS actually implements)
 
 Each document follows this structure:
 1. **What it is** — one-paragraph plain-English description
@@ -27,6 +47,11 @@ Each document follows this structure:
 5. **Runtime operation** — how it works during normal OS operation
 6. **In OxideOS** — exact functions and line numbers in this codebase
 7. **Common gotchas** — things that trip people up
+
+The "modern hardware, compared" docs follow a different shape — a
+side-by-side comparison table, "why the shift happened," and "why OxideOS
+still uses the legacy version" — since there's no OxideOS driver for most
+of them to document line-by-line.
 
 ## Port map — all hardware at a glance
 

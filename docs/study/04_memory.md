@@ -4,6 +4,23 @@ Memory management is the most abstract part of the OS — but your kernel has
 two concrete implementations you can read. Start simple (bump allocator),
 then go deeper (page tables).
 
+> **Architecture scope:** everything in this doc (`mem/paging_allocator.rs`)
+> is **x86-64 only** — the whole `mem` module is `#[cfg(target_arch =
+> "x86_64")]`-gated in `kernel/mod.rs`. aarch64 doesn't have page tables set
+> up by the kernel yet (`docs/arm/README.md` row 4: 🔜 "4 KB granule,
+> TTBR0/1"). Until that lands, the aarch64 build gets its heap from a much
+> simpler `linked_list_allocator::LockedHeap` set up directly in
+> `main.rs`'s aarch64 `kmain()` (the `mod heap { ... }` block right after
+> the `#![no_std]` attributes) — it just hands out the single largest
+> `Usable` region Limine reports, capped at 256 MB, with **no virtual
+> memory, no isolation, and no per-process address spaces** — every access
+> uses Limine's identity/HHDM mapping directly. That's a fine starting
+> point precisely because aarch64 has no userspace processes yet (see doc
+> 05) to isolate from each other.
+
+> New to Rust? `GlobalAlloc`/`unsafe impl`/`static` patterns below are
+> covered generically in `00_rust_for_os_readers.md §7, §9`.
+
 ---
 
 ## Two questions memory management answers
@@ -16,6 +33,14 @@ These are separate concerns. You can understand #1 without fully understanding #
 ---
 
 ## Part A: The Bump Allocator — `kernel/src/kernel/mem/allocator.rs`
+
+> **Status: legacy, not wired in.** `mem/mod.rs` comments this module out
+> (`// pub mod allocator; // alternative bump allocator (unused)`). The
+> `#[global_allocator]` today is `PagingAllocator` in `paging_allocator.rs`
+> (Part B below), which fronts a `linked_list_allocator` slab and *can*
+> free memory. This section is kept because the bump-allocator idea is the
+> simplest possible starting point for understanding allocation — just not
+> what actually runs.
 
 ### The idea
 
@@ -139,6 +164,19 @@ The kernel's own mappings (code, stack, heap) live in the **higher half**
 *every* process's page table (they're copied in when a new process CR3 is created),
 the kernel can always access its own data even when running in a user process's
 address space. This is necessary for handling syscalls.
+
+### Beyond what's covered above
+
+The current `paging_allocator.rs` has grown well past a minimal
+`map()`/`allocate_frame()`: a refcounted bitmap frame allocator backing
+copy-on-write `fork()`, a page-fault-driven COW resolver
+(`try_resolve_cow_fault`, called from `interrupts.rs` on user-mode write
+faults), per-process page table helpers (`create_user_page_table`,
+`map_user_region_in`, `free_user_page_table`), and shared-memory frame
+mapping (`map_phys_pages_in`). See
+[`docs/oxide_cocepts/03_memory_management.md`](../oxide_cocepts/03_memory_management.md)
+for the full walkthrough — this file stays focused on the core
+mental model.
 
 ---
 
