@@ -23,6 +23,17 @@ $(call USER_VARIABLE,DOCS_PORT,8000)
 # split the argument list and silently drop everything after it.
 override comma := ,
 
+# Host OS, used to pick a QEMU display backend and work around a couple of
+# macOS-specific quirks below. Homebrew's qemu build has no SDL backend
+# (only cocoa/curses/dbus/none), so GUI targets need a different -display
+# value there.
+override UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+$(call USER_VARIABLE,DISPLAY_BACKEND,cocoa)
+else
+$(call USER_VARIABLE,DISPLAY_BACKEND,sdl)
+endif
+
 # Default user QEMU flags. These are appended to the QEMU command calls.
 # -cpu max: expose all available CPU features so LLVM-vectorised code (fill_rect, etc.) can use SSE/AVX.
 # -device qemu-xhci,id=xhci: USB 3.0 host controller
@@ -34,8 +45,16 @@ override comma := ,
 # instruction-aborts into a recursive fault loop before any kernel code runs).
 # The aarch64 run targets provide virtio-mmio keyboard + mouse devices, which
 # the kernel's polled virtio-input driver consumes (no USB stack yet).
+#
+# macOS (Homebrew qemu + cocoa display) must NOT get usb-tablet/qemu-xhci:
+# the tablet's first absolute-position HID report lands at (0,0) before any
+# real input, and OxideOS's window manager treats it as a click — which can
+# land on a menu item (e.g. Shutdown) and immediately power the guest back
+# off a few seconds after boot. PS/2 relative mouse works fine without it.
 ifeq ($(KARCH),aarch64)
 $(call USER_VARIABLE,QEMUFLAGS,-m 2G)
+else ifeq ($(UNAME_S),Darwin)
+$(call USER_VARIABLE,QEMUFLAGS,-m 2G -cpu max)
 else
 $(call USER_VARIABLE,QEMUFLAGS,-m 2G -cpu max -device qemu-xhci$(comma)id=xhci -device usb-tablet)
 endif
@@ -147,7 +166,7 @@ run-install-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd
 		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-drive file=$(INSTALL_IMAGE),format=raw,if=ide,index=0 \
-		-display sdl \
+		-display $(DISPLAY_BACKEND) \
 		$(NETFLAGS) \
 		$(QEMUFLAGS)
 
@@ -237,7 +256,7 @@ run-gui-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NA
 		-cdrom $(IMAGE_NAME).iso \
 		$(DISK_FLAG) \
 		$(EXT2_FLAG) \
-		-display sdl \
+		-display $(DISPLAY_BACKEND) \
 		$(NETFLAGS) \
 		$(QEMUFLAGS)
 
@@ -252,7 +271,7 @@ run-gui-disk: disk ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
 		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
-		-display sdl \
+		-display $(DISPLAY_BACKEND) \
 		$(NETFLAGS) \
 		$(QEMUFLAGS)
 
@@ -324,7 +343,7 @@ run-gui-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_N
 		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
-		-display sdl \
+		-display $(DISPLAY_BACKEND) \
 		$(VBLK_FLAG) \
 		$(QEMUFLAGS)
 

@@ -1,7 +1,21 @@
 NASM      := nasm
 BINDIR    := bin
 CARGO     := cargo
-MUSL_GCC  := /usr/bin/musl-gcc
+
+# Linux (Ubuntu, the reference dev platform) uses distro-packaged
+# cross-compilers at fixed paths. macOS has neither, so Homebrew's
+# FiloSottile/musl-cross tap (`brew install FiloSottile/musl-cross/musl-cross`)
+# stands in for both: it's a real gcc, and since c-programs below is built
+# freestanding (-nostdlib -nostartfiles, no libc calls), a musl-targeted gcc
+# works identically to a glibc-targeted one for it.
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+CC_LINUX_GNU := x86_64-linux-musl-gcc
+MUSL_GCC     := x86_64-linux-musl-gcc
+else
+CC_LINUX_GNU := x86_64-linux-gnu-gcc
+MUSL_GCC     := /usr/bin/musl-gcc
+endif
 
 SRCS := hello.asm counter.asm sysinfo.asm input.asm \
         fib.asm primes.asm countdown.asm spinner.asm filetest.asm
@@ -25,7 +39,7 @@ $(BINDIR)/%.bin: %.asm
 
 # ── C programs (gcc, no stdlib, Linux syscall ABI) ────────────────────────────
 c-programs: $(BINDIR)
-	x86_64-linux-gnu-gcc -static -nostdlib -nostartfiles \
+	$(CC_LINUX_GNU) -static -nostdlib -nostartfiles \
 	    -O2 -fno-stack-protector -fno-asynchronous-unwind-tables \
 	    -o $(BINDIR)/hello_c.elf hello_c/hello_c.c
 
