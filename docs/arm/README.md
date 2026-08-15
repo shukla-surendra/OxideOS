@@ -17,9 +17,9 @@ mapping, HHDM, memory map, framebuffer).
 |---|---------|--------|---------|-----|
 | 1 | Arch abstraction layer (`arch::cpu` facade, per-arch modules) | ✅ | ✅ | [01-arch-abstraction.md](01-arch-abstraction.md) |
 | 2 | Boot: entry, exception vectors, serial console | ✅ GDT/IDT + COM1 | ✅ EL1 vectors + PL011 | [02-boot-and-exceptions.md](02-boot-and-exceptions.md) |
-| 3 | Interrupt controller + timer + power | ✅ PIC + PIT + ACPI ports | 🔜 GICv2 + generic timer + PSCI | 05-gic-timer-psci.md |
-| 4 | Memory: frame allocator, heap, paging | ✅ 4-level x86 paging | 🔜 4 KB granule, TTBR0/1 | 06-memory.md |
-| 5 | Framebuffer GUI desktop | ✅ | 🔜 | 07-gui.md |
+| 3 | Interrupt controller + timer + power | ✅ PIC + PIT + ACPI ports | ✅ GICv2 + generic timer IRQ (100 Hz) + PSCI | [05-gic-timer-psci.md](05-gic-timer-psci.md) |
+| 4 | Memory: frame allocator, heap, paging | ✅ 4-level x86 paging | ✅ bump heap over Limine map · 🔜 frame allocator, TTBR0/1, 4 KB granule | 06-memory.md |
+| 5 | Framebuffer GUI desktop | ✅ | ✅ ramfb — compositor/window manager run unchanged | — |
 | 6 | Scheduler context switch | ✅ | ⏳ planned | — |
 | 7 | User mode (EL0) + syscalls (SVC, Linux aarch64 ABI) | ✅ SYSCALL/SYSRET | ⏳ planned | — |
 | 8 | Disk: block driver + FAT/ext2 | ✅ ATA PIO | ✅ virtio-blk (polled) + FAT16, MBR, diskfs; ext2 pending | [04-virtio-blk.md](04-virtio-blk.md) |

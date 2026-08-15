@@ -4,12 +4,12 @@
 
 **A hobby operating system written in Rust**
 
-x86-64 · Limine bootloader · BIOS + UEFI · Ring 3 userspace · GUI desktop · TCP/IP · musl libc · Bash · Python 3 · Lua 5.4 · BusyBox 1.36
+x86-64 **and ARM64** · Limine bootloader · BIOS + UEFI · Ring 3 userspace · GUI desktop · TCP/IP · musl libc · Bash · Python 3 · Lua 5.4 · BusyBox 1.36
 
 [![Build](https://github.com/shukla-surendra/OxideOS/actions/workflows/build.yml/badge.svg)](https://github.com/shukla-surendra/OxideOS/actions/workflows/build.yml)
 [![License](https://img.shields.io/badge/license-Custom%20Open%20Source-blue)](#license)
 [![Rust](https://img.shields.io/badge/language-Rust%20(nightly)-orange?logo=rust)](https://www.rust-lang.org/)
-[![Platform](https://img.shields.io/badge/platform-x86--64-lightgrey)](#)
+[![Platform](https://img.shields.io/badge/platform-x86--64%20%7C%20aarch64-lightgrey)](#dual-architecture-x86-64--arm64)
 [![Latest Release](https://img.shields.io/github/v/release/shukla-surendra/OxideOS?label=latest%20ISO)](https://github.com/shukla-surendra/OxideOS/releases/latest)
 
 ![OxideOS Screenshot](./oxideos.png)
@@ -37,6 +37,28 @@ OxideOS is a fully preemptive, multi-process operating system written from scrat
 | **Lua 5.4.7** | Full REPL and script execution, embedded in the kernel |
 | **BusyBox 1.36.1** | 300+ Unix applets — ash, awk, sed, find, gzip, tar, … |
 | **Installable** | `/bin/install` writes OxideOS to a blank disk from inside the OS |
+| **Two architectures** | One tree builds for x86-64 and ARM64 — see below |
+
+---
+
+## Dual architecture: x86-64 + ARM64
+
+The same kernel tree builds for **x86-64** and **AArch64 (ARMv8-A)** from one
+source tree — portable code is shared, and architecture-specific code lives
+under `kernel/src/kernel/arch/<arch>/` behind an `arch::cpu` facade (no raw
+`asm!` outside it). Both boot through the same Limine v9 protocol, so the
+kernel receives an identical environment on either.
+
+```bash
+make KARCH=x86_64  run     # mature build: everything in the table above
+make KARCH=aarch64 run     # QEMU virt, Cortex-A72, UEFI (AAVMF)
+```
+
+x86-64 is the mature target. The ARM64 port is **in progress and honest about
+it** — it boots to the full composited desktop with working keyboard, mouse,
+and persistent FAT16 storage over virtio, all currently polled because the
+interrupt controller is the next step. Live status table and per-feature
+design docs: **[docs/arm/](docs/arm/README.md)**.
 
 ---
 

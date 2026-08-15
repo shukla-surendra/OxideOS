@@ -124,6 +124,43 @@ jobs:
           path: oxide_os-x86_64.iso
           retention-days: 7
 
+  # Mirror of the port's own rule "x86-64 must stay green": nothing kept the
+  # *ARM* build green either, so a broken aarch64 port could land unnoticed.
+  #
+  # Kernel-only, and deliberately so — `proc/` (which embeds the userspace
+  # binaries via include_bytes!) and `installer/` are x86-gated, so the aarch64
+  # kernel compiles with no userspace build and no cross toolchain at all.
+  # Building an aarch64 ISO needs the userspace port, which is Track B step B8.
+  build-aarch64:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: aarch64-unknown-none
+          components: rust-src
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            kernel/target
+          key: ${{ runner.os }}-cargo-aarch64-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-aarch64-
+
+      - name: Build kernel (aarch64)
+        run: |
+          cd kernel
+          RUSTFLAGS="-C relocation-model=static" \
+            cargo +nightly build --release --target aarch64-unknown-none
+
   release:
     needs: build
     runs-on: ubuntu-22.04

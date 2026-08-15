@@ -9,7 +9,9 @@
 //! GIC in the next port step.
 
 use core::arch::{asm, global_asm};
+use core::sync::atomic::{AtomicU64, Ordering};
 
+use super::gic;
 use super::serial::SERIAL_PORT;
 use crate::kernel::arch::cpu;
 
@@ -21,16 +23,23 @@ global_asm!(
         b       aarch64_exception_entry
     .endm
 
+    // IRQ slots differ from every other vector: they must *return*.
+    .macro OXIDE_IRQ_VECTOR
+    .balign 0x80
+        b       aarch64_irq_entry
+    .endm
+
     .section .text
     .balign 0x800
     .global aarch64_vector_table
 aarch64_vector_table:
     OXIDE_VECTOR 0      // Current EL, SP_EL0: Synchronous
-    OXIDE_VECTOR 1      // Current EL, SP_EL0: IRQ
+    OXIDE_IRQ_VECTOR    // Current EL, SP_EL0: IRQ  ← the live one (Limine
+                        //   enters with SPSel=0, so this is the slot that fires)
     OXIDE_VECTOR 2      // Current EL, SP_EL0: FIQ
     OXIDE_VECTOR 3      // Current EL, SP_EL0: SError
     OXIDE_VECTOR 4      // Current EL, SP_ELx: Synchronous
-    OXIDE_VECTOR 5      // Current EL, SP_ELx: IRQ
+    OXIDE_IRQ_VECTOR    // Current EL, SP_ELx: IRQ  (once anything runs on SP_EL1)
     OXIDE_VECTOR 6      // Current EL, SP_ELx: FIQ
     OXIDE_VECTOR 7      // Current EL, SP_ELx: SError
     OXIDE_VECTOR 8      // Lower EL, AArch64: Synchronous
@@ -48,6 +57,46 @@ aarch64_exception_entry:
         mrs     x2, elr_el1
         mrs     x3, far_el1
         b       aarch64_exception_handler
+
+    // IRQ path — the one exception entry that returns, so it must leave the
+    // interrupted context byte-identical.  The Rust handler follows AAPCS64
+    // and preserves x19-x28 itself, so only the caller-saved set needs saving:
+    // x0-x18 plus the frame pointer and link register.  22 slots keeps SP
+    // 16-byte aligned.
+    //
+    // ELR_EL1/SPSR_EL1 are deliberately not saved: `eret` consumes the values
+    // the CPU wrote on entry, and DAIF.I stays masked for the whole handler,
+    // so nothing can nest and overwrite them.  B4 (scheduler context switch)
+    // is what turns this into a full trap frame.
+aarch64_irq_entry:
+        sub     sp, sp, #176
+        stp     x0,  x1,  [sp, #0]
+        stp     x2,  x3,  [sp, #16]
+        stp     x4,  x5,  [sp, #32]
+        stp     x6,  x7,  [sp, #48]
+        stp     x8,  x9,  [sp, #64]
+        stp     x10, x11, [sp, #80]
+        stp     x12, x13, [sp, #96]
+        stp     x14, x15, [sp, #112]
+        stp     x16, x17, [sp, #128]
+        stp     x18, x29, [sp, #144]
+        str     x30,      [sp, #160]
+
+        bl      aarch64_irq_handler
+
+        ldp     x0,  x1,  [sp, #0]
+        ldp     x2,  x3,  [sp, #16]
+        ldp     x4,  x5,  [sp, #32]
+        ldp     x6,  x7,  [sp, #48]
+        ldp     x8,  x9,  [sp, #64]
+        ldp     x10, x11, [sp, #80]
+        ldp     x12, x13, [sp, #96]
+        ldp     x14, x15, [sp, #112]
+        ldp     x16, x17, [sp, #128]
+        ldp     x18, x29, [sp, #144]
+        ldr     x30,      [sp, #160]
+        add     sp, sp, #176
+        eret
 
     // Limine enters the kernel with SPSel=0 (running on SP_EL0), so exceptions
     // taken through the SP_EL0 vectors pivot onto SP_EL1 — which the bootloader
@@ -113,6 +162,49 @@ pub unsafe fn write_hex64(value: u64) {
             SERIAL_PORT.write_byte(if digit < 10 { b'0' + digit } else { b'A' + (digit - 10) });
         }
     }
+}
+
+/// Interrupts seen since boot that no handler claimed, by INTID.  A rising
+/// count here means something was enabled in the GIC without being wired up.
+static SPURIOUS_COUNT: AtomicU64 = AtomicU64::new(0);
+static UNHANDLED_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Called from `aarch64_irq_entry` with interrupts masked.
+///
+/// Claim → dispatch → EOI is the GIC's required order; skipping the EOI leaves
+/// the interrupt at "active" forever and the CPU never sees another one at the
+/// same or lower priority, which presents as "the first tick works and then
+/// everything stops".
+#[unsafe(no_mangle)]
+extern "C" fn aarch64_irq_handler() {
+    unsafe {
+        let iar = gic::acknowledge();
+        let intid = gic::intid_of(iar);
+
+        // The spurious INTID means the interrupt was withdrawn before we
+        // claimed it.  It is the one value that must not be written to EOIR.
+        if intid == gic::INTID_SPURIOUS {
+            SPURIOUS_COUNT.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+
+        match intid {
+            gic::INTID_TIMER => super::timer::handle_irq(),
+            _ => {
+                UNHANDLED_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        gic::end_of_interrupt(iar);
+    }
+}
+
+/// (spurious, unhandled) IRQ counts since boot — boot-time diagnostics.
+pub fn irq_anomaly_counts() -> (u64, u64) {
+    (
+        SPURIOUS_COUNT.load(Ordering::Relaxed),
+        UNHANDLED_COUNT.load(Ordering::Relaxed),
+    )
 }
 
 #[unsafe(no_mangle)]

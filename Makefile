@@ -318,7 +318,7 @@ run-hdd-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NA
 .PHONY: run-aarch64
 run-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
 	qemu-system-$(KARCH) \
-		-M virt \
+		-M virt,gic-version=2 \
 		-cpu cortex-a72 \
 		-serial stdio \
 		-device ramfb \
@@ -334,7 +334,7 @@ run-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME)
 .PHONY: run-gui-aarch64
 run-gui-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
 	qemu-system-$(KARCH) \
-		-M virt \
+		-M virt,gic-version=2 \
 		-cpu cortex-a72 \
 		-serial stdio \
 		-device ramfb \
@@ -350,7 +350,7 @@ run-gui-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_N
 .PHONY: run-hdd-aarch64
 run-hdd-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).hdd
 	qemu-system-$(KARCH) \
-		-M virt \
+		-M virt,gic-version=2 \
 		-cpu cortex-a72 \
 		-device ramfb \
 		-device virtio-keyboard-device \
@@ -364,7 +364,7 @@ run-hdd-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_N
 .PHONY: run-riscv64
 run-riscv64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
 	qemu-system-$(KARCH) \
-		-M virt \
+		-M virt,gic-version=2 \
 		-cpu rv64 \
 		-device ramfb \
 		-device virtio-keyboard-device \
@@ -377,7 +377,7 @@ run-riscv64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME)
 .PHONY: run-hdd-riscv64
 run-hdd-riscv64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).hdd
 	qemu-system-$(KARCH) \
-		-M virt \
+		-M virt,gic-version=2 \
 		-cpu rv64 \
 		-device ramfb \
 		-device virtio-keyboard-device \
@@ -390,7 +390,7 @@ run-hdd-riscv64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_N
 .PHONY: run-loongarch64
 run-loongarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
 	qemu-system-$(KARCH) \
-		-M virt \
+		-M virt,gic-version=2 \
 		-cpu la464 \
 		-device ramfb \
 		-device virtio-keyboard-device \
@@ -403,7 +403,7 @@ run-loongarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_N
 .PHONY: run-hdd-loongarch64
 run-hdd-loongarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).hdd
 	qemu-system-$(KARCH) \
-		-M virt \
+		-M virt,gic-version=2 \
 		-cpu la464 \
 		-device ramfb \
 		-device virtio-keyboard-device \

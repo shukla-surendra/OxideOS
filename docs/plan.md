@@ -66,9 +66,11 @@ on AAVMF — same boot protocol as x86-64. Detail in [docs/arm/](arm/README.md).
 | Boot: EL1 exception vectors, PL011 serial console | ✅ |
 | Input: virtio-input keyboard + mouse (polled virtio-mmio), works in GUI | ✅ |
 | Disk: polled virtio-blk + FAT16/MBR/diskfs — files persist across reboots (ext2 pending) | ✅ |
-| GICv2 + generic timer + PSCI power | 🔜 next |
-| Memory: frame allocator, heap, TTBR0/1 paging (4 KB granule) | 🔜 |
-| Framebuffer GUI desktop | 🔜 |
+| PSCI power off / reset | ✅ |
+| Framebuffer GUI desktop — ramfb; compositor and window manager run unchanged | ✅ |
+| Heap: bump allocator over the Limine memory map | ✅ |
+| GICv2 + generic timer IRQ at 100 Hz — kernel idles in `wfi`, no more event-stream stopgap | ✅ |
+| Memory: frame allocator + TTBR0/1 paging (4 KB granule) | 🔜 next |
 | Scheduler context switch | ⏳ |
 | User mode (EL0) + SVC syscalls (Linux aarch64 ABI) | ⏳ |
 | Networking: virtio-net | ⏳ |
@@ -269,9 +271,9 @@ Ordered feature queue (picks up where the status table above leaves off):
 
 | Step | Feature | Notes | Doc |
 |------|---------|-------|-----|
-| B1 | GICv2 + generic timer + PSCI | Interrupts, 100 Hz tick, clean shutdown/reboot | 04-gic-timer-psci.md |
-| B2 | Memory: frame allocator, heap, TTBR0/1 paging | 4 KB granule; reuse portable allocator logic | 05-memory.md |
-| B3 | Framebuffer GUI desktop | ramfb; compositor is already portable Limine-fb code | 06-gui.md |
+| B1 | ✅ GICv2 + timer IRQ | Done. Unblocked B4/B5 — preemption needs a timer interrupt. `wfe`+event-stream stopgap retired; polled drivers can now move to IRQs incrementally | [05-gic-timer-psci.md](arm/05-gic-timer-psci.md) |
+| B2 | Memory: frame allocator, TTBR0/1 paging | 4 KB granule. Starts as a refactor — `mem/paging_allocator.rs` is x86 descriptor format throughout; only the frame bookkeeping is portable | 06-memory.md |
+| B3 | ✅ Framebuffer GUI desktop | Done ahead of B1–B2: ramfb, and the compositor turned out to be portable Limine-fb code needing no changes | — |
 | B4 | Scheduler context switch | x0–x30/SP/ELR/SPSR save-restore | — |
 | B5 | EL0 user mode + SVC syscalls | Linux **aarch64** syscall numbers (differ from x86-64!) | — |
 | B6 | ✅ virtio-blk + FAT16 (ext2 pending) | Done ahead of B1–B5: polled virtio-mmio, real FAT/MBR/diskfs stack reused | [04-virtio-blk.md](arm/04-virtio-blk.md) |
@@ -293,8 +295,8 @@ clipboard/login work from Track A is portable and lands on ARM for free.
 
 ```
 NOW        M1  Persistence (ext2 write, block cache, links)      ← 🔥
-           B1  GIC + timer + PSCI                                ← 🔥 (parallel)
-NEXT       M2  Truthful procfs/ps/top          B2–B3  ARM memory + GUI
+           B2  ARM memory (frame allocator + paging)             ← 🔥 (parallel)
+NEXT       M2  Truthful procfs/ps/top          B4     ARM scheduler (B1 unblocked it)
            M3  Clipboard, protocol v2, fonts   B4–B5  ARM sched + EL0
 THEN       M4  Login & permissions (needs M1)
            M5  Server-grade networking         B6–B8  ARM disk/net/userspace

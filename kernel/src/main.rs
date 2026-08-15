@@ -251,7 +251,10 @@ unsafe extern "C" fn kmain() -> ! {
     }
 
     // ── Stage 2: EL1 exception vectors ─────────────────────────────────────
+    // Silence the generic timer first: AAVMF can hand over with it enabled and
+    // an interrupt already pending, which would fire the moment IRQs unmask.
     unsafe {
+        kernel::arch::aarch64::timer::mask();
         exceptions::init();
         SERIAL_PORT.write_str("✓ EL1 exception vectors installed\n");
     }
@@ -269,8 +272,39 @@ unsafe extern "C" fn kmain() -> ! {
         hcf();
     }
 
-    // Wake source for `wfe` in the GUI loop (no GIC yet).
-    unsafe { kernel::arch::aarch64::timer::enable_event_stream(); }
+    // ── Stage 3.5: GICv2 + timer interrupt ─────────────────────────────────
+    // Everything below this point can sleep in `wfi` instead of spinning.
+    unsafe {
+        use kernel::arch::aarch64::{gic, timer};
+        use kernel::arch::cpu;
+
+        gic::init();
+        gic::enable(gic::INTID_TIMER);
+        timer::init_irq();
+        cpu::irq_enable();
+
+        SERIAL_PORT.write_str("✓ GICv2 up (");
+        SERIAL_PORT.write_decimal(gic::num_intids());
+        SERIAL_PORT.write_str(" INTIDs), timer IRQ armed at ");
+        SERIAL_PORT.write_decimal(timer::TIMER_HZ as u32);
+        SERIAL_PORT.write_str(" Hz\n");
+
+        // Prove interrupts actually arrive before anything depends on them.
+        // Sleeping in `wfi` is itself the test: without a working GIC no
+        // interrupt can ever become pending and this would hang forever.
+        let start = timer::get_ticks();
+        while timer::get_ticks().wrapping_sub(start) < 25 {
+            cpu::wait_for_interrupt();
+        }
+        let (spurious, unhandled) = exceptions::irq_anomaly_counts();
+        SERIAL_PORT.write_str("✓ Timer IRQs delivered: ");
+        SERIAL_PORT.write_decimal(timer::irq_count() as u32);
+        SERIAL_PORT.write_str(" (spurious ");
+        SERIAL_PORT.write_decimal(spurious as u32);
+        SERIAL_PORT.write_str(", unhandled ");
+        SERIAL_PORT.write_decimal(unhandled as u32);
+        SERIAL_PORT.write_str(")\n");
+    }
 
     // ── Stage 4: Input (virtio-mmio keyboard + mouse, polled) ─────────────
     unsafe {
