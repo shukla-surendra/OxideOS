@@ -76,8 +76,9 @@ pub fn panic_handler(info: &PanicInfo) -> ! {
     }
 
     // Draw BSoD on framebuffer (best effort — silently skips if not initialised).
-    // aarch64 has no GUI/framebuffer globals yet, so panics stay serial-only.
-    #[cfg(target_arch = "x86_64")]
+    // aarch64 has no GUI/framebuffer globals yet, and headless builds own no
+    // framebuffer, so both stay serial-only.
+    #[cfg(all(target_arch = "x86_64", feature = "gui"))]
     draw_bsod(info);
 
     // Halt the CPU indefinitely
@@ -434,7 +435,7 @@ unsafe fn bsod_fill(fb: *mut u32, pitch_px: usize, x: usize, y: usize, w: usize,
 }
 
 /// Render a full Blue-Screen-of-Death on the framebuffer.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", feature = "gui"))]
 fn draw_bsod(info: &PanicInfo) {
     let pfb = unsafe { crate::gui::graphics::PANIC_FB };
     let fb_info = match pfb { Some(f) => f, None => return };

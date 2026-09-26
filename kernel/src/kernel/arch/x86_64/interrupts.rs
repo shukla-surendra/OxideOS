@@ -4,7 +4,7 @@ use crate::kernel::serial::SERIAL_PORT;
 use crate::kernel::pic;
 use crate::kernel::syscall;
 use crate::kernel::paging_allocator;
-use crate::gui::mouse::{PS2Mouse, MouseCursor};
+use crate::kernel::drivers::mouse::{PS2Mouse, MouseCursor};
 use crate::kernel::keyboard::handle_keyboard_interrupt;
 use crate::kernel::user_mode::TaskContext;
 

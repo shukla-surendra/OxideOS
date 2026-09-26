@@ -16,6 +16,12 @@ ifeq ($(RUST_TARGET),)
     endif
 endif
 
+# GUI=1 (default) builds the desktop; GUI=0 builds the headless kernel, whose
+# userspace shell runs on the serial console. Passed through to kernel/Makefile.
+# `make run-headless` sets it for you; `export GUI=0` makes it stick.
+$(call USER_VARIABLE,GUI,1)
+export GUI
+
 # Port `make docs` serves the documentation site on.
 $(call USER_VARIABLE,DOCS_PORT,8000)
 
@@ -196,12 +202,14 @@ clean-install:
 	rm -f $(INSTALL_IMAGE) oxide_install.vdi
 
 # MODE selects the QEMU launch style for `make run`.
-# Options: gui (default), bios, uefi, kvm, hdd, hdd-bios
+# Options: gui (default), headless, bios, uefi, kvm, hdd, hdd-bios
 # Example: make run MODE=bios
 $(call USER_VARIABLE,MODE,gui)
 
 .PHONY: run
-ifeq ($(MODE),bios)
+ifeq ($(MODE),headless)
+run: run-headless
+else ifeq ($(MODE),bios)
 run: run-bios
 else ifeq ($(MODE),hdd-bios)
 run: run-hdd-bios
@@ -217,6 +225,13 @@ endif
 
 .PHONY: run-gui
 run-gui: run-gui-$(KARCH)
+
+# run-headless: build without the desktop (GUI=0) and boot with no display
+# window. The shell runs on the serial console in this terminal.
+# Ctrl+C goes to the guest; quit QEMU with Ctrl+A then X.
+.PHONY: run-headless
+run-headless:
+	$(MAKE) run-headless-$(KARCH) GUI=0
 
 .PHONY: run-hdd
 run-hdd: run-hdd-$(KARCH)
@@ -305,6 +320,20 @@ run-kvm-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NA
 		$(NETFLAGS) \
 		-m 2G
 
+.PHONY: run-headless-x86_64
+run-headless-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
+	qemu-system-$(KARCH) \
+		-M q35 \
+		-serial mon:stdio \
+		-display none \
+		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
+		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
+		-cdrom $(IMAGE_NAME).iso \
+		$(DISK_FLAG) \
+		$(EXT2_FLAG) \
+		$(NETFLAGS) \
+		$(QEMUFLAGS)
+
 .PHONY: run-hdd-x86_64
 run-hdd-x86_64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).hdd
 	qemu-system-$(KARCH) \
@@ -344,6 +373,19 @@ run-gui-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_N
 		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
 		-cdrom $(IMAGE_NAME).iso \
 		-display $(DISPLAY_BACKEND) \
+		$(VBLK_FLAG) \
+		$(QEMUFLAGS)
+
+.PHONY: run-headless-aarch64
+run-headless-aarch64: ovmf/ovmf-code-$(KARCH).fd ovmf/ovmf-vars-$(KARCH).fd $(IMAGE_NAME).iso
+	qemu-system-$(KARCH) \
+		-M virt,gic-version=2 \
+		-cpu cortex-a72 \
+		-serial mon:stdio \
+		-display none \
+		-drive if=pflash,unit=0,format=raw,file=ovmf/ovmf-code-$(KARCH).fd,readonly=on \
+		-drive if=pflash,unit=1,format=raw,file=ovmf/ovmf-vars-$(KARCH).fd \
+		-cdrom $(IMAGE_NAME).iso \
 		$(VBLK_FLAG) \
 		$(QEMUFLAGS)
 

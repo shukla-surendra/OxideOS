@@ -9,10 +9,16 @@ use core::arch::asm;
 pub use super::syscall_core::{Syscall, SyscallRequest, SyscallResult, SystemInfo};
 use super::syscall_core::{dispatch, SyscallRuntime};
 
+/// Log every syscall by name to serial.  Off in headless builds, where the
+/// serial port is the user's terminal and polling syscalls (getchar/sleep
+/// every 10 ms) would bury the shell's output.
+const SYSCALL_TRACE_LOGGING: bool = cfg!(feature = "gui");
+
 struct KernelRuntime;
 
 impl SyscallRuntime for KernelRuntime {
     fn trace(&mut self, syscall: Syscall) {
+        if !SYSCALL_TRACE_LOGGING { return; }
         unsafe {
             SERIAL_PORT.write_str("SYSCALL: ");
             SERIAL_PORT.write_str(syscall.name());
@@ -1549,37 +1555,47 @@ impl SyscallRuntime for KernelRuntime {
     }
 
     // ── GUI process syscalls ───────────────────────────────────────────────
+    // Headless builds leave these out, so the `ENOSYS` defaults in
+    // syscall_core apply.
 
+    #[cfg(feature = "gui")]
     unsafe fn gui_create_impl(&mut self, pid: u64, title: &[u8], w: u32, h: u32) -> i64 {
         unsafe { crate::kernel::gui_proc::create_window(pid as u32, title, w, h) }
     }
 
+    #[cfg(feature = "gui")]
     fn gui_destroy_impl(&mut self, pid: u64, win_id: u32) -> i64 {
         unsafe { crate::kernel::gui_proc::destroy_window(pid as u32, win_id) }
     }
 
+    #[cfg(feature = "gui")]
     fn gui_fill_rect_impl(&mut self, pid: u64, win_id: u32,
                           x: u32, y: u32, w: u32, h: u32, color: u32) -> i64 {
         unsafe { crate::kernel::gui_proc::fill_rect(pid as u32, win_id, x, y, w, h, color) }
     }
 
+    #[cfg(feature = "gui")]
     unsafe fn gui_draw_text_impl(&mut self, pid: u64, win_id: u32,
                                  x: u32, y: u32, color: u32, text: &[u8]) -> i64 {
         unsafe { crate::kernel::gui_proc::draw_text(pid as u32, win_id, x, y, color, text) }
     }
 
+    #[cfg(feature = "gui")]
     fn gui_present_impl(&mut self, pid: u64, win_id: u32) -> i64 {
         unsafe { crate::kernel::gui_proc::present(pid as u32, win_id) }
     }
 
+    #[cfg(feature = "gui")]
     fn gui_poll_event_impl(&mut self, pid: u64, win_id: u32, event_ptr: u64) -> i64 {
         unsafe { crate::kernel::gui_proc::poll_event(pid as u32, win_id, event_ptr) }
     }
 
+    #[cfg(feature = "gui")]
     fn gui_get_size_impl(&mut self, pid: u64, win_id: u32, w_ptr: u64, h_ptr: u64) -> i64 {
         unsafe { crate::kernel::gui_proc::get_size(pid as u32, win_id, w_ptr, h_ptr) }
     }
 
+    #[cfg(feature = "gui")]
     fn gui_blit_shm_impl(&mut self, pid: u64, win_id: u32, shm_id: u32,
                          sx: u32, sy: u32, sw: u32, sh: u32, dx: u32, dy: u32) -> i64 {
         unsafe { crate::kernel::gui_proc::blit_shm(pid as u32, win_id, shm_id,

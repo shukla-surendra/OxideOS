@@ -90,7 +90,13 @@ source "$HOME/.cargo/env"
 # 3. Build and run
 make run-bios          # BIOS boot, serial output — best for development
 make run-gui-x86_64    # UEFI boot, SDL window with mouse and GUI
+make run-headless      # no desktop: the shell runs on the serial console in your terminal
 ```
+
+The desktop is an optional Cargo feature (`gui`, on by default). `GUI=0` builds a
+headless kernel without the window manager, compositor or GUI syscalls; the
+userspace shell runs on the serial port instead. It works with any target (e.g.
+`make run-bios GUI=0`), and `export GUI=0` makes it the default for your shell.
 
 Prefer to install manually? See `install_dep.sh` or the [dependency table](#dependencies) below.
 
@@ -259,6 +265,7 @@ OxideOS/
 | `make run-bios` | `-M pc` (i440FX) | stdio serial | FAT16 on ATA | **Best for dev** — ATA works, fast boot |
 | `make run-gui-x86_64` | q35 + UEFI | SDL window | FAT16 on ATA | Full GUI + mouse; grab with first click, release Ctrl+Alt+G |
 | `make run-x86_64` | q35 + UEFI | stdio serial | none | Headless UEFI boot |
+| `make run-headless` | q35 + UEFI | none (serial shell) | FAT16 on ATA | Builds with `GUI=0`; Ctrl+C to guest, quit with Ctrl+A X |
 | `make run-kvm-x86_64` | q35 + KVM | GTK | FAT16 | Hardware-accelerated (WSL2: enable nested virt) |
 | `make run-install-x86_64` | q35 + UEFI | SDL | install image | Test the pre-built install image |
 | `make run-install-bios` | `-M pc` | stdio | install image | BIOS-boot the install image |

@@ -64,6 +64,16 @@ jobs:
             -Z build-std=core,alloc \
             -Z build-std-features=compiler-builtins-mem
 
+      # The desktop is an optional feature; keep the headless kernel building
+      # too so neither configuration rots while the other is being worked on.
+      - name: Build kernel (headless, GUI=0)
+        run: |
+          cd kernel
+          cargo +nightly build --release --no-default-features \
+            --target x86_64-unknown-none \
+            -Z build-std=core,alloc \
+            -Z build-std-features=compiler-builtins-mem
+
       - name: Build ISO
         run: make
 
@@ -110,6 +120,12 @@ jobs:
           cd kernel
           RUSTFLAGS="-C relocation-model=static" \
             cargo +nightly build --release --target aarch64-unknown-none
+
+      - name: Build kernel (aarch64, headless GUI=0)
+        run: |
+          cd kernel
+          RUSTFLAGS="-C relocation-model=static" \
+            cargo +nightly build --release --no-default-features --target aarch64-unknown-none
 
   # DISABLED. Rolling releases are paused while the build is being stabilised — a
   # green `build` job is the gate for turning this back on, since this job would

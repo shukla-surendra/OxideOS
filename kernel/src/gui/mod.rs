@@ -1,7 +1,9 @@
 // src/gui/mod.rs - GUI system for OxideOS
 
 pub mod oxide_backend;
-pub mod mouse;
+// The PS/2 mouse is a driver, not a desktop component; re-exported so
+// `crate::gui::mouse` keeps working for the desktop code.
+pub use crate::kernel::drivers::mouse;
 pub mod graphics;
 pub mod colors;
 pub mod fonts;

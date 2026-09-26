@@ -23,6 +23,13 @@ ifeq ($(RUST_PROFILE),)
     override RUST_PROFILE := dev
 endif
 
+# GUI=0 builds the headless kernel: no desktop, the userspace shell runs on
+# the serial console instead (see src/console.rs).
+$(call USER_VARIABLE,GUI,1)
+ifeq ($(GUI),0)
+    override CARGO_FEATURES := --no-default-features
+endif
+
 override RUST_PROFILE_SUBDIR := $(RUST_PROFILE)
 ifeq ($(RUST_PROFILE),dev)
     override RUST_PROFILE_SUBDIR := debug
@@ -31,7 +38,7 @@ endif
 # Default target.
 .PHONY: all
 all:
-	RUSTFLAGS="-C relocation-model=static" cargo build --target $(RUST_TARGET) --profile $(RUST_PROFILE) 2>&1 | tee build.log
+	RUSTFLAGS="-C relocation-model=static" cargo build --target $(RUST_TARGET) --profile $(RUST_PROFILE) $(CARGO_FEATURES) 2>&1 | tee build.log
 	cp target/$(RUST_TARGET)/$(RUST_PROFILE_SUBDIR)/$$(cd target/$(RUST_TARGET)/$(RUST_PROFILE_SUBDIR) && find . -maxdepth 1 -perm -111 -type f) kernel
 
 .PHONY: doc

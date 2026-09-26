@@ -45,6 +45,12 @@ pub mod scheduler {
 
     pub unsafe fn kill(_pid: u8) -> bool { false }
 
+    // Used only by the headless console (Ctrl+C).
+    #[allow(dead_code)]
+    pub const SIGINT: u8 = 2;
+    #[allow(dead_code)]
+    pub unsafe fn send_signal(_pid: u8, _signum: u8) -> bool { false }
+
     pub unsafe fn tick() -> Option<(u8, i64)> { None }
 
     pub fn task_count() -> usize { 0 }
@@ -194,7 +200,7 @@ pub mod syscall {
 
 // ── interrupts (x86: arch/x86_64/interrupts — mouse plumbing only) ───────────
 pub mod interrupts {
-    use crate::gui::mouse::{MouseCursor, PS2Mouse};
+    use crate::kernel::drivers::mouse::{MouseCursor, PS2Mouse};
 
     pub static mut MOUSE_CONTROLLER: Option<PS2Mouse> = None;
     pub static mut MOUSE_CURSOR: Option<MouseCursor> = None;
@@ -220,6 +226,7 @@ pub mod interrupts {
 }
 
 // ── compositor + gui_proc (x86: kernel/gui — need IPC + processes) ───────────
+#[cfg(feature = "gui")]
 pub mod compositor {
     use crate::gui::graphics::Graphics;
 
@@ -234,6 +241,7 @@ pub mod compositor {
     pub unsafe fn process_messages() -> bool { false }
 }
 
+#[cfg(feature = "gui")]
 pub mod gui_proc {
     use crate::gui::graphics::Graphics;
     use crate::gui::window_manager::WindowManager;

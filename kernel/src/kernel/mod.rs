@@ -13,7 +13,7 @@ pub mod proc;     // scheduler, elf_loader, user_mode, programs, env, tty
 pub mod ipc;      // ipc, pipe, shm, stdin
 #[cfg(target_arch = "x86_64")]
 pub mod sys;      // syscall_core, syscall, syscall_handler
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", feature = "gui"))]
 pub mod gui;      // compositor, gui_proc
 
 // ── Remaining root files ──────────────────────────────────────────────────────
@@ -74,9 +74,11 @@ pub use arch::aarch64::psci as shutdown;
 
 #[cfg(target_arch = "aarch64")]
 pub use stubs::{
-    ata, compositor, disk_store, diskfs, ext2, fat, fs, gui_proc, interrupts,
+    ata, disk_store, diskfs, ext2, fat, fs, interrupts,
     mbr, net, pipe, programs, scheduler, stdin, syscall, user_mode,
 };
+#[cfg(all(target_arch = "aarch64", feature = "gui"))]
+pub use stubs::{compositor, gui_proc};
 
 // mem/
 #[cfg(target_arch = "x86_64")]
@@ -127,7 +129,7 @@ pub use sys::syscall;
 pub use sys::syscall_handler;
 
 // gui/ (kernel-side)
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", feature = "gui"))]
 pub use gui::compositor;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", feature = "gui"))]
 pub use gui::gui_proc;

@@ -13,6 +13,11 @@
 //!   net_probe    NetProbe state machine — "Test Internet Connection" feature
 //!   sysinfo      draw_sysinfo_panel — System Info window renderer
 //!   gui_loop     run_gui_with_mouse — main 60-fps GUI event + render loop
+//!   console      headless serial console — replaces gui_loop without `gui`
+//!
+//! The desktop is the `gui` Cargo feature (on by default).  `make GUI=0`
+//! builds without it: no gui/, gui_loop, sysinfo, net_probe, wallpaper or
+//! kernel-side compositor, and the boot ends in the serial shell instead.
 //! ─────────────────────────────────────────────────────────────────────────────
 #![no_std]
 #![no_main]
@@ -26,13 +31,20 @@ mod version;
 // architectures — on aarch64 the kernel-side subsystems it calls are the
 // stubs/real drivers wired up in `kernel/mod.rs`.  Only the x86 hardware
 // bring-up (boot_init) stays arch-specific.
+#[cfg(feature = "gui")]
 mod gui;
+#[cfg(feature = "gui")]
 mod wallpaper;
+#[cfg(feature = "gui")]
 mod net_probe;
+#[cfg(feature = "gui")]
 mod sysinfo;
+#[cfg(feature = "gui")]
+mod gui_loop;
+#[cfg(not(feature = "gui"))]
+mod console;
 #[cfg(target_arch = "x86_64")]
 mod boot_init;
-mod gui_loop;
 
 extern crate alloc;
 
@@ -71,8 +83,10 @@ mod heap {
     }
 }
 
+#[cfg(feature = "gui")]
 use gui::graphics::Graphics;
 use kernel::serial::SERIAL_PORT;
+#[cfg(feature = "gui")]
 use kernel::interrupts;
 
 use limine::BaseRevision;
@@ -120,6 +134,7 @@ static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
 
 // ── Kernel globals ─────────────────────────────────────────────────────────────
 
+#[cfg(feature = "gui")]
 pub static mut WINDOW_MANAGER: gui::window_manager::WindowManager =
     gui::window_manager::WindowManager::new();
 
@@ -155,6 +170,7 @@ unsafe extern "C" fn kmain() -> ! {
     unsafe { boot_init::test_paging_allocation(); }
 
     // ── Stage 4: Graphics + GUI ────────────────────────────────────────────
+    #[cfg(feature = "gui")]
     if let Some(fb_resp) = FRAMEBUFFER_REQUEST.get_response() {
         if let Some(framebuffer) = fb_resp.framebuffers().next() {
             unsafe { SERIAL_PORT.write_str("✓ Framebuffer acquired\n"); }
@@ -176,6 +192,11 @@ unsafe extern "C" fn kmain() -> ! {
         unsafe { boot_init::run_text_mode_kernel(); }
     }
 
+    // ── Stage 4 (headless): serial console ─────────────────────────────────
+    #[cfg(not(feature = "gui"))]
+    unsafe { console::run(); }
+
+    #[allow(unreachable_code)]
     hcf()
 }
 
@@ -330,6 +351,7 @@ unsafe extern "C" fn kmain() -> ! {
     }
 
     // ── Stage 5: Graphics + GUI desktop ────────────────────────────────────
+    #[cfg(feature = "gui")]
     if let Some(fb_resp) = FRAMEBUFFER_REQUEST.get_response() {
         if let Some(framebuffer) = fb_resp.framebuffers().next() {
             unsafe { SERIAL_PORT.write_str("✓ Framebuffer acquired\n"); }
@@ -348,6 +370,11 @@ unsafe extern "C" fn kmain() -> ! {
         unsafe { SERIAL_PORT.write_str("✗ No framebuffer response\n"); }
     }
 
+    // ── Stage 5 (headless): serial console ─────────────────────────────────
+    #[cfg(not(feature = "gui"))]
+    unsafe { console::run(); }
+
+    #[allow(unreachable_code)]
     hcf()
 }
 
